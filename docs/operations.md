@@ -76,6 +76,32 @@ A Server outage or reporting rejection never changes local scheduling, execution
 
 The optional `reporting` block in [worker.example.yml](../config/worker.example.yml) configures only interval and credential location; adding it alone does not enable reporting. Changing those YAML settings requires the usual Worker restart. Connect/disconnect does not.
 
+### Authorized standalone branch maintenance
+
+Observers remain read-only by default. To enable only completed feature branch maintenance, set
+`reporting.allowBranchMaintenance: true` locally and restart the standalone Worker. This advertises
+up to 100 configured project/repository pairs in snapshots; it does not enable managed scheduling.
+A Server administrator must separately `PUT /api/v1/observers/{observerId}/branch-maintenance` with
+`{"project":"<configured project name>","repository":"<owner/repository>"}` using management authentication.
+Each observer has one grant; another PUT replaces it. DELETE on that route revokes the grant.
+Pairing and status reporting alone never grant maintenance authority.
+
+Use the existing `/api/v1/maintenance/executions` contract with `workerId` set to the exact observer ID,
+`action: "archived-branches"`, matching `project` and `repository`, `olderThanDays`, and bounded
+`limit`/`offset` to inventory/preview. Apply requires explicit `branches` entries containing `branch`
+and the preview's `expectedTip`; only the existing `done/feature/` and `complete/feature/` classification
+is supported. Locally drain the Worker and wait for zero active executions before requesting apply.
+The Server requires a fresh capability snapshot, and the Worker checks its current configuration,
+local drain and repository gate before confirming Server authorization. Other maintenance actions
+remain unavailable to observers. No local paths or Git credentials are part of this contract.
+
+Inspect the retained operation after cancellation, timeout or lost responses. Undispatched requests
+can be cancelled through the existing cancel route. Dispatched effects are never automatically replayed;
+the Worker durably retains and resends its report, including per-branch partial results. Interrupted
+operations require inspection of current refs before a new preview/apply. An outage never reroutes the
+operation to another Worker or repository. Disabling the local opt-in stops polling; retain local
+history and reconnect to deliver outstanding receipts before abandoning an observer identity.
+
 ## Communication and connectivity loss
 
 Workers initiate outbound HTTP requests to Server: enrollment/registration, heartbeats with capabilities/readiness/capacity, validated versioned configuration snapshots, assignment requests, lease renewals, stage/final execution reports and idle provisioning polling/reporting. Server does not need an inbound listener on the Worker. Both nodes need outbound access to their providers (GitHub, Codex and enabled package sources).

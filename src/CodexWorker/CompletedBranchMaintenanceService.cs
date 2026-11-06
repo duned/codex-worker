@@ -14,8 +14,10 @@ public sealed class CompletedBranchMaintenanceService(ProjectRuntimeRegistry reg
     }
 
     internal async Task<CodexProvisioning.ExecutionMaintenanceReport> RunManagedAsync(
-        CodexProvisioning.ExecutionMaintenanceRequest request, Func<CancellationToken, Task<bool>> authorize, CancellationToken ct)
+        CodexProvisioning.ExecutionMaintenanceRequest request, Func<CancellationToken, Task<bool>> authorize, CancellationToken ct, bool standalone = false)
     {
+        if (!CodexProvisioning.ExecutionMaintenanceProtocol.Valid(request) || request.Action != "archived-branches")
+            return new("refused", "invalid-maintenance-scope", []);
         var projects = registry.Snapshot().Where(p => p.Configuration.Project.Name == request.Project && p.Configuration.Project.Repository == request.Repository).ToArray();
         if (projects.Length != 1) return new("refused", "project-unavailable", []);
         var config = projects[0].Configuration;
@@ -23,7 +25,7 @@ public sealed class CompletedBranchMaintenanceService(ProjectRuntimeRegistry reg
         lock (_maintenanceLock)
             if (!_maintenance.TryGetValue(config.Project.Name, out operation) || !ReferenceEquals(operation.Configuration, config))
                 return new("refused", "project-unavailable", []);
-        using var maintenance = request.Apply ? registry.TryBeginServerMaintenance() : null;
+        using var maintenance = request.Apply ? standalone ? registry.TryBeginMaintenance() : registry.TryBeginServerMaintenance() : null;
         if (request.Apply && maintenance is null) return new("refused", "worker-drain-required", []);
         await operation.Gate.WaitAsync(ct);
         try
@@ -32,7 +34,7 @@ public sealed class CompletedBranchMaintenanceService(ProjectRuntimeRegistry reg
                 return new("refused", "server-authority-rejected", []);
             var result = await operation.Git.CleanupCompletedBranchesAsync(config.Project.Name, await history.ReadAllAsync(ct),
                 request.OlderThanDays ?? 1, request.Apply, _clock.GetUtcNow(), ct, request.Limit, request.Branches, archivedOnly: true, offset: request.Offset);
-            return new("succeeded", "archived-branches-observed", [], Branches: result.Branches.Select(b =>
+            return new(ct.IsCancellationRequested ? "failed" : "succeeded", ct.IsCancellationRequested ? "cancelled-inspect-remaining-refs" : "archived-branches-observed", [], Branches: result.Branches.Select(b =>
                 new CodexProvisioning.ArchivedBranchObservation(b.Branch, b.Tip, b.CompletedAtUtc, b.Decision, b.Reason, b.LocalDeleted, b.RemoteDeleted)).ToArray());
         }
         finally { operation.Gate.Release(); }

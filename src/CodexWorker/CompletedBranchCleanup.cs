@@ -132,6 +132,11 @@ public sealed partial class GitRepository
                     }
                     results.Add(new(branch, "deleted", "Removed verified integrated refs.", localTip is not null, remoteDeleted, tip, completedAt));
                 }
+                catch (Exception error) when (branches is not null && ct.IsCancellationRequested && error is OperationCanceledException or WorkerInfrastructureException)
+                {
+                    results.Add(new(branch, "review", "Cancelled; deletion may be uncertain. Inspect current refs before retrying.", false, remoteDeleted, tip, completedAt));
+                    throw;
+                }
                 catch (WorkerInfrastructureException) when (!ct.IsCancellationRequested)
                 {
                     deletionStopped = true;
@@ -141,6 +146,13 @@ public sealed partial class GitRepository
             if (branches is not null)
                 foreach (var missing in branches.Where(b => results.All(r => r.Branch != b.Branch)))
                     results.Add(new(missing.Branch, "review", "Ref missing or outside configured archive prefix."));
+            return new(apply, results);
+        }
+        catch (Exception error) when (branches is not null && ct.IsCancellationRequested && error is OperationCanceledException or WorkerInfrastructureException)
+        {
+            // Preserve known effects. A cancelled push can have completed remotely; never replay it.
+            foreach (var pending in branches.Where(b => results.All(r => r.Branch != b.Branch)))
+                results.Add(new(pending.Branch, "review", "Cancelled; deletion may be uncertain. Inspect current refs before retrying."));
             return new(apply, results);
         }
         catch (WorkerInfrastructureException) when (ct.IsCancellationRequested) { throw new OperationCanceledException(ct); }

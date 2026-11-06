@@ -52,6 +52,8 @@ api:
 # Connect applies on the next interval; disconnect waits for in-flight delivery and stops reports.
 # Neither requires a restart. Changing these YAML settings requires a restart.
 reporting:
+  # Separate local opt-in; Server must also grant the exact project/repository binding.
+  allowBranchMaintenance: false
   intervalSeconds: 30
   credentialFile: ~/.codex-worker/observer.json
 

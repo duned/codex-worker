@@ -12,6 +12,19 @@ public sealed partial class WorkerRegistrationClient
     {
         var worker = await LoadRegisteredIdentityAsync(settings, ct);
         var endpoint = WorkerAuthentication.GetConnection(settings).Endpoint;
+        return await ExecuteMaintenanceExchangeAsync(worker, endpoint, history, runtime,
+            suffix => CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{worker}/maintenance/executions/{suffix}"),
+            (request, token) => SendAsync(request, token), (command, authorize, token) => new ManagedExecutionMaintenance(history, runtime).ExecuteAsync(command, authorize,
+                (entry, reportToken) => ReportExecutionAsync(settings, entry, entry.State == "Completed" ? "Completed" : "Failed", null,
+                    command.Request.Generation ?? 0, reportToken), token, reconcileCompletion), ct);
+    }
+
+    internal static async Task<bool> ExecuteMaintenanceExchangeAsync(string worker, string endpoint, ExecutionHistoryStore history,
+        WorkerRuntimeReadModel runtime, Func<string, HttpRequestMessage> createRequest,
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send,
+        Func<ExecutionMaintenanceCommand, Func<CancellationToken, Task<bool>>, CancellationToken, Task<ExecutionMaintenanceReport>> execute,
+        CancellationToken ct)
+    {
         var receipt = await history.ReadPendingMaintenanceAsync(endpoint, ct);
         if (receipt is not null)
         {
@@ -21,8 +34,8 @@ public sealed partial class WorkerRegistrationClient
         }
         else
         {
-            using var message = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{worker}/maintenance/executions/request");
-            using var response = await SendAsync(message, ct);
+            using var message = createRequest("request");
+            using var response = await send(message, ct);
             // Old Servers have no protocol. They grant no maintenance authority.
             if (response.StatusCode is HttpStatusCode.NoContent or HttpStatusCode.NotFound) return false;
             response.EnsureSuccessStatusCode();
@@ -34,7 +47,7 @@ public sealed partial class WorkerRegistrationClient
             var retained = await history.ReadMaintenanceReceiptAsync(endpoint, command.Request.OperationId, ct);
             if (retained is not null)
             {
-                if (retained.Command.Request != command.Request) throw new InvalidDataException("Maintenance operation identity changed scope.");
+                if (!ExecutionMaintenanceProtocol.SameRequest(retained.Command.Request, command.Request)) throw new InvalidDataException("Maintenance operation identity changed scope.");
                 receipt = retained with { Report = retained.Report ?? new("failed", "interrupted-inspect-before-retry", []) };
             }
             else
@@ -53,18 +66,15 @@ public sealed partial class WorkerRegistrationClient
                     deadline.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
                     async Task<bool> AuthorizeAsync(CancellationToken token)
                     {
-                        using var authorization = CreateAuthorizedRequest(HttpMethod.Post, settings,
-                            $"api/v1/workers/{worker}/maintenance/executions/{command.Request.OperationId}/authorize");
-                        using var confirmation = await SendAsync(authorization, token);
+                        using var authorization = createRequest($"{command.Request.OperationId}/authorize");
+                        using var confirmation = await send(authorization, token);
                         if (!confirmation.IsSuccessStatusCode) return false;
                         var current = await confirmation.Content.ReadFromJsonAsync<ExecutionMaintenanceCommand>(cancellationToken: token);
-                        return current?.Request == command.Request && current.Status == "running" && current.DeadlineUtc > DateTimeOffset.UtcNow;
+                        return current is not null && ExecutionMaintenanceProtocol.SameRequest(current.Request, command.Request) && current.Status == "running" && current.DeadlineUtc > DateTimeOffset.UtcNow;
                     }
                     try
                     {
-                        receipt = receipt with { Report = await new ManagedExecutionMaintenance(history, runtime).ExecuteAsync(command, AuthorizeAsync,
-                            (entry, token) => ReportExecutionAsync(settings, entry, entry.State == "Completed" ? "Completed" : "Failed", null,
-                                command.Request.Generation ?? 0, token), deadline.Token, reconcileCompletion) };
+                        receipt = receipt with { Report = await execute(command, AuthorizeAsync, deadline.Token) };
                     }
                     catch (OperationCanceledException)
                     {
@@ -80,10 +90,9 @@ public sealed partial class WorkerRegistrationClient
         // Durable recording is intentionally uncancellable after effects. A reconnect resends only this report.
         await history.SaveMaintenanceReceiptAsync(endpoint, receipt, false, CancellationToken.None);
         ct.ThrowIfCancellationRequested();
-        using var reportMessage = CreateAuthorizedRequest(HttpMethod.Post, settings,
-            $"api/v1/workers/{worker}/maintenance/executions/{receipt.Command.Request.OperationId}/report");
+        using var reportMessage = createRequest($"{receipt.Command.Request.OperationId}/report");
         reportMessage.Content = JsonContent.Create(receipt.Report);
-        using var acknowledgement = await SendAsync(reportMessage, ct);
+        using var acknowledgement = await send(reportMessage, ct);
         if (acknowledgement.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
         {
             // Surface a permanent disposition in the local audit, rather than retrying invisibly forever.

@@ -88,15 +88,26 @@ public sealed record ObserverExecution(string LocalExecutionId, string Project, 
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record ObserverBranchMaintenanceBinding(string Project, string Repository)
+{
+    public bool IsValid() => ObserverProtocol.Display(Project, 80) && ObserverProtocol.Display(Repository, 300) &&
+        Repository.Split('/') is [var owner, var name] && new[] { owner, name }.All(part =>
+            part.Length > 0 && part is not "." and not ".." && part.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.'));
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ObserverStatusSnapshot(int ContractVersion, string ObserverId, string SnapshotId,
     DateTimeOffset ObservedAtUtc, string Lifecycle, IReadOnlyList<ObserverExecution> Executions,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Name = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Version = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Readiness = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MaximumCapacity = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ActiveExecutions = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ActiveExecutions = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ObserverBranchMaintenanceBinding>? BranchMaintenance = null)
 {
-    public bool IsValid() => ContractVersion == ObserverProtocol.Version && ObserverProtocol.ValidIdentity(ObserverId) &&
+    public bool IsValid() => (BranchMaintenance is null || BranchMaintenance.Count <= 100 &&
+        BranchMaintenance.All(b => b is not null && b.IsValid()) && BranchMaintenance.Distinct().Count() == BranchMaintenance.Count) &&
+        ContractVersion == ObserverProtocol.Version && ObserverProtocol.ValidIdentity(ObserverId) &&
         ObserverProtocol.ValidId(SnapshotId) && ObserverProtocol.Timestamp(ObservedAtUtc) && WorkerLifecycleStates.IsValid(Lifecycle) &&
         (Name is null || ObserverProtocol.Display(Name, 200)) && (Version is null || ObserverProtocol.Display(Version, 100)) &&
         Readiness is null or "ready" or "not-ready" or "unknown" &&

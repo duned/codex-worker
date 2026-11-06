@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 public sealed class StandaloneReportingSettings
 {
     public string CredentialFile { get; set; } = "~/.codex-worker/observer.json";
+    public bool AllowBranchMaintenance { get; set; }
     public int IntervalSeconds { get; set; } = 30;
     internal void ResolveAndValidate(string configurationPath)
     {

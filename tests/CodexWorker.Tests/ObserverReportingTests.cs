@@ -256,6 +256,120 @@ public sealed class ObserverReportingTests
         Assert.NotNull(await store.AuthenticateObserverAsync(Identity, Server, Credential));
     }
 
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task BranchMaintenanceRequiresSeparateGrantFreshCapabilityAndExactBinding()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var database = Path.Combine(temporary.Path, "registry.db");
+        var registry = new SqliteRegistryStore(database, timeProvider: clock);
+        await registry.InitializeAsync();
+        var commands = new ExecutionMaintenanceStore(database, clock);
+        await commands.InitializeAsync();
+        var pairing = Assert.IsType<ObserverPairingAuthorization>(await registry.CreateObserverAuthorizationAsync(Request));
+        Assert.NotNull(await registry.RedeemObserverAuthorizationAsync(Request, pairing.Authorization, Credential));
+        var snapshot = new ObserverStatusSnapshot(1, Identity, Guid.NewGuid().ToString("N"), Now, "drained", [], ActiveExecutions: 0);
+        var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), Identity, null, null, null, null,
+            Action: "archived-branches", Apply: true, Project: "sample", Repository: "owner/repo", OlderThanDays: 30,
+            Branches: [new("done/feature/task-1", new string('a', 40))]);
+        Assert.True(ExecutionMaintenanceProtocol.Valid(request));
+        Assert.False(ExecutionMaintenanceProtocol.Valid(request with { Action = "inventory", Apply = false, Branches = null }));
+        Assert.Equal(ObserverIngestionResult.Accepted, await registry.IngestObserverSnapshotAsync(Server, Credential, snapshot));
+        Task<string?> Reason(ExecutionMaintenanceRequest scope) => ServerApplication.MaintenanceAuthorityReasonAsync(
+            scope, registry, CancellationToken.None, clock, commands, 90);
+        Assert.Equal("observer-maintenance-not-authorized", await Reason(request));
+        await commands.SetObserverBranchGrantAsync(Identity, new("sample", "owner/repo"));
+        Assert.Equal("worker-branch-protocol-unavailable", await Reason(request));
+        snapshot = snapshot with { SnapshotId = Guid.NewGuid().ToString("N"), ObservedAtUtc = Now.AddSeconds(1),
+            BranchMaintenance = [new("sample", "owner/repo")] };
+        clock.Now = snapshot.ObservedAtUtc;
+        Assert.Equal(ObserverIngestionResult.Accepted, await registry.IngestObserverSnapshotAsync(Server, Credential, snapshot));
+        Assert.Null(await Reason(request));
+        Assert.Equal("observer-maintenance-not-authorized", await Reason(request with { Repository = "owner/other" }));
+        Assert.Equal("observer-maintenance-not-authorized", await Reason(request with { Project = "other" }));
+        clock.Now = clock.Now.AddSeconds(91);
+        Assert.Equal("worker-offline", await Reason(request));
+        clock.Now = Now.AddSeconds(2);
+        snapshot = snapshot with { SnapshotId = Guid.NewGuid().ToString("N"), ObservedAtUtc = clock.Now, Lifecycle = "running" };
+        Assert.Equal(ObserverIngestionResult.Accepted, await registry.IngestObserverSnapshotAsync(Server, Credential, snapshot));
+        Assert.Equal("worker-drain-required", await Reason(request));
+        Assert.Null(await Reason(request with { Apply = false }));
+        await commands.SetObserverBranchGrantAsync(Identity, null);
+        Assert.Equal("observer-maintenance-not-authorized", await Reason(request));
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task SelectedBranchScopeSurvivesSerializationAndIdempotentRequests()
+    {
+        using var temporary = new TemporaryDirectory();
+        var commands = new ExecutionMaintenanceStore(Path.Combine(temporary.Path, "commands.db"), new Clock());
+        await commands.InitializeAsync();
+        var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), Identity, null, null, null, null,
+            Action: "archived-branches", Apply: true, Project: "sample", Repository: "owner/repo", OlderThanDays: 30,
+            Branches: [new("done/feature/task-1", new string('a', 40))]);
+        var copy = JsonSerializer.Deserialize<ExecutionMaintenanceRequest>(JsonSerializer.Serialize(request));
+        Assert.NotNull(copy);
+        Assert.True(ExecutionMaintenanceProtocol.SameRequest(request, copy));
+        Assert.False(ExecutionMaintenanceProtocol.SameRequest(request, copy with { Branches = [new("done/feature/task-1", new string('b', 40))] }));
+        await commands.CreateAsync(request, "test");
+        Assert.Equal(request.OperationId, (await commands.CreateAsync(copy, "test")).Request.OperationId);
+        Assert.NotNull(await commands.CancelAsync(request.OperationId));
+        Assert.Null(await commands.ClaimAsync(Identity));
+        Assert.False(new ObserverBranchMaintenanceBinding("sample", "/private/path").IsValid());
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task LostStandaloneBranchReportReplaysOnlyDurablePartialResults()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "history.db");
+        var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), Identity, null, null, null, null,
+            Action: "archived-branches", Apply: true, Project: "sample", Repository: "owner/repo", OlderThanDays: 30,
+            Branches: [new("done/feature/task-1", new string('a', 40))]);
+        var command = new ExecutionMaintenanceCommand(request, "running", DateTimeOffset.UtcNow, "operator", DateTimeOffset.UtcNow.AddMinutes(1));
+        var executions = 0;
+        var reports = 0;
+        Task<ExecutionMaintenanceReport> Execute(ExecutionMaintenanceCommand _, Func<CancellationToken, Task<bool>> authorize, CancellationToken ct)
+        {
+            executions++;
+            return ExecuteAuthorized();
+            async Task<ExecutionMaintenanceReport> ExecuteAuthorized()
+            {
+                Assert.True(await authorize(ct));
+                return new("succeeded", "archived-branches-observed", [], Branches:
+                    [new("done/feature/task-1", new string('a', 40), null, "review", "Remote removed; inspect local ref.", false, true)]);
+            }
+        }
+        async Task<System.Net.Http.HttpResponseMessage> Send(System.Net.Http.HttpRequestMessage message, CancellationToken ct)
+        {
+            if (message.RequestUri?.AbsolutePath.EndsWith("/report", StringComparison.Ordinal) == true)
+            {
+                reports++;
+                var report = await System.Net.Http.Json.HttpContentJsonExtensions.ReadFromJsonAsync<ExecutionMaintenanceReport>(
+                    Assert.IsAssignableFrom<System.Net.Http.HttpContent>(message.Content), cancellationToken: ct);
+                Assert.True(Assert.Single(report?.Branches ?? []).RemoteDeleted);
+                if (reports == 1) throw new HttpRequestException("Response lost.");
+                return new(System.Net.HttpStatusCode.OK);
+            }
+            return new(System.Net.HttpStatusCode.OK) { Content = System.Net.Http.Json.JsonContent.Create(command) };
+        }
+        Task<bool> Exchange(ExecutionHistoryStore history) => WorkerRegistrationClient.ExecuteMaintenanceExchangeAsync(
+            Identity, Server + "/observers/" + Identity, history, new(new(), [], history),
+            suffix => new(HttpMethod.Post, Server + "/" + suffix), Send, Execute, CancellationToken.None);
+        using (var history = new ExecutionHistoryStore(database))
+            await Assert.ThrowsAsync<HttpRequestException>(() => Exchange(history));
+        using var reopened = new ExecutionHistoryStore(database);
+        Assert.True(await Exchange(reopened));
+        Assert.Equal(1, executions);
+        Assert.Equal(2, reports);
+    }
+
     private sealed class Clock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = ObserverReportingTests.Now;

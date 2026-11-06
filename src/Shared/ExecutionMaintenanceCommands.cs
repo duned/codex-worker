@@ -30,6 +30,10 @@ public sealed record CompletionReconciliationProof(string Token, string Commit, 
 
 public static class ExecutionMaintenanceProtocol
 {
+    public static bool SameRequest(ExecutionMaintenanceRequest left, ExecutionMaintenanceRequest right) =>
+        left with { Branches = null } == right with { Branches = null } &&
+        (left.Branches is null ? right.Branches is null : right.Branches is not null && left.Branches.SequenceEqual(right.Branches));
+
     public const string Capability = "execution-maintenance-v1";
     public const string BranchCapability = "archived-feature-maintenance-v1";
     public static bool ArchivedBranch(string branch) => branch is { Length: > 0 and <= 250 } &&
@@ -43,7 +47,7 @@ public static class ExecutionMaintenanceProtocol
         request is not null &&
         (request.ExpectedProof is null || request.Action == "reconcile-completion" && request.Apply &&
             request.ExpectedProof.Length == 64 && request.ExpectedProof.All(char.IsAsciiHexDigit)) &&
-        (request.Action != "reconcile-completion" || !request.Apply || request.ExpectedProof is not null) && Guid.TryParseExact(request.OperationId, "N", out _) && Guid.TryParseExact(request.WorkerId, "N", out _) &&
+        (request.Action != "reconcile-completion" || !request.Apply || request.ExpectedProof is not null) && Guid.TryParseExact(request.OperationId, "N", out _) && (Guid.TryParseExact(request.WorkerId, "N", out _) || request.Action == "archived-branches" && ObserverProtocol.ValidIdentity(request.WorkerId)) &&
         request.TimeoutSeconds is >= 5 and <= 300 && request.Limit is >= 1 and <= 100 && request.Offset is >= 0 and <= 10_000 &&
         (request.Project is null || request.Project is { Length: > 0 and <= 80 } && !request.Project.Any(char.IsControl)) &&
         request.IssueNumber is not <= 0 && request.Outcome is null or "succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "active" &&

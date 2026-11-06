@@ -52,6 +52,17 @@ internal sealed class StandaloneReportingClient : IDisposable
         return await ReportingResultAsync(response, ct);
     }
 
+    internal Task<bool> ExecuteBranchMaintenanceAsync(StandaloneReportingCredential local, WorkerRuntimeReadModel runtime, CancellationToken ct) =>
+        WorkerRegistrationClient.ExecuteMaintenanceExchangeAsync(local.ObserverId, local.Server + "/observers/" + local.ObserverId,
+            runtime.ObserverHistory, runtime, suffix =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Post,
+                    local.Server + $"/api/v1/workers/{local.ObserverId}/maintenance/executions/{suffix}");
+                request.Headers.Authorization = new("Bearer", local.Credential);
+                return request;
+            }, (request, token) => WorkerServerHttpTransport.SendAsync(client, request, TimeSpan.FromSeconds(5), token),
+            (command, authorize, token) => runtime.CompletedBranchMaintenance.RunManagedAsync(command.Request, authorize, token, standalone: true), ct);
+
     private static async Task<string> ReportingResultAsync(HttpResponseMessage response, CancellationToken ct)
     {
         if (!response.IsSuccessStatusCode)

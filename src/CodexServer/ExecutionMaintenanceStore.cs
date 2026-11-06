@@ -20,12 +20,42 @@ public sealed class ExecutionMaintenanceStore(string databasePath, TimeProvider?
         await using var connection = await OpenAsync(ct);
         using var command = connection.CreateCommand();
         command.CommandText = """
+            CREATE TABLE IF NOT EXISTS observer_branch_maintenance_grants
+                (observer TEXT PRIMARY KEY, project TEXT NOT NULL, repository TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS execution_maintenance_commands
                 (id TEXT PRIMARY KEY, worker TEXT NOT NULL, active INTEGER NOT NULL, body TEXT NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS ix_execution_maintenance_active
                 ON execution_maintenance_commands(worker) WHERE active=1;
             """;
         await command.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task SetObserverBranchGrantAsync(string observer, ObserverBranchMaintenanceBinding? binding, CancellationToken ct = default)
+    {
+        if (!ObserverProtocol.ValidIdentity(observer) || binding is not null && !binding.IsValid())
+            throw new InvalidDataException("Invalid observer branch maintenance grant.");
+        await using var connection = await OpenAsync(ct);
+        using var command = connection.CreateCommand();
+        command.CommandText = binding is null ? "DELETE FROM observer_branch_maintenance_grants WHERE observer=$observer" :
+            "INSERT INTO observer_branch_maintenance_grants VALUES($observer,$project,$repository) ON CONFLICT(observer) DO UPDATE SET project=excluded.project,repository=excluded.repository";
+        command.Parameters.AddWithValue("$observer", observer);
+        if (binding is not null)
+        {
+            command.Parameters.AddWithValue("$project", binding.Project);
+            command.Parameters.AddWithValue("$repository", binding.Repository);
+        }
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<bool> HasObserverBranchGrantAsync(ExecutionMaintenanceRequest request, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM observer_branch_maintenance_grants WHERE observer=$observer AND project=$project AND repository=$repository";
+        command.Parameters.AddWithValue("$observer", request.WorkerId);
+        command.Parameters.AddWithValue("$project", (object?)request.Project ?? DBNull.Value);
+        command.Parameters.AddWithValue("$repository", (object?)request.Repository ?? DBNull.Value);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     public async Task<ExecutionMaintenanceCommand> CreateAsync(ExecutionMaintenanceRequest request, string actor, CancellationToken ct = default)
@@ -38,7 +68,7 @@ public sealed class ExecutionMaintenanceStore(string databasePath, TimeProvider?
         var existing = await ReadAsync(command, request.OperationId, ct);
         if (existing is not null)
         {
-            if (existing.Request != request) throw new InvalidOperationException("Operation identity already has a different scope.");
+            if (!ExecutionMaintenanceProtocol.SameRequest(existing.Request, request)) throw new InvalidOperationException("Operation identity already has a different scope.");
             return Visible(existing);
         }
         var operation = new ExecutionMaintenanceCommand(request, "pending", Now, actor);
@@ -64,7 +94,7 @@ public sealed class ExecutionMaintenanceStore(string databasePath, TimeProvider?
 
     public async Task<IReadOnlyList<ExecutionMaintenanceCommand>> ListAsync(string? worker, int limit, int offset, CancellationToken ct = default)
     {
-        if (limit is < 1 or > 100 || offset is < 0 or > 10_000 || worker is not null && !Guid.TryParseExact(worker, "N", out _))
+        if (limit is < 1 or > 100 || offset is < 0 or > 10_000 || worker is not null && !Guid.TryParseExact(worker, "N", out _) && !ObserverProtocol.ValidIdentity(worker))
             throw new InvalidDataException("Invalid maintenance inventory bounds or Worker identity.");
         await using var connection = await OpenAsync(ct);
         using var command = connection.CreateCommand();

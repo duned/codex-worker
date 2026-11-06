@@ -27,7 +27,7 @@ internal static class StandaloneReportingSnapshot
     }
 }
 
-/// <summary>Passive observer loop. Failure never changes execution ownership, capacity or lifecycle.</summary>
+/// <summary>Observer reporting with optional scoped branch maintenance; standalone execution ownership stays local.</summary>
 internal sealed class StandaloneReporting : IAsyncDisposable
 {
     private readonly StandaloneReportingStore store;
@@ -38,6 +38,7 @@ internal sealed class StandaloneReporting : IAsyncDisposable
     private readonly CancellationTokenSource stop;
     private Task? run;
     private readonly bool standalone;
+    private readonly bool allowBranchMaintenance;
     private string? lastDiagnostic;
 
     internal StandaloneReporting(GlobalWorkerConfiguration config, WorkerRuntimeReadModel runtime, TimeProvider clock, CancellationToken ct,
@@ -49,6 +50,7 @@ internal sealed class StandaloneReporting : IAsyncDisposable
         this.clock = clock;
         interval = TimeSpan.FromSeconds(config.Reporting.IntervalSeconds);
         stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        allowBranchMaintenance = config.Reporting.AllowBranchMaintenance;
         standalone = config.Projects.Ownership == "standalone";
     }
     internal void Start() => run ??= standalone ? RunAsync() : Task.CompletedTask;
@@ -82,6 +84,9 @@ internal sealed class StandaloneReporting : IAsyncDisposable
                 // including after restart. Refresh only outside the Server's admission window.
                 var snapshot = local.PendingSnapshot is { } pending && pending.ObservedAtUtc > now.AddDays(-7)
                     ? pending : await runtime.ObserverSnapshotAsync(local.ObserverId, now, ct);
+                if (!ReferenceEquals(snapshot, local.PendingSnapshot) && allowBranchMaintenance)
+                    snapshot = snapshot with { BranchMaintenance = runtime.Registry.Snapshot().Select(p =>
+                        new ObserverBranchMaintenanceBinding(p.Configuration.Project.Name, p.Configuration.Project.Repository)).Distinct().Take(100).ToArray() };
                 local = local with { PendingSnapshot = snapshot };
                 await store.SaveAsync(local, ct);
                 result = snapshot.IsValid() ? await client.ReportAsync(local, snapshot, ct) : "rejected";
@@ -93,6 +98,7 @@ internal sealed class StandaloneReporting : IAsyncDisposable
                 }
                 if (result == "reporting")
                 {
+                    if (allowBranchMaintenance) await client.ExecuteBranchMaintenanceAsync(local, runtime, ct);
                     var reports = await runtime.ObserverHistory.PrepareObserverDeliveryAsync(local.ObserverId, clock.GetUtcNow(), ct);
                     foreach (var report in reports)
                     {

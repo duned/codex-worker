@@ -2762,6 +2762,64 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task StandaloneBranchMaintenanceHonorsBindingDrainGateAuthorityAndPartialResults()
+    {
+        using var fixture = await seed.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/feature/" });
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "maintenance-history.db"));
+        using var gate = new SemaphoreSlim(1, 1);
+        var config = new WorkerConfiguration { Project = new ProjectSettings
+            { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout } };
+        var registry = new ProjectRuntimeRegistry([("project.yml", config)]);
+        var service = new CompletedBranchMaintenanceService(registry, history);
+        service.Register(config, git, gate);
+        const string branch = "done/feature/example-task-17";
+        const string active = "done/feature/example-task-18";
+        var tip = await fixture.Git("rev-parse", "HEAD");
+        var now = DateTimeOffset.UtcNow;
+        foreach (var (name, issue) in new[] { (branch, 17), (active, 18) })
+        {
+            await fixture.Git("branch", name);
+            await fixture.Git("push", "origin", name);
+            await history.CreateAsync(new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", issue, "Example task",
+                $"feature/example-task-{issue}", "main", now.AddDays(-41), now.AddDays(-40), "Completed", 1, null, null, 0, [],
+                tip, "main", name, null));
+        }
+        await fixture.Git("worktree", "add", Path.Combine(fixture.WorktreeRoot, "active-archive"), active);
+        var request = new CodexProvisioning.ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"),
+            "obs_0123456789abcdef0123456789abcdef", null, null, null, null, Action: "archived-branches", Apply: true,
+            Project: "sample", Repository: "owner/repo", OlderThanDays: 30, Branches: [new(branch, tip), new(active, tip)]);
+        Task<CodexProvisioning.ExecutionMaintenanceReport> Run(CodexProvisioning.ExecutionMaintenanceRequest scope, CancellationToken ct = default,
+            bool authorized = true) => service.RunManagedAsync(scope, _ => Task.FromResult(authorized), ct, standalone: true);
+        Assert.Equal("project-unavailable", (await Run(request with { Repository = "owner/other" })).Reason);
+        Assert.Equal("worker-drain-required", (await Run(request)).Reason);
+        Assert.True(registry.TryReserve("sample"));
+        registry.DrainWorker();
+        Assert.Equal("worker-drain-required", (await Run(request)).Reason);
+        registry.Release("sample");
+        await gate.WaitAsync();
+        using var cancellation = new CancellationTokenSource();
+        var waiting = Run(request, cancellation.Token);
+        Assert.False(waiting.IsCompleted);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        gate.Release();
+        Assert.Equal("server-authority-rejected", (await Run(request, authorized: false)).Reason);
+        var stale = await Run(request with { Branches = [new(branch, new string('0', 40))] });
+        Assert.Equal("review", Assert.Single(stale.Branches ?? []).Decision);
+        var result = await Run(request);
+        Assert.Equal("succeeded", result.Outcome);
+        Assert.Equal("deleted", Assert.Single(result.Branches ?? [], b => b.Branch == branch).Decision);
+        Assert.Equal("review", Assert.Single(result.Branches ?? [], b => b.Branch == active).Decision);
+        Assert.Equal(tip, await fixture.Git("rev-parse", active));
+        Assert.True(registry.CancelWorkerDrain());
+        Assert.True(registry.TryReserve("sample"));
+        registry.Release("sample");
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task CompletedBranchMaintenanceUsesPersistedHistoryAndRepositoryGate()
     {
         using var fixture = await seed.CreateAsync();
