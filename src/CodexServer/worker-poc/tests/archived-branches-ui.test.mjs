@@ -29,14 +29,14 @@ const project = { id:'one', revision:1, name:'First project', repository:'owner/
 const managedId = 'a'.repeat(32), standaloneId = 'obs_' + 'b'.repeat(32);
 const target = { workerId: managedId, displayName: 'Managed one', mode: 'managed', eligible: true, reason: null, canApply: true, applyReason: null };
 const row = { branch:'done/feature/task',tip:'a'.repeat(40),decision:'eligible',reason:'integrated',completedAtUtc:'2026-01-01' };
-function harness() {
+function harness(selectedProject = project) {
   const slots=[], effects=[], calls=[]; let cursor=0, current;
   const hooks = { inventory: {projectId: project.id, revision: project.revision, project: project.name, repository: project.repository, targets:[{...target}]},
     state(initial) { const i=cursor++; if (!(i in slots)) slots[i]=initial; return [slots[i],value=>{slots[i]=typeof value==='function'?value(slots[i]):value;}]; },
     ref(initial) {const i=cursor++; return slots[i] ??= {current:initial};}, effect(effect){ effects.push(effect); },
     runtime:{locked(){return false;}, async mutate(resource,path,method,request,validate,check){await check?.(new AbortController().signal);calls.push(request);current=request;return validate({request,status:'pending'});}, async read(path,signal,validate){ if(path.endsWith('/branch-maintenance-targets')) {if(hooks.targetError) throw Error(hooks.targetError);return validate(hooks.inventory);} if(hooks.failure) throw Error('403 unauthorized');return validate({operation:{request:current,status:'succeeded',report:{outcome:'succeeded',branches:current.apply?[{...row,decision:'review',reason:'remote-tip-changed'}]:hooks.rows??[row,{...row,branch:'complete/feature/retained',decision:'review',reason:'history-unknown'}]}}});},async reconcile(){}} };
   globalThis.branchHooks=hooks;
-  return {hooks,calls,render(){cursor=0;effects.length=0;return BranchInventory({project});}};
+  return {hooks,calls,render(){cursor=0;effects.length=0;return BranchInventory({project: selectedProject});}};
 }
 function nodes(tree) { if(!tree || typeof tree!=='object') return [];return [tree,...[tree.props?.children].flat(Infinity).flatMap(nodes)]; }
 function find(tree,type,match=()=>true) {return nodes(tree).find(node=>node.type===type && match(node));}
@@ -123,8 +123,8 @@ test('picker labels both ownership modes and disables read-only standalone obser
   assert.match(JSON.stringify(standalone), /Standalone one.*branches.standalone/);
   assert.ok(options.some(node => node.props.disabled && JSON.stringify(node).includes('observer-maintenance-not-authorized')));
 });
-test('standalone selection and repository persist from preview through confirmation and partial results', async () => {
-  const h = harness();
+test('disabled Issue scheduling preserves standalone branch selection through preview and deletion', async () => {
+  const h = harness({ ...project, enabled: false });
   h.hooks.inventory.targets.push({ ...target, workerId: standaloneId, displayName: 'Standalone one', mode: 'standalone-observer' });
   let tree = h.render(); find(tree, 'select').props.onChange({ target: { value: standaloneId } }); tree = h.render();
   button(tree, 'branches.previewAge').props.onPress(); await new Promise(resolve => setImmediate(resolve)); tree = h.render();

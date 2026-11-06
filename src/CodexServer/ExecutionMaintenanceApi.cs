@@ -142,10 +142,11 @@ public static partial class ServerApplication
         IRegistryStore registry, CancellationToken ct, TimeProvider? clock = null,
         ExecutionMaintenanceStore? commands = null, int staleAfterSeconds = 90)
     {
+        // Branch maintenance uses configured scope and explicit authority, independent of Issue scheduling.
         if (request.ProjectId is { } projectId)
         {
             var project = await registry.GetProjectAsync(projectId, ct);
-            if (project is null || !project.Enabled || project.Revision != request.ProjectRevision ||
+            if (project is null || (request.Action != "archived-branches" && !project.Enabled) || project.Revision != request.ProjectRevision ||
                 project.Name != request.Project || project.Repository != request.Repository)
                 return "project-binding-changed";
         }
@@ -178,7 +179,7 @@ public static partial class ServerApplication
             if (!worker.Capabilities.Any(c => c.Type == "protocol" && c.Name == ExecutionMaintenanceProtocol.BranchCapability))
                 return "worker-branch-protocol-unavailable";
             var projects = await registry.GetProjectsAsync(ct);
-            return projects.Count(p => p.Name == request.Project && p.Repository == request.Repository && p.Enabled) == 1 ? null : "project-unavailable";
+            return projects.Count(p => p.Name == request.Project && p.Repository == request.Repository) == 1 ? null : "project-unavailable";
         }
         if (request.Action == "inventory") return null;
         var execution = await registry.GetExecutionAsync(request.ServerExecutionId ?? "", ct);

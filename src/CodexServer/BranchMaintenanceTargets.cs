@@ -36,7 +36,7 @@ public static partial class ServerApplication
         {
             var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), identity.Id, null, null, null, null,
                 Action: "archived-branches", Project: project.Name, Repository: project.Repository, OlderThanDays: 30, ProjectId: project.Id, ProjectRevision: project.Revision);
-            var reason = !project.Enabled ? "project-unavailable" : await MaintenanceAuthorityReasonAsync(
+            var reason = await MaintenanceAuthorityReasonAsync(
                 request, registry, ct, clock, commands, staleAfterSeconds);
             var applyReason = reason ?? await MaintenanceAuthorityReasonAsync(request with { Apply = true },
                 registry, ct, clock, commands, staleAfterSeconds);

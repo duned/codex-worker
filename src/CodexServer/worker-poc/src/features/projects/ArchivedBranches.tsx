@@ -32,7 +32,7 @@ function BranchInventory({ project }: { project: Project }) {
   const controller = useRef(new AbortController());
   useEffect(() => { const current = new AbortController(); controller.current = current; return () => current.abort(); }, []);
   const worker = selectedBranchTarget(inventory.data, workerId);
-  const available = !!worker?.eligible && !inventory.hasError && project.enabled;
+  const available = !!worker?.eligible && !inventory.hasError;
   const drained = available && worker.canApply;
   const modeLabel = (mode: string) => t(mode === 'managed' ? 'branches.managed' : 'branches.standalone');
   const validDays = Number.isInteger(days) && days >= 1 && days <= 36500;
