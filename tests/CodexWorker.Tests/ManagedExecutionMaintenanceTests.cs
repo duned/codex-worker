@@ -13,6 +13,73 @@ using System.Text.Json;
 [Collection("ServerTokenEnvironment")]
 public sealed class ManagedExecutionMaintenanceTests
 {
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task DisabledProjectBranchTargetsAndDispatchRetainStandaloneAuthorityChecks()
+    {
+        using var temporary = new TemporaryDirectory();
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "branch-test-management");
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var url = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
+            listener.Stop();
+            await using var app = await ServerApplication.BuildAsync([
+                $"--Server:ListenUrl={url}",
+                "--Server:AdministrationOrigin=https://observer.example",
+                $"--Server:DatabasePath={Path.Combine(temporary.Path, "server.db")}",
+                "--Logging:LogLevel:Default=Warning"]);
+            await app.StartAsync();
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            var project = await registry.CreateProjectAsync(new("codex-worker", "owner/repo", "main", "", []));
+            project = Assert.IsType<CentralProject>(await registry.UpdateProjectLifecycleAsync(project.Id, false, project.Revision));
+            const string observer = "obs_0123456789abcdef0123456789abcdef";
+            const string credential = "obr_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            var pairing = new ObserverPairingRequest(1, ObserverProtocol.Mode, observer, "https://observer.example");
+            var authorization = Assert.IsType<ObserverPairingAuthorization>(await registry.CreateObserverAuthorizationAsync(pairing));
+            Assert.NotNull(await registry.RedeemObserverAuthorizationAsync(pairing, authorization.Authorization, credential));
+            Assert.Equal(ObserverIngestionResult.Accepted, await registry.IngestObserverSnapshotAsync("https://observer.example", credential,
+                new(1, observer, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, "drained", [],
+                    ActiveExecutions: 0, BranchMaintenance: [new(project.Name, project.Repository)])));
+            using var client = new HttpClient { BaseAddress = new(app.Urls.Single()) };
+            client.DefaultRequestHeaders.Authorization = new("Bearer", "branch-test-management");
+            var targetPath = $"/api/v1/projects/{project.Id}/branch-maintenance-targets";
+            var targets = Assert.IsType<BranchMaintenanceTargets>(await client.GetFromJsonAsync<BranchMaintenanceTargets>(targetPath));
+            Assert.Equal("observer-maintenance-not-authorized", Assert.Single(targets.Targets).Reason);
+            using (var grant = await client.PutAsJsonAsync($"/api/v1/observers/{observer}/branch-maintenance",
+                new ObserverBranchMaintenanceBinding(project.Name, project.Repository)))
+                Assert.Equal(HttpStatusCode.NoContent, grant.StatusCode);
+            targets = Assert.IsType<BranchMaintenanceTargets>(await client.GetFromJsonAsync<BranchMaintenanceTargets>(targetPath));
+            Assert.True(Assert.Single(targets.Targets).CanApply);
+            var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), observer, null, null, null, null,
+                Action: "archived-branches", Apply: true, Project: project.Name, Repository: project.Repository,
+                OlderThanDays: 30, ProjectId: project.Id, ProjectRevision: project.Revision,
+                Branches: [new("done/feature/task-1", new string('a', 40))]);
+            using (var dispatched = await client.PostAsJsonAsync("/api/v1/maintenance/executions", request))
+                Assert.Equal(HttpStatusCode.Created, dispatched.StatusCode);
+            client.DefaultRequestHeaders.Authorization = new("Bearer", credential);
+            using (var claimed = await client.PostAsync($"/api/v1/workers/{observer}/maintenance/executions/request", null))
+                Assert.Equal(HttpStatusCode.OK, claimed.StatusCode);
+            var authorizePath = $"/api/v1/workers/{observer}/maintenance/executions/{request.OperationId}/authorize";
+            using (var authorized = await client.PostAsync(authorizePath, null))
+                Assert.Equal(HttpStatusCode.OK, authorized.StatusCode);
+            client.DefaultRequestHeaders.Authorization = new("Bearer", "branch-test-management");
+            using (var revoked = await client.DeleteAsync($"/api/v1/observers/{observer}/branch-maintenance"))
+                Assert.Equal(HttpStatusCode.NoContent, revoked.StatusCode);
+            client.DefaultRequestHeaders.Authorization = new("Bearer", credential);
+            using (var refused = await client.PostAsync(authorizePath, null))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+                Assert.Contains("observer-maintenance-not-authorized", await refused.Content.ReadAsStringAsync());
+            }
+            Assert.False((await registry.GetProjectAsync(project.Id))?.Enabled);
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
