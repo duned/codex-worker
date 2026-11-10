@@ -1986,6 +1986,83 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ParallelOverlappingImplementationsPreserveBothChangesThroughConflictRetry(bool inheritSession)
+    {
+        using var fixture = await seed.CreateAsync();
+        var settings = new GitSettings { AutoMerge = true };
+        using var checkoutGit = fixture.CreateRepository(settings);
+        await checkoutGit.InitializeAsync(CancellationToken.None);
+        using var firstGit = checkoutGit.CreateExecutionRepository();
+        using var secondGit = checkoutGit.CreateExecutionRepository();
+        var firstIssue = fixture.Issue;
+        var secondIssue = fixture.Issue with { Number = 18, Title = "Parallel overlapping task" };
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        await firstGit.StartIssueAsync(firstId, firstIssue, CancellationToken.None);
+        await secondGit.StartIssueAsync(secondId, secondIssue, CancellationToken.None);
+        Assert.NotEqual(firstGit.ExecutionDirectory, secondGit.ExecutionDirectory);
+        Assert.Equal(await fixture.GitAt(firstGit.ExecutionDirectory, "rev-parse", "HEAD"),
+            await fixture.GitAt(secondGit.ExecutionDirectory, "rev-parse", "HEAD"));
+
+        var coordinator = new CodexThreadCoordinator();
+        var sharedThread = Guid.NewGuid().ToString();
+        async Task RunImplementationAsync(IGitRepository repository, string change, string? thread)
+        {
+            var result = await coordinator.RunAsync(thread, _ => Task.FromResult(true), async (resumed, token) =>
+            {
+                Assert.Equal(thread, resumed);
+                await File.WriteAllTextAsync(Path.Combine(repository.ExecutionDirectory, "base.txt"), change, token);
+                return new ImplementationResult("success", "implemented", [], false, null);
+            }, CancellationToken.None);
+            Assert.Equal("success", result.Status);
+        }
+        await Task.WhenAll(
+            RunImplementationAsync(firstGit, "base + task A", inheritSession ? sharedThread : null),
+            RunImplementationAsync(secondGit, "base + task B", inheritSession ? sharedThread : null));
+
+        var firstIntegration = await firstGit.CommitAndIntegrateAsync(firstIssue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
+        Assert.True(firstIntegration.HasChanges);
+        var sourceRecovery = await Assert.ThrowsAsync<GitIntegrationConflictException>(async () =>
+        {
+            await secondGit.CommitAndIntegrateAsync(secondIssue, _ => Task.FromResult(ValidationResult.Success),
+                (_, _) => Task.FromResult(false), CancellationToken.None);
+        });
+        Assert.Contains("rebase was aborted", sourceRecovery.Message, StringComparison.OrdinalIgnoreCase);
+        var preserved = Assert.IsType<GitRecoveryInfo>(await secondGit.PreserveIntegrationConflictAsync(CancellationToken.None));
+        var recovery = new ExecutionHistoryEntry(secondId, "sample", "owner/repo", secondIssue.Number, secondIssue.Title,
+            preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
+            "task B implementation", "passed", 0, [], preserved.BaseCommit, "main", null, sourceRecovery.Message,
+            RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit,
+            OriginalIssueBody: secondIssue.Body);
+        await secondGit.StartIntegrationRecoveryAsync(recovery, CancellationToken.None);
+        var validationCalls = 0;
+        var secondIntegration = await secondGit.CommitAndIntegrateAsync(secondIssue,
+            async token =>
+            {
+                validationCalls++;
+                Assert.Equal("base + task A + task B", await File.ReadAllTextAsync(
+                    Path.Combine(secondGit.ExecutionDirectory, "base.txt"), token));
+                return ValidationResult.Success;
+            },
+            async (_, token) =>
+            {
+                await File.WriteAllTextAsync(Path.Combine(secondGit.ExecutionDirectory, "base.txt"),
+                    "base + task A + task B", token);
+                return true;
+            }, CancellationToken.None);
+
+        Assert.True(secondIntegration.HasChanges);
+        Assert.Equal(1, validationCalls);
+        Assert.Equal("base + task A + task B", await fixture.Git("show", "main:base.txt"));
+        Assert.Equal("3", await fixture.Git("rev-list", "--count", "main"));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ShutdownDuringCodexPreservesRealWorkspaceAndRestartContinuesIt()
     {
