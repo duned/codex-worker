@@ -205,9 +205,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 {
                     integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating", execution), () => git.CommitAndIntegrateAsync(issue,
                         token => ValidateAfterRebaseAsync(context, repairs, token),
-                        // Conflicts require inspection; only validation failures on successfully rebased
-                        // source may enter the bounded integration-repair loop.
-                        (_, _) => Task.FromResult(false), (details, token) => RepairIntegrationAsync(context, engine, implementationSummary, repairs, details, token),
+                        (details, token) => ResolveConflictAsync(context, engine, details, token),
+                        (details, token) => RepairIntegrationAsync(context, engine, implementationSummary, repairs, details, token),
                         ct, token => EnsureIntegrationAuthorityAsync(execution, token)),
                         completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
                 }
@@ -431,7 +430,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     }
 
     private static bool CanResolveIntegrationConflict(ExecutionContext context) =>
-        context.IntegrationRecovery && (context.ResolveIntegrationConflict || context.Execution.ServerExecutionId is not null);
+        context.Execution.ServerExecutionId is not null ||
+        context.IntegrationRecovery && context.ResolveIntegrationConflict;
 
     private async Task<bool> ResolveConflictAsync(ExecutionContext context, IImplementationEngine engine,
         string details, CancellationToken ct)
