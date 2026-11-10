@@ -1254,13 +1254,16 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
     }
 
     [Theory]
-    [InlineData("success")]
-    [InlineData("failed")]
-    [InlineData("cancelled")]
-    [InlineData("changed-intent")]
+    [InlineData("success", false)]
+    [InlineData("failed", false)]
+    [InlineData("cancelled", false)]
+    [InlineData("changed-intent", false)]
+    [InlineData("success", true)]
+    [InlineData("failed", true)]
+    [InlineData("cancelled", true)]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    public async Task ExplicitResolutionEditsThePreservedWorktreeAndPreservesFailures(string outcome)
+    public async Task ExplicitResolutionEditsThePreservedWorktreeAndPreservesFailures(string outcome, bool managed)
     {
         using var fixture = await seed.CreateAsync();
         var config = new WorkerConfiguration
@@ -1283,11 +1286,15 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         var source = new ExecutionHistoryEntry(id, "demo", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
             preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
             "original implementation", "passed", 0, [], preserved.BaseCommit, "main", null, "conflict",
-            RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit, OriginalIssueBody: fixture.Issue.Body);
+            RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit, OriginalIssueBody: fixture.Issue.Body,
+            ServerExecutionId: managed ? "server-source" : null);
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../explicit-conflict.db"));
         await history.CreateAsync(source);
         var execution = WorkerExecution.Create(config.Project, config.Git, fixture.Issue, retryOfExecutionId: id,
-            attemptNumber: 2, resumed: true, featureBranchOverride: source.FeatureBranch);
+            attemptNumber: 2, resumed: true, featureBranchOverride: source.FeatureBranch,
+            serverExecutionId: managed ? "server-recovery" : null, assignmentId: managed ? "assignment" : null,
+            ownershipGeneration: managed ? 1 : null);
+        execution.TransitionTo(ExecutionState.Claimed);
         var attempt = source with { ExecutionId = execution.ExecutionId, CompletedAtUtc = null, State = "Created",
             RetryOfExecutionId = id, AttemptNumber = 2, RecoveryState = null };
         Assert.True(await history.TryClaimIntegrationRecoveryAsync(source, attempt, "explicit", true));
@@ -1299,11 +1306,11 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         using var output = new StringWriter();
         var validation = new ConflictSourceValidation(workspace);
         var codex = new ConflictFileCodex(engine);
-        var claimed = WorkerExecution.Continue(attempt with { State = "Claimed" }, config, fixture.Issue);
-        var runner = new ExecutionRunner(config, repository, codex, validation, new WorkerConsole(output, false), history, github: github);
-        var context = new CodexWorker.ExecutionContext(claimed, fixture.Issue, source,
+        var runner = new ExecutionRunner(config, repository, codex, validation, new WorkerConsole(output, false), history,
+            isAuthoritative: managed ? (_, _) => Task.FromResult(true) : null, github: github);
+        var context = new CodexWorker.ExecutionContext(execution, fixture.Issue, source,
             IntegrationRecovery: true, ResolveIntegrationConflict: true);
-        if (outcome is "cancelled" or "changed-intent")
+        if (outcome == "cancelled" || outcome == "changed-intent" && !managed)
             await Assert.ThrowsAnyAsync<Exception>(() => runner.RunAsync(context, cancellation.Token));
         else Assert.Equal(outcome == "success" ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict,
             (await runner.RunAsync(context, cancellation.Token)).Kind);
