@@ -3,8 +3,15 @@ using CodexProvisioning;
 
 namespace CodexWorker.Tests;
 
+[Collection("ServerTokenEnvironment")]
 public sealed class IssueParentProvenanceTests
 {
+    private sealed class TestDirectory : IDisposable
+    {
+        public string Path { get; } = Directory.CreateTempSubdirectory("parent-provenance-").FullName;
+        public void Dispose() => Directory.Delete(Path, recursive: true);
+    }
+
     private static readonly DateTimeOffset Assigned = DateTimeOffset.Parse("2026-11-10T16:47:10Z");
     private static IssueParentProvenance Proof(params IssueParentEvent[] events) => new("owner/repo", 34, "issue-node",
         Assigned.AddDays(-1), Assigned.AddSeconds(5), 32, events);
@@ -69,7 +76,7 @@ public sealed class IssueParentProvenanceTests
         var client = new GitHubClient("owner/repo", (_, _) => throw new OperationCanceledException());
         var error = await Assert.ThrowsAsync<ConflictIntentException>(() =>
             client.GetParentProvenanceAsync(34, Assigned, 32, cancellation.Token));
-        Assert.Equal("issue-parent-history-unavailable", error.ReasonCode);
+        Assert.Equal("issue-parent-history-timeout", error.ReasonCode);
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             client.GetParentProvenanceAsync(34, Assigned, 32, cancellation.Token));
@@ -81,10 +88,10 @@ public sealed class IssueParentProvenanceTests
             data = new { repository = new { nameWithOwner = repo, issue = new
             {
                 id = node, number, createdAt = Assigned.AddDays(-1),
-                parent = new { number = 32, repository = new { nameWithOwner = "owner/repo" } },
+                parent = new { number = 32, repository = new { nameWithOwner = repo } },
                 timelineItems = new { totalCount = total, pageInfo = new { hasNextPage = more, endCursor = cursor },
                     nodes = events.Select(item => new { __typename = item.Added ? "ParentIssueAddedEvent" : "ParentIssueRemovedEvent",
-                        id = item.Id, createdAt = item.AtUtc, parent = new { number = item.ParentNumber, repository = new { nameWithOwner = "owner/repo" } } }) }
+                        id = item.Id, createdAt = item.AtUtc, parent = new { number = item.ParentNumber, repository = new { nameWithOwner = repo } } }) }
             } } }
         });
 
@@ -128,7 +135,107 @@ public sealed class IssueParentProvenanceTests
         if (scenario == "errors") response = "{\"errors\":[{\"message\":\"private provider output\"}],\"data\":null}";
         var client = new GitHubClient("owner/repo", (_, _) => Task.FromResult(new ProcessResult(0, response, "")));
         var error = await Assert.ThrowsAsync<ConflictIntentException>(() => client.GetParentProvenanceAsync(34, Assigned.AddSeconds(5), 32, CancellationToken.None));
-        Assert.Equal(scenario == "errors" ? "issue-parent-history-unavailable" : "issue-parent-history-incomplete", error.ReasonCode);
+        Assert.Equal(scenario == "errors" ? "issue-parent-history-graphql" : "issue-parent-history-incomplete", error.ReasonCode);
         Assert.DoesNotContain("private", error.Message, StringComparison.Ordinal);
     }
+    [Theory]
+    [InlineData("success", null)]
+    [InlineData("environment", "issue-parent-history-environment")]
+    [InlineData("start", "issue-parent-history-process-start")]
+    [InlineData("authentication", "issue-parent-history-authentication")]
+    [InlineData("process", "issue-parent-history-process-failed")]
+    [InlineData("graphql", "issue-parent-history-graphql")]
+    [InlineData("parse", "issue-parent-history-result-invalid")]
+    [InlineData("pagination", "issue-parent-history-incomplete")]
+    [InlineData("parent-mismatch", "issue-parent-history-incomplete")]
+    [InlineData("history-changed", "issue-parent-changed")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task ManagedProcessUsesOwnedEnvironmentAndReportsSafeBoundary(string scenario, string? code)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        if (code is null)
+        {
+            var json = await QueryThroughManagedProcessAsync("owner/repo", 34, Assigned.AddSeconds(5), scenario);
+            var proof = Assert.IsType<IssueParentProvenance>(IssueParentProvenance.Parse(json));
+            Assert.True(proof.IsConsistent(Assigned));
+            Assert.Equal(Added, Assert.Single(proof.Events));
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<ConflictIntentException>(() =>
+                QueryThroughManagedProcessAsync("owner/repo", 34, Assigned.AddSeconds(5), scenario));
+            Assert.Equal(code, error.ReasonCode);
+            Assert.DoesNotContain("secret-sentinel", error.Message, StringComparison.Ordinal);
+        }
+    }
+
+    // The production constructor builds the environment and launches ProcessRunner. Only the
+    // executable is a local deterministic stub; no live gh/authentication/network is involved.
+    internal static async Task<string?> QueryThroughManagedProcessAsync(string repository, int number,
+        DateTimeOffset started, string scenario = "success")
+    {
+        using var directory = new TestDirectory();
+        var variables = new[] { "PATH", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_TOKEN", "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN" };
+        var previous = variables.ToDictionary(key => key, Environment.GetEnvironmentVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable("PATH", directory.Path + ":" + previous["PATH"]);
+            Environment.SetEnvironmentVariable("GH_CONFIG_DIR", Path.Combine(directory.Path, "github"));
+            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", directory.Path);
+            foreach (var key in variables.Skip(3)) Environment.SetEnvironmentVariable(key, "secret-sentinel");
+            var setup = new NodeGitHubSetup(directory.Path, unrelatedAuthentication: () => false);
+            Assert.Equal(ProvisioningCommandStatus.Succeeded, (await setup.ExecuteAsync(
+                new(Guid.NewGuid().ToString("N"), "github-cli", ProvisioningCommandAction.PrepareAuthentication), CancellationToken.None)).Status);
+            var response = Response([Added], 1, repo: repository, number: number);
+            if (scenario == "pagination") response = Response([Added], 2, true, repo: repository, number: number);
+            if (scenario == "parent-mismatch") response = response.Replace("\"number\":32", "\"number\":33", StringComparison.Ordinal);
+            if (scenario == "history-changed") response = Response([Added,
+                new("removed", started.AddMinutes(1), false, 32),
+                new("restored", started.AddMinutes(2), true, 32)], 3, repo: repository, number: number);
+            var output = scenario switch
+            {
+                "authentication" => "echo 'HTTP 401 secret-sentinel' >&2; exit 1",
+                "process" => "echo 'secret-sentinel' >&2; exit 1",
+                "graphql" => "echo '{\"errors\":[{\"message\":\"secret-sentinel\"}],\"data\":null}'; exit 1",
+                "parse" => "echo 'secret-sentinel'",
+                _ => "cat <<'RESPONSE'\n" + response + "\nRESPONSE"
+            };
+            var script = """
+                #!/bin/sh
+                test "$1" = api && test "$2" = graphql || exit 90
+                test "$3" = -f && test "$5" = -f && test "$7" = -f && test "$9" = -F || exit 94
+                test -f "$GH_CONFIG_DIR/managed-by-codex" || exit 91
+                test -z "${GH_TOKEN}${GITHUB_TOKEN}${GH_ENTERPRISE_TOKEN}${GITHUB_ENTERPRISE_TOKEN}" || exit 92
+                case "$4" in query=*PARENT_ISSUE_ADDED_EVENT*PARENT_ISSUE_REMOVED_EVENT*TRANSFERRED_EVENT*) ;; *) exit 93;; esac
+                """ + "\n" + output + "\n";
+            if (scenario == "start") script = "#!/missing-secret-sentinel-interpreter\n";
+            var executable = Path.Combine(directory.Path, "gh");
+            await File.WriteAllTextAsync(executable, script);
+            if (OperatingSystem.IsLinux()) File.SetUnixFileMode(executable,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            if (scenario == "environment") await File.WriteAllTextAsync(Path.Combine(directory.Path, "github", "managed-by-codex"), "invalid-secret-sentinel");
+            var client = new GitHubClient(new ProcessRunner(), repository, 5, true, directory.Path);
+            return await client.GetParentProvenanceAsync(number, started, 32, CancellationToken.None);
+        }
+        finally
+        {
+            foreach (var (key, value) in previous) Environment.SetEnvironmentVariable(key, value);
+        }
+    }
+
+    [Fact]
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    public async Task ProcessTimeoutNeverLeaksCapturedOutput()
+    {
+        var client = new GitHubClient("owner/repo", (_, _) => throw new ProcessTimeoutException(
+            "gh", TimeSpan.FromSeconds(1), "secret-sentinel", "secret-sentinel"));
+        var error = await Assert.ThrowsAsync<ConflictIntentException>(() =>
+            client.GetParentProvenanceAsync(34, Assigned, 32, CancellationToken.None));
+        Assert.Equal("issue-parent-history-timeout", error.ReasonCode);
+        Assert.DoesNotContain("secret-sentinel", error.Message, StringComparison.Ordinal);
+    }
+
 }

@@ -3048,7 +3048,7 @@ public sealed class CodexServerTests
     public async Task ExplicitManagedConflictRearmsExhaustedBaseOnceWithDurableIdempotencyAndOriginalWorkerLease(bool reconcileParent)
     {
         using var temporary = new TemporaryDirectory();
-        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-09-15T00:00:00Z"));
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-11-10T16:47:10Z"));
         var path = Path.Combine(temporary.Path, "explicit-conflict.db");
         var store = new SqliteRegistryStore(path, timeProvider: clock);
         await store.InitializeAsync();
@@ -3080,7 +3080,14 @@ public sealed class CodexServerTests
             var proof = new CodexProvisioning.IssueParentProvenance(project.Repository, 17, "original-issue-node",
                 clock.GetUtcNow().AddDays(-1), clock.GetUtcNow().AddSeconds(5), 32,
                 [new("native-added-event", clock.GetUtcNow().AddSeconds(-51), true, 32)]);
-            candidate = candidate with { ParentProvenance = System.Text.Json.JsonSerializer.Serialize(proof) };
+            var provenance = OperatingSystem.IsLinux()
+                ? await IssueParentProvenanceTests.QueryThroughManagedProcessAsync(project.Repository, 17, proof.ExecutionStartedAtUtc)
+                : System.Text.Json.JsonSerializer.Serialize(proof);
+            candidate = candidate with { ParentProvenance = provenance };
+            // Exercise the Worker response contract, rather than injecting only a proof object.
+            candidate = Assert.IsType<CodexProvisioning.IntegrationRecoveryCandidate>(
+                System.Text.Json.JsonSerializer.Deserialize<CodexProvisioning.IntegrationRecoveryCandidate>(
+                    System.Text.Json.JsonSerializer.Serialize(candidate)));
             var late = proof with { Events = [new("late-parent", clock.GetUtcNow().AddSeconds(1), true, 32)] };
             var incomplete = candidate with { ParentProvenance = System.Text.Json.JsonSerializer.Serialize(late) };
             Assert.False((await store.RequestAssignmentAsync(poll with { IntegrationRecoveries = [incomplete] })).HasWork);
@@ -3094,11 +3101,21 @@ public sealed class CodexServerTests
         var refused = await store.InspectManagedConflictAsync(original.Id);
         Assert.False(refused.Eligible);
         Assert.Equal(refusal.RefusalCode, refused.ReasonCode);
-        Assert.Equal(refusal.RefusalReason, refused.Reason);
+        Assert.StartsWith(refusal.RefusalReason, refused.Reason, StringComparison.Ordinal);
         Assert.Equal(refusal, refused.Candidate);
         Assert.False((await store.RequestAssignmentAsync(poll)).HasWork);
         var preview = await store.InspectManagedConflictAsync(original.Id);
         Assert.True(preview.Eligible, preview.Reason);
+        Assert.Equal("1.0", preview.WorkerVersion);
+        Assert.Equal(clock.GetUtcNow(), preview.ObservedAtUtc);
+        Assert.Equal(candidate.ParentProvenance, preview.Candidate?.ParentProvenance);
+        // A newer heartbeat must not lend its build identity to an older observation.
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, owner, "1.1", "running", 0, 2, capabilities, []));
+        Assert.Equal("recovery-observation-stale", (await store.InspectManagedConflictAsync(original.Id)).ReasonCode);
+        Assert.False((await store.RequestAssignmentAsync(poll with { IntegrationRecoveries = [] })).HasWork);
+        Assert.Equal("recovery-observation-missing", (await store.InspectManagedConflictAsync(original.Id)).ReasonCode);
+        Assert.False((await store.RequestAssignmentAsync(poll)).HasWork);
+        Assert.True((await store.InspectManagedConflictAsync(original.Id)).Eligible);
         var request = new ManagedConflictRetry(Guid.NewGuid().ToString("N"), owner, candidate);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RetryManagedConflictAsync(original.Id,
             request with { Candidate = candidate with { PreservedCommit = new string('c', 40) } }));
@@ -3150,7 +3167,8 @@ public sealed class CodexServerTests
         Assert.False((await restarted.RequestAssignmentAsync(poll)).HasWork);
         Assert.True((await restarted.InspectManagedConflictAsync(original.Id)).Eligible);
         clock.Advance(TimeSpan.FromMinutes(2));
-        Assert.False((await restarted.InspectManagedConflictAsync(original.Id)).Eligible);
+        await restarted.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, owner, "1.1", "running", 0, 2, capabilities, []));
+        Assert.Equal("recovery-observation-stale", (await restarted.InspectManagedConflictAsync(original.Id)).ReasonCode);
         Assert.Equal(retry.Id, (await restarted.RetryManagedConflictAsync(original.Id, request)).Id);
     }
 

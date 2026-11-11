@@ -136,6 +136,15 @@ source; screenshots, comments and partial timeline exports are insufficient.
 | Diagnostic | Meaning and operator action |
 | --- | --- |
 | `issue-parent-metadata-missing` | Legacy capture is unknown in standalone inspection. Use managed Server inspection for eligible managed conflicts; standalone historical attestation is unsupported. |
+| `issue-parent-history-environment` | Before process launch: service HOME/managed `GH_CONFIG_DIR` setup, ownership marker, permissions, linked paths or unrelated authentication failed validation. Reconcile locally under the original service account; do not relax ownership checks. |
+| `issue-parent-history-process-start` | Service PATH, executable/interpreter permissions or current working directory prevented process launch. Repair the service context. |
+| `issue-parent-history-authentication` | The process ran but authentication/repository authorization failed. Verify managed service-account repository access. |
+| `issue-parent-history-process-failed` | The process exited unsuccessfully without a recognized authentication or GraphQL error. Inspect local service diagnostics and provider connectivity. |
+| `issue-parent-history-timeout` | Process timeout or the 20-second complete-history deadline expired. Check service connectivity/provider availability. |
+| `issue-parent-history-graphql` | The provider returned GraphQL errors, including errors with a nonzero CLI exit. Verify schema/API support and repository access using the production query/context. Raw provider messages are never copied to the preview. |
+| `issue-parent-history-result-invalid` | The Worker could not parse the result contract. Check Worker/API schema compatibility and bounded-output truncation; raw response content is withheld. |
+| `recovery-observation-missing` | No candidate has arrived through an accepted original-Worker assignment poll (or its latest poll omitted the candidate). Check readiness, managed project synchronization, local resources, free capacity and Worker-to-Server transport. |
+| `recovery-observation-stale` | The received candidate expired or belongs to a different reported Worker build. Wait for a new accepted original-Worker poll and refresh. |
 | `issue-parent-history-unavailable` | Original Worker cannot query native history (access, API support or deadline). Restore access/support and refresh; no parent value is inferred. |
 | `issue-parent-history-incomplete` | History is incomplete, ambiguous, transferred, inconsistent, outside bounds, or cannot establish the parent before original assignment. Preserve work and investigate native history access. |
 | `issue-original-parent-absent` | Complete history proves no parent at execution start, but a parent exists now. This is changed intent, not missing capture. |
@@ -148,3 +157,53 @@ Worker database or remove a real parent to pass inspection. Keep the original
 execution and use a separately reviewed fresh Issue/request through normal
 scheduling if new implementation is appropriate. That is distinct from recovery
 of the preserved implementation. Refusals leave its worktree and commits intact.
+
+## Refresh boundaries and verification
+
+The dashboard **Inspect / refresh** action reads
+`GET /api/v1/executions/{id}/conflict-recovery`. It clears its prior preview and
+checks the Server execution, project, original Worker and local execution IDs.
+This read does not call the node or launch GraphQL. The original Worker's normal
+managed capacity/assignment poll runs `DiscoverManagedIntegrationRecoveriesAsync`
+→ preserved workspace/process inspection → `VerifyIntentAsync` →
+`GetParentProvenanceAsync`. Discovery requires execution readiness, synchronized
+managed configuration, an enabled project and free capacity. Drain/readiness or
+full capacity can prevent a new observation even while the Worker heartbeats.
+
+The production GitHub client resolves `gh` using the service PATH, uses the
+service process working directory and prepares the shared node-managed GitHub
+environment before starting `ProcessRunner`. The managed directory is derived
+from the service account home and must pass ownership/path checks. Inherited
+GitHub token variables are removed. A shell query with manually assigned HOME
+and GH_CONFIG_DIR does not exercise these checks or prove the running service
+has the same environment. Reproduce locally as the service account without
+copying private environment values or raw process output into reports.
+
+A successful query returns serialized native provenance on the candidate in
+`WorkerAssignmentRequest.IntegrationRecoveries`. The Server validates the bounded
+request contract, retains observations by authenticated Worker and Server
+execution ID, and rechecks original assignment ordering when constructing the
+preview. Failed/lost transport does not update that observation. The inspection
+reason includes the original Worker ID, its reported build version at receipt,
+and Server receipt time; `workerVersion` and `observedAtUtc` also appear in the
+API response. Compare this identity/version with the dashboard Worker details
+and capability/readiness inventory. These are reported build metadata, not
+independent verification of a deployed binary. A newer reported build cannot
+reuse the prior build's observation. Check that receipt time advances after a
+Worker discovery poll before interpreting a refreshed provider refusal.
+
+`IssueParentProvenanceTests.ManagedProcessUsesOwnedEnvironmentAndReportsSafeBoundary`
+uses the production environment builder and process runner with a local CLI stub.
+It accepts parent #32 added at 2026-11-10 16:46:19 UTC before the
+16:47:10 assignment, with one event and no next page. It also exercises managed
+ownership, launch, authentication, process, GraphQL, malformed result, pagination
+and changed-history failures without publishing provider output. The Server
+bounded-retry test consumes this process-produced proof through candidate JSON
+serialization, verifies original assignment ordering and retained evidence, and
+checks missing/stale/build-mismatched observations and the existing one-attempt
+request/lease safeguards. Tests use no live GitHub service or incident database.
+After deployment, wait for a new receipt, review native history in the existing
+dashboard evidence, and use **Request one resolution attempt**. No Worker database
+edit or GitHub parent removal is needed; all existing intent/workspace/lease and
+retry-budget checks still apply. This repository validation does not establish
+which build/environment is running on an operator's host.

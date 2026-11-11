@@ -1182,7 +1182,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         var workerCapabilities = heartbeat.Capabilities ?? registration?.Capabilities ?? [];
         var projects = await ReadProjectsByIdAsync(command, cancellationToken);
 
-        ObserveManagedConflicts(request);
+        ObserveManagedConflicts(request, heartbeat.WorkerVersion);
         var recoveryRejections = await QueueIntegrationRecoveriesAsync(command, request, projects, cancellationToken);
         var issueReservations = new Dictionary<(string ProjectId, string WorkType, string WorkId), string>();
         command.Parameters.Clear();

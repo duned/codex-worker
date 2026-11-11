@@ -5,7 +5,8 @@ using Microsoft.Data.Sqlite;
 using System.Text.Json;
 
 public sealed record ManagedConflictPreview(string ExecutionId, string? WorkerId,
-    IntegrationRecoveryCandidate? Candidate, bool Eligible, string Reason, string? ReasonCode = null);
+    IntegrationRecoveryCandidate? Candidate, bool Eligible, string Reason, string? ReasonCode = null,
+    string? WorkerVersion = null, DateTimeOffset? ObservedAtUtc = null);
 public sealed record ManagedConflictRetry(string OperationId, string WorkerId, IntegrationRecoveryCandidate Candidate);
 
 public sealed partial class SqliteRegistryStore
@@ -16,9 +17,9 @@ public sealed partial class SqliteRegistryStore
     // Short-lived node observations are previews, never mutation authority. After a Server restart
     // the original Worker must advertise fresh evidence again. Requests/leases use the durable registry.
     private readonly object _managedConflictGate = new();
-    private readonly Dictionary<(string Worker, string Source), (IntegrationRecoveryCandidate Candidate, DateTimeOffset Seen)> _managedConflicts = [];
+    private readonly Dictionary<(string Worker, string Source), (IntegrationRecoveryCandidate Candidate, DateTimeOffset Seen, string Version)> _managedConflicts = [];
 
-    private void ObserveManagedConflicts(WorkerAssignmentRequest request)
+    private void ObserveManagedConflicts(WorkerAssignmentRequest request, string version)
     {
         lock (_managedConflictGate)
         {
@@ -29,7 +30,7 @@ public sealed partial class SqliteRegistryStore
                 if (candidate.Kind != "Integration") continue;
                 if (_managedConflicts.Count >= 1024)
                     _managedConflicts.Remove(_managedConflicts.MinBy(pair => pair.Value.Seen).Key);
-                _managedConflicts[(request.WorkerId, candidate.ServerExecutionId)] = (candidate, _timeProvider.GetUtcNow());
+                _managedConflicts[(request.WorkerId, candidate.ServerExecutionId)] = (candidate, _timeProvider.GetUtcNow(), version);
             }
         }
     }
@@ -37,8 +38,13 @@ public sealed partial class SqliteRegistryStore
     public async Task<ManagedConflictPreview> InspectManagedConflictAsync(string executionId, CancellationToken ct = default)
     {
         var source = await GetExecutionAsync(executionId, ct);
+        string? version = null;
+        DateTimeOffset? observedAt = null;
         ManagedConflictPreview Refuse(string reason, IntegrationRecoveryCandidate? candidate = null, string? reasonCode = null) =>
-            new(executionId, source?.AssignedWorkerId, candidate, false, reason, reasonCode);
+            new(executionId, source?.AssignedWorkerId, candidate, false, Describe(reason), reasonCode, version, observedAt);
+        string Describe(string reason) => version is null ? reason :
+            $"{reason} Original Worker {source?.AssignedWorkerId}, reported version {version}; " +
+            (observedAt is { } seen ? $"candidate received {seen:O}." : "no candidate received.");
         if (source is null) return Refuse("Original Server execution is missing.");
         if (source.State != "Failed" || source.FailureClassification != "IntegrationConflict" || !source.Recoverable || source.RecoveryState is not null)
             return Refuse("A settled recoverable integration conflict is required; reconcile uncertain outcomes first.");
@@ -53,9 +59,15 @@ public sealed partial class SqliteRegistryStore
             return Refuse("Original Worker does not meet current project execution requirements.");
         IntegrationRecoveryCandidate? evidence;
         lock (_managedConflictGate)
-            evidence = _managedConflicts.TryGetValue((worker.WorkerId, executionId), out var observation) &&
-                _timeProvider.GetUtcNow() - observation.Seen <= _staleAfter ? observation.Candidate : null;
-        if (evidence is null) return Refuse("No fresh preserved-workspace preview. Wait for the original Worker's capacity/discovery poll, then refresh; inspect its recovery diagnostics if absent.");
+        {
+            var found = _managedConflicts.TryGetValue((worker.WorkerId, executionId), out var observation);
+            version = found ? observation.Version : worker.WorkerVersion;
+            observedAt = found ? observation.Seen : null;
+            evidence = found && _timeProvider.GetUtcNow() - observation.Seen <= _staleAfter &&
+                observation.Version == worker.WorkerVersion ? observation.Candidate : null;
+        }
+        if (evidence is null) return Refuse("No fresh preserved-workspace response from the current original Worker build. Refresh reads Server observations; it does not query the node. Check Worker readiness/capacity, managed configuration and assignment-poll transport, wait for a new poll, then refresh.",
+            reasonCode: observedAt is null ? "recovery-observation-missing" : "recovery-observation-stale");
         if (evidence.ProjectId != source.ProjectId || evidence.WorkerExecutionId != source.WorkerExecutionId || evidence.PreservedCommit is null)
             return Refuse("Original execution identity or exact preserved commit is unavailable; inspect Worker history.", evidence);
         if (evidence.ParentProvenance is { } provenance)
@@ -80,11 +92,11 @@ public sealed partial class SqliteRegistryStore
         command.Parameters.AddWithValue("$source", source.Id);
         if (Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture) != 0)
             return Refuse("Another queued, active, completed or uncertain execution owns this Issue; inspect it first.", evidence);
-        return new(executionId, worker.WorkerId, evidence, true,
+        return new(executionId, worker.WorkerId, evidence, true, Describe(
             evidence.ParentProvenance is null
                 ? "Eligible for one bounded resolution attempt. The Worker rechecks Issue intent, exact workspace identity and current lease before mutation."
-                : "Legacy parent metadata is missing. Complete native GitHub history proves the same parent before assignment. Review the evidence before authorizing one bounded attempt; original history remains unchanged and the Worker rechecks proof and lease before mutation.",
-            evidence.ParentProvenance is null ? null : "issue-parent-metadata-missing");
+                : "Legacy parent metadata is missing. Complete native GitHub history proves the same parent before assignment. Review the evidence before authorizing one bounded attempt; original history remains unchanged and the Worker rechecks proof and lease before mutation."),
+            evidence.ParentProvenance is null ? null : "issue-parent-metadata-missing", version, observedAt);
     }
 
     public async Task<ExecutionRequest> RetryManagedConflictAsync(string executionId, ManagedConflictRetry request, CancellationToken ct = default)

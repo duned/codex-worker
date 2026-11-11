@@ -29,12 +29,23 @@ public sealed partial class GitHubClient
                 var args = new List<string> { "api", "graphql", "-f", $"query={query}", "-f", $"owner={parts[0]}",
                     "-f", $"name={parts[1]}", "-F", $"number={issueNumber.ToString(CultureInfo.InvariantCulture)}" };
                 if (cursor is not null) args.AddRange(["-f", $"after={cursor}"]);
-                var result = await RunGhAsync(args, deadline.Token, allowGracefulCancellation: true);
+                // A read-only, bounded inspection: retain the failing stage before generic gh
+                // wrapping/retries erase it. Never put provider output in the candidate.
+                ProcessResult result;
+                try { result = await runCommand(args, deadline.Token); }
+                catch (InvalidOperationException) { throw ConflictIssueIntent.Refuse("issue-parent-history-process-start"); }
+                if (result.ExitCode != 0)
+                {
+                    if (HasGraphQlErrors(result.StandardOutput))
+                        throw ConflictIssueIntent.Refuse("issue-parent-history-graphql");
+                    throw ConflictIssueIntent.Refuse(ClassifyFailure(result.StandardError) == GitHubFailureKind.AuthenticationOrAuthorization
+                        ? "issue-parent-history-authentication" : "issue-parent-history-process-failed");
+                }
                 using var document = JsonDocument.Parse(result.StandardOutput);
                 var root = document.RootElement;
                 if (root.TryGetProperty("errors", out var errors) &&
                     (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() != 0))
-                    throw ConflictIssueIntent.Refuse("issue-parent-history-unavailable");
+                    throw ConflictIssueIntent.Refuse("issue-parent-history-graphql");
                 var repo = root.GetProperty("data").GetProperty("repository");
                 if (!string.Equals(repo.GetProperty("nameWithOwner").GetString(), repository, StringComparison.OrdinalIgnoreCase))
                     throw ConflictIssueIntent.Refuse("issue-parent-history-incomplete");
@@ -90,10 +101,28 @@ public sealed partial class GitHubClient
         }
         catch (ConflictIntentException) { throw; }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        { throw ConflictIssueIntent.Refuse("issue-parent-history-unavailable"); }
+        { throw ConflictIssueIntent.Refuse("issue-parent-history-timeout"); }
+        catch (ProcessTimeoutException) when (!ct.IsCancellationRequested)
+        { throw ConflictIssueIntent.Refuse("issue-parent-history-timeout"); }
+        catch (GitHubEnvironmentException)
+        { throw ConflictIssueIntent.Refuse("issue-parent-history-environment"); }
         catch (WorkerInfrastructureException) when (!ct.IsCancellationRequested)
-        { throw ConflictIssueIntent.Refuse("issue-parent-history-unavailable"); }
+        { throw ConflictIssueIntent.Refuse("issue-parent-history-process-failed"); }
+        catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception)
+        { throw ConflictIssueIntent.Refuse("issue-parent-history-process-start"); }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
-        { throw ConflictIssueIntent.Refuse("issue-parent-history-incomplete"); }
+        { throw ConflictIssueIntent.Refuse("issue-parent-history-result-invalid"); }
+    }
+
+    private static bool HasGraphQlErrors(string output)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(output);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("errors", out var errors) &&
+                (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() != 0);
+        }
+        catch (JsonException) { return false; }
     }
 }

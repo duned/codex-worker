@@ -15,10 +15,27 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
     private readonly CodexProvisioning.GeneratedMessageOrigin origin;
 
     public GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds, bool requireManagedAuthentication = false)
+        : this(runner, repository, timeoutSeconds, requireManagedAuthentication, null) { }
+
+    internal GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds, bool requireManagedAuthentication,
+        string? authenticationRoot)
         : this(repository, async (arguments, ct) => await runner.RunAsync("gh", arguments,
             Environment.CurrentDirectory, TimeSpan.FromSeconds(timeoutSeconds), ct,
-            environment: await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct,
-                requireManagedAuthentication: requireManagedAuthentication))) { }
+            environment: await GitHubEnvironmentAsync(ct, authenticationRoot, requireManagedAuthentication))) { }
+
+    private sealed class GitHubEnvironmentException() : IOException(
+        "Managed GitHub environment validation failed; inspect service-account setup, ownership and permissions.");
+
+    private static async Task<IReadOnlyDictionary<string, string?>> GitHubEnvironmentAsync(CancellationToken ct,
+        string? root, bool managed)
+    {
+        try { return await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct, root, managed); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // Keep local paths and environment values out of recovery evidence.
+            throw new GitHubEnvironmentException();
+        }
+    }
 
     internal GitHubClient(string repository,
         Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand,
