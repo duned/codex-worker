@@ -421,6 +421,11 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (context.RetryOf.ServerExecutionId is null || isAuthoritative is null)
                 throw new WorkerInfrastructureException("Managed conflict resolution requires an active Server execution lease.");
             await EnsureIntegrationAuthorityAsync(context.Execution, ct);
+            if (context.ResolveIntegrationConflict)
+            {
+                if (github is null) throw new WorkerInfrastructureException("Issue verification is unavailable.");
+                await StandaloneConflictResolution.VerifyIntentAsync(config, github, context.RetryOf, ct);
+            }
             return;
         }
         if (github is null || context.RetryOf.ServerExecutionId is not null ||

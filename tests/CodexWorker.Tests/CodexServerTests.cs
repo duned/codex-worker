@@ -3042,6 +3042,76 @@ public sealed class CodexServerTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task ExplicitManagedConflictRearmsExhaustedBaseOnceWithDurableIdempotencyAndOriginalWorkerLease()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-09-15T00:00:00Z"));
+        var path = Path.Combine(temporary.Path, "explicit-conflict.db");
+        var store = new SqliteRegistryStore(path, timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Recovery", "team/recovery", "main", "", []));
+        var owner = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, owner, "worker", "1.0", "test", 2, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, owner, "1.0", "running", 0, 2, capabilities, []));
+        var original = await store.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "17")));
+        var poll = new WorkerAssignmentRequest(owner, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
+        var first = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(poll)).Assignment);
+        var local = Guid.NewGuid().ToString();
+        await store.ReportExecutionAsync(original.Id, new WorkerExecutionReport(owner, first.AssignmentId, local,
+            "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: first.Lease?.Generation ?? 0));
+        var candidate = new CodexProvisioning.IntegrationRecoveryCandidate(project.Id, original.Id, local,
+            new string('a', 40), PreservedCommit: new string('b', 40));
+        poll = poll with { IntegrationRecoveries = [candidate] };
+        var automatic = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(poll)).Assignment);
+        await store.ReportExecutionAsync(automatic.ServerExecutionId, new WorkerExecutionReport(owner, automatic.AssignmentId,
+            Guid.NewGuid().ToString(), "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: automatic.Lease?.Generation ?? 0));
+        candidate = candidate with { AutomaticRetryExhausted = true };
+        poll = poll with { IntegrationRecoveries = [candidate] };
+        Assert.False((await store.RequestAssignmentAsync(poll)).HasWork);
+        var preview = await store.InspectManagedConflictAsync(original.Id);
+        Assert.True(preview.Eligible, preview.Reason);
+        var request = new ManagedConflictRetry(Guid.NewGuid().ToString("N"), owner, candidate);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RetryManagedConflictAsync(original.Id,
+            request with { Candidate = candidate with { PreservedCommit = new string('c', 40) } }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RetryManagedConflictAsync(original.Id,
+            request with { WorkerId = Guid.NewGuid().ToString("N") }));
+        var duplicates = await Task.WhenAll(store.RetryManagedConflictAsync(original.Id, request), store.RetryManagedConflictAsync(original.Id, request));
+        var retry = duplicates[0];
+        Assert.Equal(retry.Id, duplicates[1].Id);
+        Assert.Equal(3, retry.AttemptNumber);
+        Assert.Equal(original.Id, retry.RetryOfExecutionId);
+        Assert.Equal("Queued", retry.State);
+        Assert.Equal(retry.Id, (await store.RetryManagedConflictAsync(original.Id, request)).Id);
+        Assert.False((await store.InspectManagedConflictAsync(original.Id)).Eligible);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RetryManagedConflictAsync(original.Id,
+            request with { OperationId = Guid.NewGuid().ToString("N") }));
+        var restarted = new SqliteRegistryStore(path, timeProvider: clock);
+        await restarted.InitializeAsync();
+        Assert.Equal(retry.Id, (await restarted.RetryManagedConflictAsync(original.Id, request)).Id);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => restarted.RetryManagedConflictAsync(original.Id,
+            request with { WorkerId = Guid.NewGuid().ToString("N") }));
+        var assigned = Assert.IsType<WorkAssignment>((await restarted.RequestAssignmentAsync(poll)).Assignment);
+        Assert.Equal(retry.Id, assigned.ServerExecutionId);
+        Assert.Equal(owner, assigned.WorkerId);
+        Assert.NotEqual(first.AssignmentId, assigned.AssignmentId);
+        Assert.NotNull(assigned.Lease);
+        Assert.Equal("Active", assigned.Lease.State);
+        Assert.Equal(request.OperationId, assigned.Metadata["explicitIntegrationRecovery"]);
+        Assert.Equal(candidate.PreservedCommit, assigned.Metadata["preservedCommit"]);
+        await restarted.ReportExecutionAsync(retry.Id, new WorkerExecutionReport(owner, assigned.AssignmentId,
+            Guid.NewGuid().ToString(), "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: assigned.Lease.Generation));
+        // Explicit retry never erases the automatic fingerprint.
+        Assert.False((await restarted.RequestAssignmentAsync(poll)).HasWork);
+        Assert.True((await restarted.InspectManagedConflictAsync(original.Id)).Eligible);
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.False((await restarted.InspectManagedConflictAsync(original.Id)).Eligible);
+        Assert.Equal(retry.Id, (await restarted.RetryManagedConflictAsync(original.Id, request)).Id);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

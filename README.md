@@ -9,6 +9,7 @@ Start with the [operator guide](docs/operations.md) to choose standalone or Serv
 - [Updates](docs/self-update.md): supported product commands and automation contracts.
 - [Server administration](docs/server-local-administration.md) and [Worker administration](docs/worker-local-administration.md): configuration, credentials, provisioning and diagnostics.
 - [Remote MCP](docs/server-mcp.md): Server inspection, managed controls, WET relationships, Issue planning, bearer authentication and supported client setup.
+- [Managed conflict retry](docs/managed-conflict-retry.md): explicitly request a bounded retry of preserved managed work.
 - [Execution maintenance](docs/execution-maintenance.md): drain, inspect and safely recover retained work.
 
 Contributors: [development](docs/development.md), [engineering instructions](AGENTS.md), [dashboard design](docs/dashboard-design-guide.md), [release packaging](docs/release-packaging.md), [changelog](CHANGELOG.md), and [documentation inventory](docs/documentation-inventory.md).

@@ -213,6 +213,10 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 !allHistory.Any(parent => parent.ExecutionId == entry.RetryOfExecutionId &&
                     parent.State == "IntegrationConflict" && parent.FeatureBranch == entry.FeatureBranch))
                 .OrderByDescending(entry => entry.StartedAtUtc).ToArray();
+            var managedExplicit = !string.IsNullOrEmpty(assignment?.Metadata.GetValueOrDefault("explicitIntegrationRecovery"));
+            if (managedExplicit && (assignment?.Metadata.GetValueOrDefault("explicitIntegrationRecovery") != assignment?.ServerExecutionId ||
+                assignment?.ServerExecutionId == assignment?.Metadata.GetValueOrDefault("originalServerExecutionId")))
+                throw new WorkerInfrastructureException("Explicit recovery requires a distinct Server execution authorization.");
             var source = resolveExecutionId is { } exactId ? prior.SingleOrDefault(entry => entry.ExecutionId == exactId) : prior.FirstOrDefault();
             // Recovery attempts use their original worktree, not a workspace named for the new history row.
             // A later implementation or completion supersedes older conflicts.
@@ -304,7 +308,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 integrationBase = rejectionReason is null ? await git.GetIntegrationBaseAsync(ct) : null;
             }
             finally { _repositoryGate.Release(); }
-            if (!explicitRecovery && source.IntegrationRecoveryAttemptBase == integrationBase && integrationBase is not null)
+            if (!explicitRecovery && !managedExplicit && source.IntegrationRecoveryAttemptBase == integrationBase && integrationBase is not null)
             {
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
@@ -332,7 +336,10 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             // inspection-required recovery row in the preserved workspace.
             // New attempts still verify the selected workspace owner before any claim or mutation.
             if (resolveIntegrationConflict)
-                await VerifyConflictResolutionAsync(source, allHistory, ct);
+                await VerifyConflictResolutionAsync(source, allHistory, ct, managed: managedExplicit);
+            if (managedExplicit && (assignment?.Metadata.GetValueOrDefault("preservedCommit") != source.RecoveryBaseCommit ||
+                assignment?.Metadata.GetValueOrDefault("integrationBase") != integrationBase))
+                throw new InvalidOperationException("Preserved commit or integration base changed since preview; inspect again.");
             _operationalLog($"Integration recovery discovered · {config.Project.Name} · Issue #{issue.Number} · original execution {source.ExecutionId}");
             source = source with { RecoveryBaseCommit = source.RecoveryBaseCommit ?? source.CommitSha };
             issue = await PrepareCommentContextAsync(issue, ct);
@@ -344,6 +351,12 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 resumed: true, serverExecutionId: assignment?.ServerExecutionId, assignmentId: assignment?.AssignmentId,
                 ownershipGeneration: assignment?.Lease?.Generation);
             execution.CodexRecovery = source.CodexRecovery;
+            if (managedExplicit)
+            {
+                execution.ConflictRecoveryLease = assignment?.Lease;
+                if (!await IsAuthoritativeAsync(execution, ct))
+                    throw new WorkerInfrastructureException("Explicit recovery lease is no longer current; workspace preserved.");
+            }
             if (execution.ParentIssueNumber == source.ParentIssueNumber)
             {
                 execution.CodexThreadId = source.CodexThreadId;
@@ -355,7 +368,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                         RecoveryStatus = resolveExecutionId is not null
                             ? $"Operator authorized conflict resolution for execution {source.ExecutionId}."
                             : resolveIntegrationConflict ? $"Automatic standalone conflict resolution for execution {source.ExecutionId}." : null
-                    }, integrationBase ?? "explicit", explicitRecovery, ct))
+                    }, integrationBase ?? "explicit", explicitRecovery || managedExplicit, ct))
             {
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
@@ -394,9 +407,19 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     public async Task<IReadOnlyList<CodexProvisioning.IntegrationRecoveryCandidate>> DiscoverManagedIntegrationRecoveriesAsync(
         string projectId, CancellationToken ct)
     {
-        var candidates = (await IntegrationRecovery.DiscoverManagedAsync(projectId, ct)).ToList();
+        var candidates = (await IntegrationRecovery.DiscoverManagedAsync(projectId, ct)).Select(candidate => candidate with
+        {
+            RefusalReason = candidate.RefusalReason ?? (!config.Git.AutoMerge ? "Enable git.autoMerge before conflict resolution." :
+                config.Validation.MaxFixAttempts < 1 ? "A positive validation repair budget is required." : null)
+        }).ToList();
         if (history is null) return candidates;
         var entries = await history.ReadAllAsync(ct);
+        candidates = candidates.Select(candidate => candidate with
+        {
+            RefusalReason = candidate.RefusalReason ?? (entries.FirstOrDefault(entry => entry.ExecutionId.ToString() == candidate.WorkerExecutionId) is { } source &&
+                !(engines ?? new ImplementationEngineSelector(settings: config.Codex)).IsAvailable(source.Engine)
+                    ? "The original implementation engine is unavailable." : null)
+        }).ToList();
         foreach (var entry in entries.Where(entry => entry.Project == config.Project.Name && entry.Repository == config.Project.Repository &&
                      entry.RecoveryState == "codex-interrupted" && entry.ServerExecutionId is not null &&
                      !_activeIssues.ContainsKey(entry.IssueNumber) && !entries.Any(other => other.Project == entry.Project &&
@@ -440,6 +463,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     public async Task<Task<IssueProcessingResult?>?> ClaimAssignedAsync(WorkerAssignmentContract assignment, CancellationToken ct)
     {
         if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
+            lease.ExpiresAtUtc <= _clock.GetUtcNow() ||
             !string.Equals(lease.ExecutionId, assignment.ServerExecutionId, StringComparison.Ordinal) ||
             !string.Equals(lease.WorkerId, assignment.WorkerId, StringComparison.Ordinal) ||
             lease.ExpiresAtUtc <= lease.AcquiredAtUtc || lease.RenewalIntervalSeconds is < 10 or > 3600 ||
@@ -454,11 +478,15 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             ?? throw new WorkerInfrastructureException($"Assigned GitHub Issue #{issueNumber} could not be found.");
         if (assignment.Metadata.TryGetValue("integrationRecoveryExecutionId", out var recoveryId))
         {
+            if (!string.IsNullOrEmpty(assignment.Metadata.GetValueOrDefault("explicitIntegrationRecovery")) && history is not null &&
+                (await history.ReadAllAsync(ct)).Any(entry => entry.ServerExecutionId == assignment.ServerExecutionId))
+                return null; // Durable assignment replay, including terminal/uncertain attempts, never re-runs a resolver.
             if (!Guid.TryParse(recoveryId, out var id) || history is null ||
                 !(await history.ReadAllAsync(ct)).Any(entry => entry.ExecutionId == id && entry.IssueNumber == issueNumber &&
                     entry.Project == config.Project.Name && entry.Repository == config.Project.Repository))
                 throw new WorkerInfrastructureException("Recovery assignment does not match local preserved execution ownership.");
-            return await ClaimIntegrationRecoveryAsync(issue, ct, explicitRecovery: false, assignment: assignment);
+            return await ClaimIntegrationRecoveryAsync(issue, ct, explicitRecovery: false, assignment: assignment,
+                resolveExecutionId: !string.IsNullOrEmpty(assignment.Metadata.GetValueOrDefault("explicitIntegrationRecovery")) ? id : null);
         }
         if (assignment.Metadata.ContainsKey("codexRecoveryExecutionId"))
             return await ClaimCodexRecoveryAsync(assignment, ct);
@@ -963,6 +991,13 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
 
     private async Task<bool> IsAuthoritativeAsync(WorkerExecution execution, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (execution.ConflictRecoveryLease is { } lease)
+        {
+            if (serverSettings?.Enabled != true ||
+                await _registration.RenewExecutionLeaseAsync(serverSettings, lease, ct) is not { } expiry || expiry <= _clock.GetUtcNow())
+                return false;
+        }
         if (!await github.IsIssueOpenAsync(execution.IssueNumber, ct)) return false;
         if (history is null) return true;
         var sameIssue = (await history.ReadAllAsync(ct)).Where(entry =>

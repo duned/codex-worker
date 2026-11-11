@@ -18,6 +18,7 @@ import { executionStageLabel, executionEngineLabel, archiveApplyAllowed, attenti
 import { IssueTitle } from '../projects/IssueTitle';
 import { ExecutionMaintenancePage } from './ExecutionMaintenancePage';
 import { ExecutionTable, stateTone } from './ExecutionTable';
+import { ManagedConflictRecovery } from './ManagedConflictRecovery';
 
 export function ExecutionsPage() {
   useLanguage();
@@ -193,6 +194,7 @@ function ExecutionDetail({ id, search }: { id: string; search: string }) {
           </div>
           <p className="mt-4 text-xs text-tertiary">{t('executions.detailedEvidenceShownOnlyWhenReturnedByApi')}</p>
         </section>
+        {item.failureClassification === 'IntegrationConflict' && <ManagedConflictRecovery key={item.id} item={item} />}
         <ManagedMaintenance item={item} worker={assignedWorker} workerLoading={workerRead.loading} workerUnavailable={!!workerRead.error}
           workerNode={nodeRead.data?.find(value => value.id === item.assignedWorkerId)} onReconcile={() => select('reconcile')} />
       </>}

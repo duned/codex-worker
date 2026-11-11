@@ -109,6 +109,7 @@ internal sealed class IntegrationRecoveryCoordinator(WorkerConfiguration config,
             {
                 reason = await ValidateSourceAsync(source, ct);
                 integrationBase = reason is null ? await git.GetIntegrationBaseAsync(ct) : null;
+                reason ??= await git.InspectExecutionProcessesAsync(source, ct);
             }
             finally { repositoryGate.Release(); }
             if (reason is not null || integrationBase is null)
@@ -117,8 +118,15 @@ internal sealed class IntegrationRecoveryCoordinator(WorkerConfiguration config,
                     reason ?? "the authoritative integration base could not be identified", ct);
                 continue;
             }
-            if (source.IntegrationRecoveryAttemptBase == integrationBase) continue;
-            candidates.Add(new(projectId, source.ServerExecutionId, source.ExecutionId.ToString(), integrationBase));
+            var refusal = StandaloneConflictResolution.Refusal(source, entries, managed: true);
+            if (refusal is null)
+            {
+                try { await StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct); }
+                catch (WorkerInfrastructureException ex) { refusal = ex.Message; }
+            }
+            candidates.Add(new(projectId, source.ServerExecutionId, source.ExecutionId.ToString(), integrationBase,
+                AutomaticRetryExhausted: source.IntegrationRecoveryAttemptBase == integrationBase,
+                PreservedCommit: source.RecoveryBaseCommit, RefusalReason: refusal));
             if (candidates.Count == 128) break;
         }
         return candidates;

@@ -3185,6 +3185,103 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, (await history.ReadAllAsync()).Count);
     }
 
+    [Theory]
+    [InlineData("success")]
+    [InlineData("failed")]
+    [InlineData("cancelled")]
+    [InlineData("stale-lease")]
+    [InlineData("changed-intent")]
+    [InlineData("changed-commit")]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task ExplicitManagedConflictUsesFreshLeaseAndPreservedIntentWithoutImplementationReplay(string scenario)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var source = PreservedConflict() with { ServerExecutionId = Guid.NewGuid().ToString("N"),
+            AssignmentId = Guid.NewGuid().ToString("N"), OwnershipGeneration = 1,
+            OriginalIssueBody = h.GitHub.Issue.Body, IntegrationRecoveryAttemptBase = "current-main" };
+        await history.CreateAsync(source);
+        var now = DateTimeOffset.UtcNow;
+        var serverId = Guid.NewGuid().ToString("N");
+        var identity = Path.Combine(Path.GetDirectoryName(database.Path) ?? "", "identity");
+        var workerId = await WorkerIdentity.LoadOrCreateAsync(identity);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(identity);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = identity };
+        var lease = new ServerExecutionLeaseContract(serverId, workerId, 3, now, now.AddMinutes(5), "Active");
+        using var handler = new ConflictRecoveryHandler(lease) { RejectLease = scenario == "stale-lease" };
+        using var client = new HttpClient(handler);
+        var worker = new Worker(h.Worker.Configuration, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram,
+            history: history, serverSettings: settings, registrationClient: new WorkerRegistrationClient(client));
+        var candidates = await worker.DiscoverManagedIntegrationRecoveriesAsync("project", CancellationToken.None);
+        var candidate = Assert.Single(candidates);
+        Assert.True(candidate.AutomaticRetryExhausted);
+        Assert.Null(candidate.RefusalReason);
+        var assignment = new WorkerAssignmentContract(Guid.NewGuid().ToString("N"), serverId,
+            new("project", source.Project, source.Repository, source.BaseBranch, "", [], 1, now, now),
+            new("github-issue", "17"), workerId, new Dictionary<string, string>
+            {
+                ["integrationRecoveryExecutionId"] = source.ExecutionId.ToString(),
+                ["originalServerExecutionId"] = source.ServerExecutionId,
+                ["explicitIntegrationRecovery"] = serverId,
+                ["preservedCommit"] = scenario == "changed-commit" ? "other-commit" : source.RecoveryBaseCommit ?? "",
+                ["integrationBase"] = "current-main"
+            }, lease);
+        h.Git.RequestConflictResolution = true;
+        h.Codex.ConflictAction = () =>
+        {
+            if (scenario == "cancelled") { h.Cancellation.Cancel(); h.Cancellation.Token.ThrowIfCancellationRequested(); }
+            if (scenario == "changed-intent") h.GitHub.Issue = h.GitHub.Issue with { Body = "new intent" };
+            return new CodexOutcome(scenario == "failed" ? "failed" : "success", "resolution", [], false, null);
+        };
+        async Task<IssueProcessingResult?> RunAsync()
+        {
+            var task = await worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
+            return task is null ? null : await task;
+        }
+        if (scenario is "success" or "failed")
+            Assert.Equal(scenario == "success" ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict, (await RunAsync())?.Kind);
+        else await Assert.ThrowsAnyAsync<Exception>(RunAsync);
+        Assert.Empty(h.Codex.Issues);
+        Assert.Equal(scenario is "stale-lease" or "changed-commit" ? 0 : 1, h.Codex.ConflictResolutions);
+        if (scenario == "success")
+        {
+            Assert.True(h.Validation.Calls > 0);
+            Assert.Contains(handler.Reports, report => report.State == "Completed" && report.Generation == 3);
+        }
+        else
+        {
+            Assert.False(h.GitHub.Closed);
+            Assert.DoesNotContain("working->done", h.GitHub.Labels);
+        }
+        if (scenario is "success" or "failed")
+        {
+            // A redelivered assignment after either outcome cannot re-run resolution, even on restart.
+            Assert.Null(await worker.ClaimAssignedAsync(assignment, CancellationToken.None));
+            var restarted = new Worker(h.Worker.Configuration, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram,
+                history: history, serverSettings: settings, registrationClient: new WorkerRegistrationClient(client));
+            Assert.Null(await restarted.ClaimAssignedAsync(assignment, CancellationToken.None));
+            Assert.Equal(1, h.Codex.ConflictResolutions);
+        }
+    }
+
+    private sealed class ConflictRecoveryHandler(ServerExecutionLeaseContract lease) : HttpMessageHandler
+    {
+        internal bool RejectLease { get; init; }
+        internal List<WorkerExecutionReportContract> Reports { get; } = [];
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/lease/renew", StringComparison.Ordinal) == true)
+                return new(RejectLease ? System.Net.HttpStatusCode.Conflict : System.Net.HttpStatusCode.OK)
+                { Content = System.Net.Http.Json.JsonContent.Create(lease) };
+            var report = await System.Net.Http.Json.HttpContentJsonExtensions.ReadFromJsonAsync<WorkerExecutionReportContract>(
+                request.Content ?? throw new InvalidOperationException("Missing report"), cancellationToken);
+            Reports.Add(report ?? throw new InvalidOperationException("Empty report"));
+            return new(System.Net.HttpStatusCode.OK);
+        }
+    }
+
     private static ExecutionHistoryEntry PreservedConflict() => new(Guid.NewGuid(), "Test Project", "owner/repo", 17,
         "Example task", "feature/example-task-17", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
         "IntegrationConflict", 1000, "Original implementation intent", "passed", 0, [], "preserved-head", "main", null,

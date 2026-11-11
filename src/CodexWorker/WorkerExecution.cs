@@ -65,6 +65,7 @@ public sealed class WorkerExecution
     public string? ServerExecutionId { get; }
     public string? AssignmentId { get; }
     public long? OwnershipGeneration { get; }
+    internal ServerExecutionLeaseContract? ConflictRecoveryLease { get; set; }
     public CodexExecutionProfile? CodexProfile { get; private set; }
     public CodexInterruptionRecovery? CodexRecovery { get; internal set; }
     public string? MetadataError { get; private set; }

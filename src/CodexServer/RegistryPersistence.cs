@@ -63,6 +63,8 @@ public interface IRegistryStore
     Task<IReadOnlyList<ExecutionRequest>> ListQueuedByIssueAsync(string projectId, string issueNumber,
         CancellationToken cancellationToken = default);
     Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default);
+    Task<ManagedConflictPreview> InspectManagedConflictAsync(string executionId, CancellationToken ct = default);
+    Task<ExecutionRequest> RetryManagedConflictAsync(string executionId, ManagedConflictRetry request, CancellationToken ct = default);
     Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ExecutionRequest>> ListExecutionsAsync(ExecutionQuery query, CancellationToken cancellationToken = default);
     Task<ExecutionRequest?> GetExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
@@ -1092,7 +1094,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             request.ProjectCapacities.Any(p => !Printable(p.Key, 80) || p.Value is < 0 or > 8) ||
             request.IntegrationRecoveries is { Count: > 128 } || request.IntegrationRecoveries?.Any(item => item is null ||
                 !Printable(item.ProjectId, 80) || !Guid.TryParse(item.ServerExecutionId, out _) ||
-                item.Kind is not ("Integration" or "Codex") || !Guid.TryParse(item.WorkerExecutionId, out _) || item.IntegrationBase is null || !Regex.IsMatch(item.IntegrationBase, "^(?:[0-9a-f]{40}|[0-9a-f]{64})$")) == true)
+                item.PreservedCommit is not null && !ValidRecoveryCommit(item.PreservedCommit) ||
+                item.RefusalReason is { Length: > 2000 } || item.Kind is not ("Integration" or "Codex") || !Guid.TryParse(item.WorkerExecutionId, out _) || !ValidRecoveryCommit(item.IntegrationBase)) == true)
             throw new InvalidDataException("Worker assignment request contract is invalid.");
         if (!request.WorkerEnabled) return NoAssignment("worker-disabled-or-no-capacity");
         if (request.AvailableCapacity == 0) return NoAssignment("worker-capacity");
@@ -1177,6 +1180,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         var workerCapabilities = heartbeat.Capabilities ?? registration?.Capabilities ?? [];
         var projects = await ReadProjectsByIdAsync(command, cancellationToken);
 
+        ObserveManagedConflicts(request);
         var recoveryRejections = await QueueIntegrationRecoveriesAsync(command, request, projects, cancellationToken);
         var issueReservations = new Dictionary<(string ProjectId, string WorkType, string WorkId), string>();
         command.Parameters.Clear();
@@ -1338,11 +1342,12 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
     }
 
     private async Task<IReadOnlyDictionary<string, string>> QueueIntegrationRecoveriesAsync(SqliteCommand command, WorkerAssignmentRequest request,
-        IReadOnlyDictionary<string, CentralProject> projects, CancellationToken ct)
+        IReadOnlyDictionary<string, CentralProject> projects, CancellationToken ct, string? explicitOperationId = null)
     {
         var rejections = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var recovery in request.IntegrationRecoveries ?? [])
         {
+            if (explicitOperationId is null && recovery.AutomaticRetryExhausted) continue;
             if (!request.ProjectCapacities.TryGetValue(recovery.ProjectId, out var capacity) || capacity <= 0 ||
                 !projects.TryGetValue(recovery.ProjectId, out var project) || !project.Enabled) continue;
             if (recovery.Kind == "Codex")
@@ -1359,9 +1364,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                     AND NOT EXISTS (SELECT 1 FROM execution_requests other WHERE other.project_id=source.project_id
                         AND other.work_id=source.work_id AND (other.state IN ('Queued','Assigned','Running','Completed')
                             OR other.recovery_state='LeaseExpiredUncertain'))
-                    AND NOT EXISTS (SELECT 1 FROM execution_metadata metadata WHERE metadata.state='IntegrationRecovery'
+                    AND ($explicit=1 OR NOT EXISTS (SELECT 1 FROM execution_metadata metadata WHERE metadata.state='IntegrationRecovery'
                         AND CASE WHEN json_valid(metadata.metadata_json) THEN COALESCE(json_extract(metadata.metadata_json,'$.integrationRecoveryExecutionId'),json_extract(metadata.metadata_json,'$.codexRecoveryExecutionId')) END=$local
-                        AND ($kind='Codex' OR CASE WHEN json_valid(metadata.metadata_json) THEN json_extract(metadata.metadata_json,'$.integrationBase') END=$base))
+                        AND ($kind='Codex' OR CASE WHEN json_valid(metadata.metadata_json) THEN json_extract(metadata.metadata_json,'$.integrationBase') END=$base)))
                 """;
             command.Parameters.AddWithValue("$source", recovery.ServerExecutionId);
             command.Parameters.AddWithValue("$project", recovery.ProjectId);
@@ -1369,6 +1374,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             command.Parameters.AddWithValue("$local", recovery.WorkerExecutionId);
             command.Parameters.AddWithValue("$base", recovery.IntegrationBase);
             command.Parameters.AddWithValue("$kind", recovery.Kind);
+            command.Parameters.AddWithValue("$explicit", explicitOperationId is not null);
             command.Parameters.AddWithValue("$classification", recovery.Kind == "Codex" ? "CodexInterruption" : "IntegrationConflict");
             string type, workId, workJson;
             int attempt;
@@ -1395,7 +1401,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 }
                 type = reader.GetString(0); workId = reader.GetString(1); workJson = reader.GetString(2); attempt = reader.GetInt32(3) + 1;
             }
-            var id = Guid.NewGuid().ToString("N");
+            var id = explicitOperationId ?? Guid.NewGuid().ToString("N");
             var now = _timeProvider.GetUtcNow().ToString("O");
             command.Parameters.Clear();
             command.CommandText = """
@@ -1415,12 +1421,19 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             command.Parameters.AddWithValue("$attempt", attempt);
             command.Parameters.AddWithValue("$worker", request.WorkerId);
             command.Parameters.AddWithValue("$workspaceRecovery", recovery.Kind == "Codex" ? "PreservedCodexImplementation" : "PreservedIntegrationImplementation");
-            command.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(new Dictionary<string, string>
+            var metadata = new Dictionary<string, string>
             {
                 [recovery.Kind == "Codex" ? "codexRecoveryExecutionId" : "integrationRecoveryExecutionId"] = recovery.WorkerExecutionId,
                 ["integrationBase"] = recovery.IntegrationBase,
                 ["originalServerExecutionId"] = recovery.ServerExecutionId
-            }));
+            };
+            if (explicitOperationId is not null)
+            {
+                metadata["preservedCommit"] = recovery.PreservedCommit ?? "";
+                metadata["explicitIntegrationRecovery"] = explicitOperationId;
+                metadata["explicitRecoveryCandidate"] = JsonSerializer.Serialize(recovery);
+            }
+            command.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(metadata));
             await command.ExecuteNonQueryAsync(ct);
         }
         return rejections;

@@ -1126,6 +1126,20 @@ public static partial class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (ExecutionRequestReconciliationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
+        app.MapGet("/api/v1/executions/{executionRequestId}/conflict-recovery", async (string executionRequestId,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            return Results.Ok(await store.InspectManagedConflictAsync(executionRequestId, context.RequestAborted));
+        });
+        app.MapPost("/api/v1/executions/{executionRequestId}/conflict-recovery", async (string executionRequestId,
+            ManagedConflictRetry request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            try { return Results.Ok(await store.RetryManagedConflictAsync(executionRequestId, request, context.RequestAborted)); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
         MapExecutionMaintenance(app);
         MapWorkerUpdates(app);
         MapWorkerJournal(app);

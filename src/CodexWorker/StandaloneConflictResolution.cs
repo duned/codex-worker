@@ -1,12 +1,14 @@
 namespace CodexWorker;
 
-/// <summary>Local operator authorization is separate from normal integration recovery labels.</summary>
+/// <summary>Shared preserved-conflict inspection. Local authorization remains separate from Server assignments.</summary>
 internal static class StandaloneConflictResolution
 {
-    internal static string? Refusal(ExecutionHistoryEntry source, IReadOnlyList<ExecutionHistoryEntry> entries)
+    internal static string? Refusal(ExecutionHistoryEntry source, IReadOnlyList<ExecutionHistoryEntry> entries, bool managed = false)
     {
-        if (source.ServerExecutionId is not null || source.AssignmentId is not null || source.OwnershipGeneration is not null)
+        if (!managed && (source.ServerExecutionId is not null || source.AssignmentId is not null || source.OwnershipGeneration is not null))
             return "Managed execution requires Server reconciliation.";
+        if (managed && (source.ServerExecutionId is null || source.AssignmentId is null || source.OwnershipGeneration is not > 0))
+            return "Original managed assignment and lease identity are required.";
         if (source.CompletedAtUtc is null || source.State != "IntegrationConflict" || source.RecoveryState != "integration-conflict" ||
             source.RecoveryBaseCommit is null || source.OriginalIssueBody is null || source.CompletionJson is not null ||
             source.ReportingFailure is not null || source.IntegrationRecoveryClaim is not null || source.AttemptNumber < 1)
@@ -20,7 +22,8 @@ internal static class StandaloneConflictResolution
             other.BaseBranch == source.BaseBranch && other.Engine == source.Engine &&
             other.CompletedAtUtc is not null && other.ReportingFailure is null &&
             other.IntegrationRecoveryClaim is null &&
-            other.ServerExecutionId is null && other.AssignmentId is null && other.OwnershipGeneration is null;
+            (managed ? other.ServerExecutionId is not null && other.AssignmentId is not null && other.OwnershipGeneration > 0
+                : other.ServerExecutionId is null && other.AssignmentId is null && other.OwnershipGeneration is null);
         if (entries.Any(other => other.ExecutionId != source.ExecutionId && other.Repository == source.Repository &&
             (other.CompletedAtUtc is null || other.IssueNumber == source.IssueNumber &&
                 (other.State == "Completed" || other.IntegrationRecoveryClaim is not null ||
@@ -53,10 +56,10 @@ public sealed partial class Worker
         StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct);
 
     private async Task VerifyConflictResolutionAsync(ExecutionHistoryEntry source,
-        IReadOnlyList<ExecutionHistoryEntry> entries, CancellationToken ct)
+        IReadOnlyList<ExecutionHistoryEntry> entries, CancellationToken ct, bool managed = false)
     {
-        if (serverSettings?.Enabled == true) throw new InvalidOperationException("Standalone conflict resolution only.");
-        if (StandaloneConflictResolution.Refusal(source, entries) is { } reason) throw new InvalidOperationException(reason);
+        if (!managed && serverSettings?.Enabled == true) throw new InvalidOperationException("Standalone conflict resolution only.");
+        if (StandaloneConflictResolution.Refusal(source, entries, managed) is { } reason) throw new InvalidOperationException(reason);
         if (!(engines ?? new ImplementationEngineSelector(settings: config.Codex)).IsAvailable(source.Engine))
             throw new InvalidOperationException("Persisted implementation engine is unavailable.");
         if (!config.Git.AutoMerge) throw new InvalidOperationException("Conflict resolution requires the configured automatic integration lifecycle (git.autoMerge).");
