@@ -360,9 +360,12 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    [Fact]
-    public async Task RestartReconcilesIncompleteImplementationWithoutDiscardingChangesOrResettingBudget()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RestartReconcilesIncompleteImplementationWithoutDiscardingChangesOrResettingBudget(bool parkedContext)
     {
+        if (parkedContext && !OperatingSystem.IsLinux()) return;
         using var fixture = await seed.CreateAsync();
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../restart-history.db"));
         var config = new WorkerConfiguration { Project = new() { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout } };
@@ -376,9 +379,13 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
             await File.WriteAllTextAsync(Path.Combine(workspace, "partial.txt"), "preserved after abrupt exit");
             var snapshot = Assert.IsType<GitRecoveryInfo>(await original.InspectExecutionWorkspaceAsync(CancellationToken.None));
             await history.CreateAsync(new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
-                snapshot.Branch, "main", DateTimeOffset.UnixEpoch, null, "Implementing", null, null, null, 0, [], null, null, null, null,
-                RecoveryBaseCommit: snapshot.BaseCommit, OriginalIssueBody: fixture.Issue.Body, EffectiveEffort: "medium",
-                CodexRecovery: new(id, 1, 2, CodexInterruptionRecovery.Fingerprint(config), Guid.NewGuid().ToString())));
+                snapshot.Branch, "main", DateTimeOffset.UnixEpoch, parkedContext ? DateTimeOffset.UnixEpoch.AddMinutes(1) : null,
+                parkedContext ? "InfrastructureFailure" : "Implementing", null, null, null, 0, [], null, null, null,
+                parkedContext ? "Codex context limit: Model context window exhausted" : null,
+                RecoveryState: parkedContext ? "uncertain" : null,
+                RecoveryBaseCommit: parkedContext ? null : snapshot.BaseCommit, OriginalIssueBody: fixture.Issue.Body, EffectiveEffort: "medium",
+                CodexRecovery: new(id, 1, 2, CodexInterruptionRecovery.Fingerprint(config), Guid.NewGuid().ToString(),
+                    ProcessScope: await InterruptedWorkspaceProcesses.ReadScopeAsync(CancellationToken.None))));
         }
         using var restarted = fixture.CreateRepository(config.Git);
         await restarted.InitializeAsync(CancellationToken.None);

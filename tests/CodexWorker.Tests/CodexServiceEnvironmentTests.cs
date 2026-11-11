@@ -8,11 +8,12 @@ public sealed class CodexServiceEnvironmentTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Theory]
-    [InlineData(true, false, true)]
-    [InlineData(false, false, true)]
-    [InlineData(true, true, true)]
-    [InlineData(false, false, false)]
-    public async Task RecoveryResumesExplicitSessionOrContinuesSameWorkspaceWhenUnavailable(bool supported, bool missing, bool recovering)
+    [InlineData(true, false, true, false)]
+    [InlineData(true, false, true, true)]
+    [InlineData(false, false, true, false)]
+    [InlineData(true, true, true, false)]
+    [InlineData(false, false, false, false)]
+    public async Task RecoveryResumesExplicitSessionOrContinuesSameWorkspaceWhenUnavailable(bool supported, bool missing, bool recovering, bool contextExhausted)
     {
         if (OperatingSystem.IsWindows()) return;
         var directory = CreateDirectory();
@@ -50,7 +51,7 @@ public sealed class CodexServiceEnvironmentTests
             var issue = new GitHubIssue(1, "Original Issue", "Original intent", DateTimeOffset.UnixEpoch);
             var source = new ExecutionHistoryEntry(Guid.NewGuid(), "project", "owner/repo", 1, issue.Title, "feature/task", "main",
                 DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "InfrastructureFailure", 1, null, null, 0, [], null, null, null,
-                "usage limit", RecoveryState: "codex-interrupted", CodexRecovery: new(Guid.NewGuid(), 1, 0, "fingerprint", session));
+                contextExhausted ? "Codex context limit: Model context window exhausted" : "usage limit", RecoveryState: "codex-interrupted", CodexRecovery: new(Guid.NewGuid(), 1, 0, "fingerprint", session));
             var observed = new List<string>();
             var executor = new CodexExecutor(new ProcessRunner(), new CodexSettings { Model = "original-model", ReasoningEffort = "high" })
                 .WithSessionObserver(id => { observed.Add(id); return Task.CompletedTask; });
@@ -58,8 +59,8 @@ public sealed class CodexServiceEnvironmentTests
             Assert.Equal("success", result.Status);
             Assert.Equal(session, Assert.Single(observed));
             var arguments = await File.ReadAllLinesAsync(executable + ".args");
-            Assert.Equal(supported, arguments.Contains("resume", StringComparer.Ordinal));
-            if (supported) Assert.Contains(session, arguments);
+            Assert.Equal(supported && !contextExhausted, arguments.Contains("resume", StringComparer.Ordinal));
+            if (supported && !contextExhausted) Assert.Contains(session, arguments);
             Assert.Contains("original-model", arguments);
             Assert.Contains("model_reasoning_effort=\"high\"", arguments);
             if (recovering) Assert.Contains("SAME preserved worktree", string.Join("\n", arguments), StringComparison.Ordinal);

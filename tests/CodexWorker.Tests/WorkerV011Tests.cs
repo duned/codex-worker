@@ -237,6 +237,75 @@ public sealed class WorkerV011Tests
         Assert.Equal(id, preserved.ExecutionId);
         Assert.Equal("codex-recovery-inspection-required", preserved.RecoveryState);
         Assert.Contains(reason, h.Output.ToString(), StringComparison.Ordinal);
+        Assert.Contains(reason, preserved.FailureReason, StringComparison.Ordinal);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ContextExhaustionContinuesPreservedWorkWithBoundedAttempts(bool managed)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var clock = new RecoveryClock();
+        using var h = new Harness(history: history, timeProvider: clock);
+        h.GitHub.CancelWhenEmpty = false;
+        h.Git.Snapshot = new("feature/example-task-17", "base-sha", "preserved changes");
+        var failure = CodexFailure.Classify("context_length_exceeded");
+        h.Codex.InitialException = new CodexExecutionInfrastructureException(failure.Category, failure.Summary)
+            { Recoverable = failure.Recoverable, FailureSummary = failure.Summary };
+        if (managed)
+        {
+            var now = clock.GetUtcNow();
+            var initial = await h.Worker.ClaimAssignedAsync(new WorkerAssignmentContract("original-assignment", "original-server",
+                new("project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+                new("github-issue", "17"), "worker", new Dictionary<string, string>(),
+                new("original-server", "worker", 1, now, now.AddMinutes(5), "Active")), CancellationToken.None);
+            Assert.NotNull(initial);
+            await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(async () => await initial);
+        }
+        else await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => h.ProcessOneAsync());
+        var original = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("codex-interrupted", original.RecoveryState);
+        Assert.True(CodexFailure.RequiresFreshSession(original));
+        h.GitHub.Issue = h.GitHub.Issue with { Labels = ["ready"] };
+        for (var attempt = 1; attempt <= CodexInterruptionRecovery.MaximumResumes; attempt++)
+        {
+            // Frequent scheduler polling cannot spend a resume during cooldown.
+            for (var poll = 0; poll < 3; poll++) Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+            clock.Advance(TimeSpan.FromMinutes(5));
+            Task<IssueProcessingResult?>? task;
+            if (managed)
+            {
+                Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+                var source = (await history.ReadAllAsync()).MaxBy(entry => entry.AttemptNumber)
+                    ?? throw new InvalidOperationException("Missing recovery source");
+                var now = clock.GetUtcNow();
+                var serverId = "server-" + attempt;
+                task = await h.Worker.ClaimAssignedAsync(new WorkerAssignmentContract("assignment-" + attempt, serverId,
+                    new("project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+                    new("github-issue", "17"), "worker", new Dictionary<string, string>
+                    {
+                        ["codexRecoveryExecutionId"] = source.ExecutionId.ToString(),
+                        ["originalServerExecutionId"] = source.ServerExecutionId ?? ""
+                    }, new(serverId, "worker", attempt + 1, now, now.AddMinutes(5), "Active")), CancellationToken.None);
+            }
+            else task = await h.Worker.ClaimNextAsync(CancellationToken.None);
+            Assert.NotNull(task);
+            await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(async () => await task);
+        }
+        var exhausted = (await history.ReadAllAsync()).MaxBy(entry => entry.AttemptNumber)
+            ?? throw new InvalidOperationException("Missing exhausted attempt");
+        Assert.Equal("codex-recovery-exhausted", exhausted.RecoveryState);
+        Assert.Contains("budget exhausted", exhausted.FailureReason, StringComparison.Ordinal);
+        Assert.Contains("budget exhausted", h.GitHub.Comments[^1], StringComparison.Ordinal);
+        clock.Advance(TimeSpan.FromDays(1));
+        Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+        Assert.Equal(1, h.Git.Started);
+        Assert.Equal(CodexInterruptionRecovery.MaximumResumes, h.Git.CodexResumes);
+        Assert.Equal(0, h.Git.Cleanups);
     }
 
     [Trait("TestType", "Integration")]
@@ -271,7 +340,7 @@ public sealed class WorkerV011Tests
         clock.Advance(TimeSpan.FromMinutes(5));
         h.TelegramFailure = telegramFailure;
         h.Codex.InitialException = null;
-        h.GitHub.Issue = h.GitHub.Issue with { Body = "Changed issue intent" };
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "Changed issue intent", Labels = ["ready"] };
         var resume = await h.Worker.ClaimNextAsync(CancellationToken.None);
         Assert.NotNull(resume);
         Assert.Equal(IssueOutcomeKind.Succeeded, (await resume)?.Kind);

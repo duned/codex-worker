@@ -16,9 +16,9 @@ public sealed class CodexInterruptionTests
     [InlineData("Selected model is at capacity. Please try a different model.", "Codex model capacity", true)]
     [InlineData("insufficient_quota", "Codex usage limit", true)]
     [InlineData("You exceeded your current quota, please check your plan and billing details", "Codex usage limit", true)]
-    [InlineData("context_length_exceeded", "Codex context limit", false)]
-    [InlineData("Codex ran out of room in the model's context window", "Codex context limit", false)]
-    [InlineData("maximum context length is 100 tokens", "Codex context limit", false)]
+    [InlineData("context_length_exceeded", "Codex context limit", true)]
+    [InlineData("Codex ran out of room in the model's context window", "Codex context limit", true)]
+    [InlineData("maximum context length is 100 tokens", "Codex context limit", true)]
     [InlineData("Too many requests", "Codex rate limit", true)]
     [InlineData("authentication_error", "Codex authentication", true)]
     [InlineData("server_error", "Codex service/network", true)]
@@ -123,6 +123,12 @@ public sealed class CodexInterruptionTests
         Assert.True(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
         Assert.Equal(3, provider.Calls);
         Assert.Null(readiness.DiagnosticCode);
+        readiness.Interrupt("Codex usage limit; execution preserved");
+        for (var i = 0; i < 100; i++) Assert.False(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
+        Assert.Equal(3, provider.Calls);
+        clock.Advance(TimeSpan.FromMinutes(5));
+        Assert.True(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
+        Assert.Equal(4, provider.Calls);
     }
 
     private sealed class Clock : TimeProvider

@@ -352,35 +352,43 @@ public sealed class ExecutionHistoryStoreTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task LegacyReconstructionIsAtomicSurvivesRestartAndRejectsNewerOwnership(bool competing)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task InterruptionReconstructionIsAtomicSurvivesRestartAndRejectsNewerOwnership(bool competing, bool parkedContext)
     {
         using var database = new TemporaryDatabase();
         var source = LegacyCodexSessionTests.Source();
+        if (parkedContext) source = source with
+        {
+            FailureReason = "Codex context limit: Model context window exhausted",
+            CodexRecovery = new(source.ExecutionId, source.AttemptNumber, 1, "fingerprint", Guid.NewGuid().ToString())
+        };
         var candidate = source with
         {
             RecoveryBaseCommit = new string('a', 40), RecoveryState = "codex-interrupted",
-            CodexRecovery = new(source.ExecutionId, source.AttemptNumber, 0, "fingerprint", Guid.NewGuid().ToString())
+            CodexRecovery = source.CodexRecovery is { } snapshot ? snapshot with { RetryAfterUtc = DateTimeOffset.UnixEpoch.AddMinutes(5) }
+                : new(source.ExecutionId, source.AttemptNumber, 0, "fingerprint", Guid.NewGuid().ToString())
         };
         using (var store = new ExecutionHistoryStore(database.Path))
         {
             await store.CreateAsync(source);
             if (competing) await store.CreateAsync(source with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2, State = "Implementing", CompletedAtUtc = null });
-            Assert.Equal(!competing, await store.TryReconstructCodexRecoveryAsync(candidate, CancellationToken.None));
+            Assert.Equal(!competing, await store.TryReconstructCodexRecoveryAsync(candidate, CancellationToken.None, source.CodexRecovery));
         }
         using var restarted = new ExecutionHistoryStore(database.Path);
         var persisted = (await restarted.ReadAllAsync()).Single(row => row.ExecutionId == source.ExecutionId);
         Assert.Equal(source.State, persisted.State);
         Assert.Equal(source.CompletedAtUtc, persisted.CompletedAtUtc);
         Assert.Equal(competing ? "uncertain" : "codex-interrupted", persisted.RecoveryState);
-        Assert.Equal(competing ? null : candidate.CodexRecovery, persisted.CodexRecovery);
-        Assert.False(await restarted.TryReconstructCodexRecoveryAsync(candidate, CancellationToken.None));
+        Assert.Equal(competing ? source.CodexRecovery : candidate.CodexRecovery, persisted.CodexRecovery);
+        Assert.False(await restarted.TryReconstructCodexRecoveryAsync(candidate, CancellationToken.None, source.CodexRecovery));
         if (competing) return;
         var attempt = source with
         {
             ExecutionId = Guid.NewGuid(), AttemptNumber = 2, RetryOfExecutionId = source.ExecutionId,
-            CompletedAtUtc = null, State = "Created", CodexRecovery = candidate.CodexRecovery with { ResumeCount = 1 }
+            CompletedAtUtc = null, State = "Created", CodexRecovery = candidate.CodexRecovery with { ResumeCount = candidate.CodexRecovery.ResumeCount + 1 }
         };
         Assert.True(await restarted.TryClaimCodexRecoveryAsync(persisted, attempt, CancellationToken.None));
         Assert.False(await restarted.TryClaimCodexRecoveryAsync(persisted, attempt with { ExecutionId = Guid.NewGuid() }, CancellationToken.None));
@@ -415,15 +423,20 @@ public sealed class ExecutionHistoryStoreTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    [Fact]
-    public async Task CodexRecoveryClaimAndConsumedBudgetSurviveRestartAndCannotBeDoubleClaimed()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CodexRecoveryClaimAndConsumedBudgetSurviveRestartAndCannotBeDoubleClaimed(bool managed)
     {
         using var database = new TemporaryDatabase();
         var now = DateTimeOffset.UtcNow;
         var source = Entry(Guid.NewGuid(), now) with
         {
             State = "InfrastructureFailure", CompletedAtUtc = now, RecoveryState = "codex-interrupted",
-            CodexRecovery = new(Guid.NewGuid(), 1, 2, "fingerprint", Guid.NewGuid().ToString())
+            CodexRecovery = new(Guid.NewGuid(), 1, 2, "fingerprint", Guid.NewGuid().ToString()),
+            ServerExecutionId = managed ? "server-original" : null,
+            AssignmentId = managed ? "assignment-original" : null,
+            OwnershipGeneration = managed ? 1 : null
         };
         using (var store = new ExecutionHistoryStore(database.Path)) await store.CreateAsync(source);
         using var reopened = new ExecutionHistoryStore(database.Path);
@@ -434,6 +447,10 @@ public sealed class ExecutionHistoryStoreTests
             AttemptNumber = 2, RetryOfExecutionId = source.ExecutionId,
             CodexRecovery = source.CodexRecovery with { ResumeCount = 3 }
         };
+        var competing = Entry(Guid.NewGuid(), now) with { State = "Implementing", CompletedAtUtc = null };
+        await reopened.CreateAsync(competing);
+        Assert.False(await reopened.TryClaimCodexRecoveryAsync(persisted, attempt, CancellationToken.None));
+        await reopened.UpdateAsync(competing with { State = "Failed", CompletedAtUtc = now });
         Assert.True(await reopened.TryClaimCodexRecoveryAsync(persisted, attempt, CancellationToken.None));
         Assert.False(await reopened.TryClaimCodexRecoveryAsync(persisted, attempt with { ExecutionId = Guid.NewGuid() }, CancellationToken.None));
         using var again = new ExecutionHistoryStore(database.Path);

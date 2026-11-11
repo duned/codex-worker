@@ -59,10 +59,11 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         var changed = 0;
         var newDiagnostics = new List<string>();
         foreach (var entry in entries.Where(entry => entry.Project == config.Project.Name && entry.Repository == config.Project.Repository &&
-                     entry.Engine == "codex" && entry.CodexRecovery is null && entry.State is "InfrastructureFailure" or "Cancelled" && entry.RecoveryState == "uncertain"))
+                     entry.Engine == "codex" && (entry.CodexRecovery is null || CodexFailure.RequiresFreshSession(entry)) &&
+                     entry.State is "InfrastructureFailure" or "Cancelled" && entry.RecoveryState == "uncertain"))
         {
             var (reconstructed, reason) = await ReconstructAsync(entry, entries, ct);
-            if (reconstructed is not null && await history.TryReconstructCodexRecoveryAsync(reconstructed, ct))
+            if (reconstructed is not null && await history.TryReconstructCodexRecoveryAsync(reconstructed, ct, entry.CodexRecovery))
                 output.Warning($"Legacy interruption reconstructed · execution {entry.ExecutionId} · Codex session {reconstructed.CodexRecovery?.SessionId} · awaiting execution readiness");
             else
             {
@@ -108,7 +109,10 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         await repositoryGate.WaitAsync(ct);
         try
         {
-            workspace = await git.InspectLegacyCodexWorkspaceAsync(source, ct);
+            var owner = source.CodexRecovery is { } snapshot
+                ? source with { ExecutionId = snapshot.WorkspaceExecutionId, AttemptNumber = snapshot.WorkspaceAttemptNumber }
+                : source;
+            workspace = await git.InspectLegacyCodexWorkspaceAsync(owner, ct);
             if (workspace is null) return (null, "preserved worktree missing or ownership cannot be verified");
             var processBlocker = await git.InspectExecutionProcessesAsync(source, ct);
             if (processBlocker is not null) return (null, processBlocker);
@@ -120,7 +124,9 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         }
         finally { repositoryGate.Release(); }
         if (workspace is null) return (null, "preserved worktree missing or ownership cannot be verified");
-        var match = await (sessions ?? new LegacyCodexSessionStore(CodexProvisioning.CodexServiceEnvironment.Home)).FindAsync(source, workspace, ct);
+        var match = source.CodexRecovery is { } existing
+            ? new LegacySessionMatch(existing.SessionId, null)
+            : await (sessions ?? new LegacyCodexSessionStore(CodexProvisioning.CodexServiceEnvironment.Home)).FindAsync(source, workspace, ct);
         if (match.Rejection is not null) return (null, match.Rejection);
         // No historical fingerprint exists for legacy attempts. Pin the continuation's
         // current configuration, but never invent original intent or effective profile.
@@ -129,7 +135,9 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         {
             RecoveryBaseCommit = workspace.Head, RecoveryState = "codex-interrupted",
             ValidationOutcome = legacyValidation ? "legacy: pending validation" : source.ValidationOutcome,
-            CodexRecovery = new(source.ExecutionId, source.AttemptNumber, 0,
+            CodexRecovery = source.CodexRecovery is { } previous
+                ? previous with { RetryAfterUtc = clock.GetUtcNow().AddMinutes(5) }
+                : new(source.ExecutionId, source.AttemptNumber, 0,
                 CodexInterruptionRecovery.Fingerprint(config), match.SessionId, clock.GetUtcNow().AddMinutes(5),
                 ImplementationSucceeded: legacyValidation ? true : null)
         };

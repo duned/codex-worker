@@ -5,10 +5,16 @@ using System.Text.RegularExpressions;
 
 namespace CodexWorker;
 
-/// <summary>Only positively identified external failures are automatically resumed.</summary>
+/// <summary>Only positively identified failures eligible for verified recovery are automatically resumed.</summary>
 internal sealed record CodexFailure(string Category, string Reason, bool Recoverable)
 {
     internal const string ModelCapacity = "Codex model capacity";
+    internal const string ContextLimit = "Codex context limit";
+
+    // Recovery consumes the existing durable resume budget, but must not replay an
+    // oversized conversation merely because account preflight succeeds.
+    internal static bool RequiresFreshSession(ExecutionHistoryEntry source) =>
+        source.FailureReason?.StartsWith(ContextLimit + ":", StringComparison.Ordinal) == true;
 
     internal static CodexFailure Classify(string evidence, bool timedOut = false)
     {
@@ -17,7 +23,7 @@ internal sealed record CodexFailure(string Category, string Reason, bool Recover
         if (text.Contains("selected model is at capacity", StringComparison.Ordinal))
             return new(ModelCapacity, "Selected model is at capacity; preserving execution and retrying the same model after cooldown", true);
         if (Contains(text, "context_length_exceeded", "contextwindowexceeded", "context_window_exceeded", "context window", "maximum context length", "too many tokens in the input"))
-            return new("Codex context limit", "Model context window exhausted; inspect the preserved workspace and start a fresh session with reduced context", false);
+            return new(ContextLimit, "Model context window exhausted; continuation requires a fresh session on the verified preserved workspace", true);
         if (Contains(text, "usage limit", "usagelimitexceeded", "quota exceeded", "insufficient_quota", "subscription limit", "usage_limit", "usage_not_included", "exceeded your current quota"))
             return new("Codex usage limit", "Account/subscription usage quota exhausted; check account usage and billing or wait for quota to reset" + RetryTiming(evidence), true);
         if (Contains(text, "rate limit", "ratelimitexceeded", "rate_limit", "too many requests", "http 429", "status 429"))

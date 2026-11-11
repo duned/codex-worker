@@ -161,13 +161,19 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         return true;
     }
 
-    /// <summary>Publishes verified legacy metadata once without changing the original outcome or lineage.</summary>
-    internal async Task<bool> TryReconstructCodexRecoveryAsync(ExecutionHistoryEntry reconstructed, CancellationToken ct)
+    /// <summary>Publishes verified interruption metadata once without changing the original outcome or lineage.</summary>
+    internal async Task<bool> TryReconstructCodexRecoveryAsync(ExecutionHistoryEntry reconstructed, CancellationToken ct,
+        CodexInterruptionRecovery? previousSnapshot = null)
     {
-        if (reconstructed.CodexRecovery is not { ResumeCount: 0 } snapshot ||
-            snapshot.WorkspaceExecutionId != reconstructed.ExecutionId ||
-            snapshot.WorkspaceAttemptNumber != reconstructed.AttemptNumber ||
-            reconstructed.OriginalIssueBody is null || reconstructed.RecoveryBaseCommit is null || snapshot.SessionId is null)
+        if (reconstructed.CodexRecovery is not { } snapshot ||
+            reconstructed.OriginalIssueBody is null || reconstructed.RecoveryBaseCommit is null)
+            return false;
+        if (previousSnapshot is null
+            ? snapshot.ResumeCount != 0 || snapshot.WorkspaceExecutionId != reconstructed.ExecutionId ||
+                snapshot.WorkspaceAttemptNumber != reconstructed.AttemptNumber || snapshot.SessionId is null
+            : !CodexFailure.RequiresFreshSession(reconstructed) || snapshot.ResumeCount < 0 ||
+                snapshot.ResumeCount >= CodexInterruptionRecovery.MaximumResumes ||
+                snapshot != previousSnapshot with { RetryAfterUtc = snapshot.RetryAfterUtc })
             return false;
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
@@ -175,7 +181,8 @@ public sealed partial class ExecutionHistoryStore : IDisposable
             UPDATE executions SET codex_recovery_json=$codexRecovery, recovery_base_commit=$recoveryBase,
                 validation_outcome=COALESCE($validation,validation_outcome),
                 recovery_state='codex-interrupted'
-            WHERE execution_id=$id AND codex_recovery_json IS NULL AND recovery_state='uncertain'
+            WHERE execution_id=$id AND (codex_recovery_json IS NULL AND $previousSnapshot IS NULL
+                OR codex_recovery_json=$previousSnapshot) AND recovery_state='uncertain'
                 AND state IN ('InfrastructureFailure','Cancelled') AND completed_at_utc IS NOT NULL
                 AND NOT EXISTS (SELECT 1 FROM executions other WHERE other.project=executions.project
                     AND other.repository=executions.repository AND other.issue_number=executions.issue_number
@@ -183,6 +190,7 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                     AND (other.completed_at_utc IS NULL OR other.attempt_number>executions.attempt_number OR other.state='Completed'))
             """;
         Bind(command, reconstructed);
+        Add(command, "$previousSnapshot", previousSnapshot is null ? null : JsonSerializer.Serialize(previousSnapshot));
         try
         {
             if (await command.ExecuteNonQueryAsync(ct) != 1) return false;
@@ -238,11 +246,17 @@ public sealed partial class ExecutionHistoryStore : IDisposable
     }
 
     /// <summary>Updates recovery metadata without changing the durable execution outcome.</summary>
-    public async Task UpdateRecoveryAsync(Guid executionId, string state, CancellationToken ct = default)
+    public async Task UpdateRecoveryAsync(Guid executionId, string state, CancellationToken ct = default, string? reason = null)
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE executions SET recovery_state=$state WHERE execution_id=$id";
+        command.CommandText = """
+            UPDATE executions SET recovery_state=$state,
+                failure_reason=CASE WHEN $reason IS NULL THEN failure_reason
+                    WHEN failure_reason IS NULL THEN $reason ELSE failure_reason || ' Recovery: ' || $reason END
+            WHERE execution_id=$id
+            """;
+        Add(command, "$reason", reason);
         command.Parameters.AddWithValue("$id", executionId.ToString());
         command.Parameters.AddWithValue("$state", state);
         try

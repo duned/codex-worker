@@ -680,6 +680,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 execution.CodexRecovery = recovery with { RetryAfterUtc = (timeProvider ?? TimeProvider.System).GetUtcNow().AddMinutes(5) };
         }
         if (!execution.IsTerminal) execution.TransitionTo(shutdown ? ExecutionState.Cancelled : ExecutionState.InfrastructureFailure);
+        if (recoveryState == "codex-recovery-exhausted")
+            reason += " Automatic recovery budget exhausted; inspect the preserved workspace and execution history. Reapplying the ready label does not reset the budget.";
         reason = FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray());
         output.Warning($"Execution {execution.ExecutionId} · {(shutdown ? "Worker shutdown" : "infrastructure failure")} · {reason}");
         var workspace = git.ExecutionDirectory;

@@ -119,7 +119,13 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 """;
         if (retryOf?.RecoveryState == "codex-interrupted")
             prompt += "\n# Infrastructure continuation\nThis is recovery of an interrupted Codex invocation on the SAME preserved worktree. Inspect existing changes and continue the original Issue. Do not recreate or discard existing implementation. Prior implementation and self-checks may already be complete; finish only what remains and return the structured outcome. The Worker will run authoritative validation and owns all Git lifecycle operations.\n";
-        return await RunStructuredAsync(projectDirectory, prompt, ct, sessionId: retryOf?.RecoveryState == "codex-interrupted" ? retryOf.CodexRecovery?.SessionId : inheritedThread, sessionDiagnostic: sessionDiagnostic);
+        var session = retryOf?.RecoveryState == "codex-interrupted" ? retryOf.CodexRecovery?.SessionId : inheritedThread;
+        if (retryOf?.RecoveryState == "codex-interrupted" && CodexFailure.RequiresFreshSession(retryOf))
+        {
+            session = null;
+            sessionDiagnostic?.Invoke("Previous Codex context window exhausted; continuing preserved work in a fresh session");
+        }
+        return await RunStructuredAsync(projectDirectory, prompt, ct, sessionId: session, sessionDiagnostic: sessionDiagnostic);
     }
 
     public async Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,

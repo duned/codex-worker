@@ -128,7 +128,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 var metadataError = CodexRecoveryCoordinator.ValidateMetadata(source, entries, config);
                 if (metadataError is not null || snapshot is null || originalBody is null)
                 {
-                    await history.UpdateRecoveryAsync(source.ExecutionId, "codex-recovery-inspection-required", ct);
+                    await history.UpdateRecoveryAsync(source.ExecutionId, "codex-recovery-inspection-required", ct,
+                        "Codex recovery requires inspection: " + (metadataError ?? "workspace snapshot missing"));
                     _output.Warning($"Codex recovery requires inspection · execution {source.ExecutionId} · {metadataError ?? "workspace snapshot missing"}.");
                     continue;
                 }
@@ -138,7 +139,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 finally { _repositoryGate.Release(); }
                 if (rejection is not null)
                 {
-                    await history.UpdateRecoveryAsync(source.ExecutionId, "codex-recovery-inspection-required", ct);
+                    await history.UpdateRecoveryAsync(source.ExecutionId, "codex-recovery-inspection-required", ct,
+                        "Codex recovery requires inspection: " + FailureDiagnosticRedactor.Redact(rejection, config.Environment.Variables.Values.ToArray()));
                     _output.Warning($"Codex recovery requires inspection · execution {source.ExecutionId} · {FailureDiagnosticRedactor.Redact(rejection, config.Environment.Variables.Values.ToArray())}");
                     continue;
                 }
@@ -181,7 +183,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     OriginalIssueBodyFingerprint = source.OriginalIssueBodyFingerprint }, ct)) continue;
                 await TransitionAsync(execution, ExecutionState.Claimed, ct);
                 _output.Warning($"Resuming execution {execution.ExecutionId} · interrupted execution {source.ExecutionId} · " +
-                    (snapshot.SessionId is null ? "continuing preserved workspace with new Codex session" : $"attempting Codex session {snapshot.SessionId}"));
+                    (snapshot.SessionId is null || CodexFailure.RequiresFreshSession(source) ? "continuing preserved workspace with new Codex session" : $"attempting Codex session {snapshot.SessionId}"));
                 // ProcessClaimedAsync now owns the in-memory Issue claim until its finally block.
                 DisplayIssueStart(issue, execution);
                 handedOff = true;
@@ -435,7 +437,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             var metadataError = CodexRecoveryCoordinator.ValidateMetadata(entry, entries, config);
             if (metadataError is not null)
             {
-                await history.UpdateRecoveryAsync(entry.ExecutionId, "codex-recovery-inspection-required", ct);
+                await history.UpdateRecoveryAsync(entry.ExecutionId, "codex-recovery-inspection-required", ct,
+                    "Codex recovery requires inspection: " + metadataError);
                 _output.Warning($"Codex recovery requires inspection · execution {entry.ExecutionId} · {metadataError}.");
                 continue;
             }
@@ -446,7 +449,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             finally { _repositoryGate.Release(); }
             if (rejection is not null)
             {
-                await history.UpdateRecoveryAsync(entry.ExecutionId, "codex-recovery-inspection-required", ct);
+                await history.UpdateRecoveryAsync(entry.ExecutionId, "codex-recovery-inspection-required", ct,
+                    "Codex recovery requires inspection: " + FailureDiagnosticRedactor.Redact(rejection, config.Environment.Variables.Values.ToArray()));
                 _output.Warning($"Codex recovery requires inspection · execution {entry.ExecutionId} · {FailureDiagnosticRedactor.Redact(rejection, config.Environment.Variables.Values.ToArray())}");
                 continue;
             }
@@ -846,12 +850,17 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             // reconciliation and must never be replayed as an automatic retry.
             if (primaryFailure is not CodexExecutionInfrastructureException { Recoverable: true })
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, CancellationToken.None);
+            var recovery = history is null ? null : await history.ReadExecutionAsync(execution.ExecutionId, CancellationToken.None);
+            var recoveryGuidance = recovery?.RecoveryState switch
+            {
+                "codex-interrupted" => $"Eligible recovery resumes automatically after execution readiness and cooldown ({recovery.CodexRecovery?.RetryAfterUtc:O}), within the remaining resume budget.",
+                "codex-recovery-exhausted" => "Automatic recovery budget exhausted. Inspect the preserved workspace and execution history before requesting further recovery; reapplying the ready label does not reset this budget.",
+                _ => "Inspect execution history and the preserved workspace, and reconcile Git and GitHub state before requesting another attempt."
+            };
             await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
                 $"### Execution interrupted\n\nExecution `{execution.ExecutionId}` stopped because of an infrastructure failure.\n\n{safeReason}\n\n" +
                 (execution.CodexProfile is { } profile ? $"Codex model: `{profile.EffectiveModel ?? "unknown (CLI model unavailable)"}` · effort: `{profile.Effort}`.\n\n" : "") +
-                (primaryFailure is CodexExecutionInfrastructureException { Recoverable: true }
-                    ? "### Recovery\n\n- The implementation workspace is preserved.\n- Eligible recovery resumes automatically after Codex execution readiness returns, within a bounded resume budget.\n"
-                    : "### Recovery\n\n- Inspect execution history and the preserved workspace before restarting.\n- Reconcile Git and GitHub state before requesting another attempt.\n"), CancellationToken.None);
+                $"### Recovery\n\n- The implementation workspace is preserved.\n- {recoveryGuidance}\n", CancellationToken.None);
             if (history is not null)
             {
                 var entry = (await history.ReadAllAsync(CancellationToken.None)).Single(row => row.ExecutionId == execution.ExecutionId);
