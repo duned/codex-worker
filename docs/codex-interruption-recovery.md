@@ -37,10 +37,22 @@ queryable recovery reason. Stale failure labels are removed only after continuat
 is durably claimed. A ready label never resets the Codex resume budget or grants
 managed lease authority.
 
+For historical standalone `InfrastructureFailure` / `uncertain` records, explicit
+ready can authorize verified implementation recovery even when the original CLI
+cause was generic. The failure category remains unchanged. History must establish
+an unfinished implementation invocation, and ownership, original intent, execution
+profile, configuration, process and authoritative remote checks must agree. The
+Worker uses the existing preserved-work Codex continuation and durable resume
+budget, rather than treating the interruption as completed implementation awaiting
+validation. A clean worktree at its original base with no feature commits may be
+retired for a fresh ready attempt after the same safety checks. Missing evidence,
+changed intent, active processes or exhausted budget retain resources and expose
+the actual blocker; a generic cleanup `review` decision supplies no recovery proof.
+
 A successful CLI process exit without a final task response does not establish
 success. Recognized CLI error events still identify usage or context limits; absent
-that evidence the cause remains unknown and cannot authorize automatic Codex
-recovery. An operator report of “token exhaustion” alone cannot distinguish account
+that evidence the cause remains unknown. The unknown cause alone cannot authorize
+recovery; explicit ready and independent preserved-work verification are required. An operator report of “token exhaustion” alone cannot distinguish account
 quota from model context exhaustion. Use the owning node's durable execution history
 and CLI evidence to establish the cause; do not infer it from the Issue label.
 
@@ -71,9 +83,9 @@ Compare the execution ID, attempt, project/repository, engine/model, validation 
 
 ### Continuous standalone inspection
 
-The former lifetime three-inspection budget left deferred executions untouched until another restart. Standalone recovery now runs in the normal host claim loop, admitting at most three read-only candidates per project per minute. Each inspected candidate has a durable one-hour cooldown, including across restarts. Uninspected and formerly budget-deferred candidates precede previously inspected candidates; newer attempts lead within that group. Last-inspected age then rotates blocked candidates fairly. Normal new-work claims still run after an inspection batch, using existing host slots and repository gates. Managed Workers do not enter this queue.
+The former lifetime three-inspection budget left deferred executions untouched until another restart. Standalone recovery now runs in the normal host claim loop, admitting at most three read-only candidates per project per minute. Each inspected candidate normally has a durable one-hour cooldown, including across restarts. Historical uncertain infrastructure candidates receive one new bounded inspection per deployment; observing a newly added ready label also invalidates their local diagnostic cooldown. Issue eligibility is refreshed through a bounded five-minute cache, and the three-per-minute inspection limit remains in force. Uninspected and formerly budget-deferred candidates precede previously inspected candidates; newer attempts lead within that group. Last-inspected age then rotates blocked candidates fairly. Normal new-work claims still run after an inspection batch, using existing host slots and repository gates. Managed Workers do not enter this queue.
 
-Authoritative Issue eligibility is read before interrupted-workspace process/Git inspection. Closed/done or otherwise ineligible Issues receive `issue-no-longer-eligible`; this prohibits continuation and preserves ambiguous local resources. It does not establish integration or deletion safety. Repeated polls during cooldown perform no per-record diagnostic writes or Issue reads. The startup aggregate is emitted once, rather than every poll.
+Authoritative Issue eligibility is read before interrupted-workspace process/Git inspection. Closed/done or otherwise ineligible Issues receive `issue-no-longer-eligible`; this prohibits continuation and preserves ambiguous local resources. It does not establish integration or deletion safety. Repeated polls during cooldown perform no per-record diagnostic writes. Infrastructure candidates may refresh the bounded Issue cache to detect explicit ready; other histories retain their durable cooldown before Issue reads. The startup aggregate is emitted once, rather than every poll.
 
 After deployment, use `./cw recovery blocked --issue 432 --json` over successive polling cycles. `queued-for-review` (including old budget-deferred records) means inspection has not established a safety proof; it is not a verified blocker. Actual diagnostic records include `checkedAtUtc` and `nextEligibleAtUtc`. With 150 retained candidates, the initial campaign needs at most 50 one-minute batches (plus configured host polling and available execution capacity), without restart. A newer uninspected attempt leads older uninspected histories. Check the execution history and journal for continuation of the original identity and retained Repair 1/3 before interpreting validation/integration as complete. Tests do not establish that the live incident resumed.
 

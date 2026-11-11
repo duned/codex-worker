@@ -114,7 +114,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             .OrderBy(entry => entry.StartedAtUtc);
         foreach (var source in candidates)
         {
-            if (source.CodexRecovery?.RetryAfterUtc > _clock.GetUtcNow()) continue;
+            if (source.CodexRecovery?.RetryAfterUtc > _clock.GetUtcNow() ||
+                assignment is null && engineReady?.Invoke(source.Engine) == false) continue;
             if (assignment is not null && (!assignment.Metadata.TryGetValue("codexRecoveryExecutionId", out var sourceId) ||
                 sourceId != source.ExecutionId.ToString() || !assignment.Metadata.TryGetValue("originalServerExecutionId", out var serverId) ||
                 serverId != source.ServerExecutionId)) continue;
@@ -135,7 +136,15 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 }
                 string? rejection;
                 await _repositoryGate.WaitAsync(ct);
-                try { rejection = await git.ValidateCodexRecoveryAsync(source, ct); }
+                try
+                {
+                    rejection = await git.ValidateCodexRecoveryAsync(source, ct);
+                    if (rejection is null && assignment is null)
+                    {
+                        var inspection = await git.InspectInterruptedExecutionAsync(source, ct);
+                        rejection = inspection.Blocker ?? (!inspection.NotIntegrated ? "remote-integration-ambiguous" : null);
+                    }
+                }
                 finally { _repositoryGate.Release(); }
                 if (rejection is not null)
                 {
@@ -171,6 +180,21 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                             "original Issue is closed; legacy continuation requires an open Issue with unchanged intent",
                             _clock.GetUtcNow(), ct);
                     continue;
+                }
+                if (assignment is null)
+                {
+                    var live = await github.GetIssueAsync(source.IssueNumber, ct);
+                    var state = await github.ReadIssueStateAsync(source.IssueNumber, ct);
+                    bool Has(string label) => state.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
+                    if (live is null || live.Title != source.IssueTitle || live.Body != originalBody || !state.IsOpen ||
+                        Has(config.GitHub.DoneLabel) || !Has(config.GitHub.ReadyLabel) &&
+                        (!Has(config.GitHub.WorkingLabel) || Has(config.GitHub.FailedLabel) || Has(config.GitHub.BlockedLabel)))
+                    {
+                        await ReportStandaloneBlockerAsync(source, "issue-no-longer-eligible", ct,
+                            "Implementation continuation requires the open original Issue with unchanged intent; explicitly mark it ready after resolving conflicting state.");
+                        continue;
+                    }
+                    issue = live with { Labels = state.Labels };
                 }
                 var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: source.ExecutionId,
                     attemptNumber: source.AttemptNumber + 1, resumed: true, featureBranchOverride: source.FeatureBranch,
@@ -664,6 +688,10 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 // The durable recovery claim has already consumed this source attempt. Discovery
                 // and reconciliation never enter this flow or repeat its start notification.
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
+                if (execution.ServerExecutionId is null && issue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true)
+                    foreach (var staleLabel in new[] { config.GitHub.BlockedLabel, config.GitHub.FailedLabel }.Distinct(StringComparer.OrdinalIgnoreCase))
+                        if (issue.Labels.Contains(staleLabel, StringComparer.OrdinalIgnoreCase))
+                            await github.RemoveLabelAsync(issue.Number, staleLabel, ct);
                 await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct, recovered: true);
             }
             await ReadQuotaAsync(final: false, ct);

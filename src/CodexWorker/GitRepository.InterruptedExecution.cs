@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace CodexWorker;
 
 public sealed record InterruptedWorkspaceInspection(string? Blocker = null, string? Head = null,
-    string? RemoteBase = null, bool HasChanges = false, bool NotIntegrated = false, bool NoWorkspace = false);
+    string? RemoteBase = null, bool HasChanges = false, bool NotIntegrated = false, bool NoWorkspace = false, bool NoWork = false);
 
 public sealed partial class GitRepository
 {
@@ -71,12 +71,13 @@ public sealed partial class GitRepository
             if ((await InspectionGitAsync(["merge-base", "--is-ancestor", source.RecoveryBaseCommit, head], ct, [0, 1])).ExitCode != 0)
                 return new("workspace-history-diverged");
             var integrated = (await InspectionGitAsync(["merge-base", "--is-ancestor", head, remote], ct, [0, 1])).ExitCode == 0;
-            if (integrated && (!dirty || head != source.RecoveryBaseCommit))
+            var noWork = !dirty && head == source.RecoveryBaseCommit && source.State == "InfrastructureFailure";
+            if (integrated && !noWork && (!dirty || head != source.RecoveryBaseCommit))
                 return new("integration-present-without-validated-provenance", head, remote, dirty);
-            if (integrated && (await InspectionGitAtAsync(path, ["diff", "--quiet", remote, "--"], ct, [0, 1])).ExitCode == 0 &&
+            if (integrated && !noWork && (await InspectionGitAtAsync(path, ["diff", "--quiet", remote, "--"], ct, [0, 1])).ExitCode == 0 &&
                 string.IsNullOrWhiteSpace((await InspectionGitAtAsync(path, ["ls-files", "--others", "--exclude-standard"], ct)).StandardOutput))
                 return new("workspace-work-already-on-remote", head, remote, dirty);
-            return new(null, head, remote, dirty, true);
+            return new(null, head, remote, dirty, true, NoWork: noWork);
         }
         catch (WorkerInfrastructureException) when (ct.IsCancellationRequested) { throw new OperationCanceledException(ct); }
         catch (Exception ex) when (ex is WorkerInfrastructureException or ProcessTimeoutException or IOException or UnauthorizedAccessException or ArgumentException)

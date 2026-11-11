@@ -347,7 +347,7 @@ public sealed class WorkerV011Tests
         clock.Advance(TimeSpan.FromMinutes(5));
         h.TelegramFailure = telegramFailure;
         h.Codex.InitialException = null;
-        h.GitHub.Issue = h.GitHub.Issue with { Body = "Changed issue intent", Labels = ["ready"] };
+        h.GitHub.Issue = h.GitHub.Issue with { Labels = ["ready"] };
         var resume = await h.Worker.ClaimNextAsync(CancellationToken.None);
         Assert.NotNull(resume);
         Assert.Equal(IssueOutcomeKind.Succeeded, (await resume)?.Kind);
@@ -3955,6 +3955,10 @@ public sealed class WorkerV011Tests
         public int CodexResumes { get; private set; }
         public Task<GitRecoveryInfo?> InspectExecutionWorkspaceAsync(CancellationToken ct) => Task.FromResult(Snapshot);
         public Task<string?> ValidateCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) => Task.FromResult<string?>(null);
+        public Task<InterruptedWorkspaceInspection> InspectInterruptedExecutionAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+            Task.FromResult(source.RecoveryState == "codex-interrupted"
+                ? new InterruptedWorkspaceInspection(Head: source.RecoveryBaseCommit, RemoteBase: source.RecoveryBaseCommit, HasChanges: true, NotIntegrated: true)
+                : new InterruptedWorkspaceInspection("inspection-unsupported"));
         public Task StartCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
         { CodexResumes++; return Task.CompletedTask; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;

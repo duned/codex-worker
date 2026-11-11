@@ -171,7 +171,9 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         if (previousSnapshot is null
             ? snapshot.ResumeCount != 0 || snapshot.WorkspaceExecutionId != reconstructed.ExecutionId ||
                 snapshot.WorkspaceAttemptNumber != reconstructed.AttemptNumber || snapshot.SessionId is null
-            : !CodexFailure.RequiresFreshSession(reconstructed) || snapshot.ResumeCount < 0 ||
+            : !(CodexFailure.RequiresFreshSession(reconstructed) ||
+                reconstructed.ServerExecutionId is null && reconstructed.AssignmentId is null && reconstructed.OwnershipGeneration is null &&
+                CodexRecoveryCoordinator.ValidateImplementationInterruption(reconstructed) is null) || snapshot.ResumeCount < 0 ||
                 snapshot.ResumeCount >= CodexInterruptionRecovery.MaximumResumes ||
                 snapshot != previousSnapshot with { RetryAfterUtc = snapshot.RetryAfterUtc })
             return false;

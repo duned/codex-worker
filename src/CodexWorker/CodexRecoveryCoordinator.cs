@@ -26,6 +26,25 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         return null;
     }
 
+    internal static string? ValidateImplementationInterruption(ExecutionHistoryEntry source) =>
+        source.Engine != "codex" || source.CompletionJson is not null || source.CommitSha is not null ||
+        source.IntegrationBranch is not null || source.CompletedBranch is not null ||
+        source.ValidationOutcome is not null || source.ImplementationSummary is not null ||
+        source.RepairCount != 0 || source.CodexRecovery?.ImplementationSucceeded == true
+            ? "History does not establish an interrupted implementation invocation; reconcile its lifecycle evidence"
+            : null;
+
+    internal async Task<string?> PrepareStandaloneImplementationAsync(ExecutionHistoryEntry source,
+        IReadOnlyList<ExecutionHistoryEntry> entries, CancellationToken ct)
+    {
+        var rejection = ValidateImplementationInterruption(source);
+        if (rejection is not null) return rejection;
+        var (candidate, reason) = await ReconstructAsync(source, entries, ct);
+        if (candidate is null) return reason ?? "Implementation reconstruction failed";
+        return history is not null && await history.TryReconstructCodexRecoveryAsync(candidate, ct)
+            ? null : "Another attempt or recovery owns this Issue";
+    }
+
     internal async Task ReconcileAsync(CancellationToken ct)
     {
         if (history is null) return;

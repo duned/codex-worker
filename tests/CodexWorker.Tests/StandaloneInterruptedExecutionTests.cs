@@ -575,7 +575,9 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         var proof = JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(Assert.IsType<string>(retained.StandaloneRecoveryDiagnosticJson));
         Assert.Equal("process-scope-missing", proof?.ReasonCode);
         Assert.True(Directory.Exists(git.RecoveryWorkspacePath(target)));
-        Assert.Equal(150, github.StateReads);
+        // Closed histories are read once; the open target may refresh its bounded
+        // Issue cache every five minutes to observe an explicit ready transition.
+        Assert.InRange(github.StateReads, 150, 160);
         Assert.Equal(0, codex.Calls);
         Assert.Empty(github.Mutations);
         foreach (var (_, id) in historical)
@@ -844,6 +846,131 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         Assert.Equal("Completed", Assert.Single(await history.ReadAllAsync()).State);
         Assert.Single(github.Comments);
         Assert.Equal(1, codex.Calls);
+    }
+
+    [Theory]
+    [InlineData("generic")]
+    [InlineData("usage")]
+    [InlineData("context")]
+    [InlineData("no-work")]
+    [InlineData("budget")]
+    [InlineData("competing")]
+    [InlineData("intent")]
+    [InlineData("active")]
+    [InlineData("cooldown")]
+    [InlineData("ready-again")]
+    [InlineData("historical-cooldown")]
+    [InlineData("scope")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task ReReadiedInfrastructureInterruptionUsesVerifiedImplementationRecovery(string scenario)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
+        using var git = fixture.CreateRepository(config.Git);
+        await git.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        var path = git.ExecutionDirectory;
+        var originalBase = (await fixture.Git("rev-parse", "main")).Trim();
+        if (scenario != "no-work")
+            await File.WriteAllTextAsync(Path.Combine(path, "preserved.txt"), "retained implementation in progress");
+        var clock = new Clock();
+        var session = Guid.NewGuid().ToString();
+        var source = new ExecutionHistoryEntry(id, config.Project.Name, config.Project.Repository,
+            fixture.Issue.Number, fixture.Issue.Title, GitRepository.FeatureBranchName(config.Git, fixture.Issue), "main",
+            clock.Now.AddMinutes(-10), clock.Now.AddMinutes(scenario == "historical-cooldown" ? -1 : -6), "InfrastructureFailure", 1, null, null, 0, [],
+            null, null, null, scenario switch
+            {
+                "usage" => "Codex usage limit: account quota exhausted",
+                "context" => "Codex context limit: context window exhausted",
+                _ => "Codex CLI/process failure: unrecognized external cause"
+            }, RecoveryState: "uncertain", RecoveryBaseCommit: originalBase,
+            EffectiveEffort: config.Codex.ReasoningEffort, OriginalIssueBody: scenario == "intent" ? "different intent" : fixture.Issue.Body,
+            CodexRecovery: new(id, 1, scenario == "budget" ? CodexInterruptionRecovery.MaximumResumes : 0,
+                CodexInterruptionRecovery.Fingerprint(config), session,
+                scenario == "cooldown" ? clock.Now.AddMinutes(5) : null,
+                scenario == "scope" ? "unverified-scope" : await InterruptedWorkspaceProcesses.ReadScopeAsync(CancellationToken.None), ImplementationSucceeded: false),
+            StandaloneRecoveryDiagnosticJson: JsonSerializer.Serialize(new StandaloneRecoveryDiagnostic(id, fixture.Issue.Number,
+                "execution-infrastructure-failure", "Old validation-only rejection", "blocked", clock.Now, clock.Now.AddHours(1))));
+        await history.CreateAsync(source);
+        if (scenario == "competing")
+            await history.CreateAsync(source with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2, CompletedAtUtc = null });
+        var github = new GitHub(fixture.Issue) { Labels = scenario == "ready-again" ? ["working", "failed"] : ["ready", "failed"] };
+        using var telegram = new TelegramNotifier(false);
+        var ready = false;
+        var codex = new Codex(async workspace =>
+        {
+            if (scenario != "no-work")
+            {
+                Assert.Equal(path, workspace);
+                Assert.Equal("retained implementation in progress", await File.ReadAllTextAsync(Path.Combine(workspace, "preserved.txt")));
+            }
+            await File.WriteAllTextAsync(Path.Combine(workspace, "finished.txt"), "finished after recovery");
+        });
+        var worker = new Worker(config, github, git, codex, new Validation(), telegram, history: history,
+            timeProvider: clock, engineReady: _ => ready);
+        Process? child = null;
+        try
+        {
+            if (scenario == "active")
+                child = Process.Start(new ProcessStartInfo("/bin/sleep", ["120"]) { WorkingDirectory = path, UseShellExecute = false });
+            // A new deployment may reconsider the persisted old diagnostic immediately.
+            // Readiness must still prevent execution after successful reconciliation.
+            Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
+            Assert.Equal(0, codex.Calls);
+            if (scenario == "ready-again")
+            {
+                github.Labels.Add("ready");
+                clock.Now += TimeSpan.FromMinutes(5);
+            }
+            ready = true;
+            var result = await worker.ProcessOneAsync(CancellationToken.None);
+            if (scenario is "budget" or "competing" or "intent" or "active" or "scope")
+            {
+                Assert.Null(result);
+                Assert.Equal(0, codex.Calls);
+                Assert.True(File.Exists(Path.Combine(path, "preserved.txt")));
+                var blocked = Assert.IsType<ExecutionHistoryEntry>(await history.ReadExecutionAsync(id));
+                var diagnostic = JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(Assert.IsType<string>(blocked.StandaloneRecoveryDiagnosticJson));
+                Assert.NotNull(diagnostic);
+                Assert.Equal(scenario switch
+                {
+                    "competing" => "another-attempt-or-recovery-active",
+                    "active" => "workspace-process-active",
+                    "scope" => "process-scope-changed",
+                    _ => "implementation-recovery-unproven"
+                }, diagnostic.ReasonCode);
+                return;
+            }
+            if (scenario is "cooldown" or "historical-cooldown")
+            {
+                Assert.Null(result);
+                clock.Now += TimeSpan.FromMinutes(5);
+                result = await worker.ProcessOneAsync(CancellationToken.None);
+            }
+            Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
+            Assert.Equal(1, codex.Calls);
+            var original = Assert.IsType<ExecutionHistoryEntry>(await history.ReadExecutionAsync(id));
+            var successor = Assert.Single(await history.ReadAllAsync(), entry => entry.ExecutionId != id);
+            Assert.Equal(id, successor.RetryOfExecutionId);
+            Assert.Equal(source.FailureReason, original.FailureReason);
+            Assert.Equal(scenario == "no-work" ? "standalone-retired" : "codex-recovered", original.RecoveryState);
+            if (scenario != "no-work")
+            {
+                Assert.Equal(session, successor.CodexRecovery?.SessionId);
+                Assert.Equal(1, successor.CodexRecovery?.ResumeCount);
+                Assert.False(original.CodexRecovery?.ImplementationSucceeded);
+            }
+            Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
+            Assert.Equal(1, codex.Calls);
+        }
+        finally
+        {
+            if (child is not null) { child.Kill(); await child.WaitForExitAsync(); child.Dispose(); }
+        }
     }
 
     private static WorkerConfiguration Config(GitWorktreeTests.RepositoryFixture fixture) => new()

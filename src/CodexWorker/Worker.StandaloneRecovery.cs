@@ -16,7 +16,7 @@ public sealed partial class Worker
         "owned-workspace-missing", "workspace-head-invalid", "worktree-repository-mismatch",
         "authoritative-remote-unavailable", "original-base-not-on-authoritative-remote", "workspace-history-diverged",
         "integration-present-without-validated-provenance", "workspace-work-already-on-remote", "workspace-inspection-unavailable",
-        "recovery-check-attempt-limit", "legacy-recovery-proof-incomplete",
+        "recovery-check-attempt-limit", "legacy-recovery-proof-incomplete", "implementation-recovery-unproven",
         "completed-issue-conflicting-labels", "different-or-active-attempt", "legacy-completion-provenance-missing",
         "completion-provenance-incompatible", "completion-commit-not-on-remote", "completed-issue-proof-incomplete",
         "completed-issue-state-changed"
@@ -66,13 +66,18 @@ public sealed partial class Worker
                  .OrderBy(RecoveryDiagnosticAge)
                  .ThenByDescending(entry => entry.StartedAtUtc).ThenBy(entry => entry.ExecutionId))
         {
-            if (RecoveryNextEligibility(source) > now) continue;
+            var infrastructureCandidate = source.State == "InfrastructureFailure" &&
+                source.CompletionJson is null && source.RecoveryState == "uncertain";
+            if (!infrastructureCandidate && RecoveryNextEligibility(source) > now) continue;
             // Bound read-only recovery independently of normal execution capacity.
             var check = _standaloneChecks.GetValueOrDefault(source.ExecutionId);
-            if (check.Next > now) continue;
             // Issue eligibility has its own bounded cache. Terminal Issues never spend
             // the scarce process/worktree inspection budget, even when proof is incomplete.
             var cachedIssue = _standaloneIssueStates.GetValueOrDefault(source.IssueNumber);
+            // Terminal Issues retain the full diagnostic cooldown. Refresh open
+            // candidates to observe ready without letting closed history spend the
+            // bounded Issue-read budget repeatedly during the initial campaign.
+            if (check.Next > now && cachedIssue.State is { IsOpen: false }) continue;
             GitHubIssueState remote;
             if (cachedIssue.Next > now) remote = cachedIssue.State;
             else
@@ -88,6 +93,17 @@ public sealed partial class Worker
                 }
                 _standaloneIssueStates[source.IssueNumber] = (now.AddMinutes(5), remote);
             }
+            // Infrastructure candidates get one inspection per deployment. A newly ready
+            // Issue also invalidates a prior non-ready diagnostic; repeated ready polls
+            // still obey the local cooldown and the global inspection budget.
+            var newlyReady = remote.Labels.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) &&
+                cachedIssue.State is not null && !cachedIssue.State.Labels.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase);
+            if (newlyReady)
+            {
+                check.Next = DateTimeOffset.MinValue;
+                _standaloneChecks[source.ExecutionId] = check;
+            }
+            if (check.Next > now) continue;
             if (!remote.IsOpen && remote.Labels.Contains(config.GitHub.DoneLabel, StringComparer.OrdinalIgnoreCase))
             {
                 if (source.CompletionJson is not null)
@@ -161,6 +177,40 @@ public sealed partial class Worker
                     await ReportStandaloneBlockerAsync(source, "workspace-owner-history-inconsistent", ct);
                     continue;
                 }
+                if (source.State == "InfrastructureFailure" && source.RecoveryState == "uncertain" &&
+                    source.CodexRecovery is null)
+                {
+                    string? processBlocker;
+                    await _repositoryGate.WaitAsync(ct);
+                    try { processBlocker = await git.InspectExecutionProcessesAsync(source, ct); }
+                    finally { _repositoryGate.Release(); }
+                    if (processBlocker is not null)
+                    {
+                        await ReportStandaloneBlockerAsync(source, processBlocker, ct);
+                        continue;
+                    }
+                    if (!Has(config.GitHub.ReadyLabel))
+                    {
+                        await ReportStandaloneBlockerAsync(source, "retry-requires-ready-label", ct);
+                        continue;
+                    }
+                    var liveIssue = await github.GetIssueAsync(source.IssueNumber, ct);
+                    if (liveIssue is null || liveIssue.Title != source.IssueTitle || liveIssue.Body != source.OriginalIssueBody)
+                    {
+                        await ReportStandaloneBlockerAsync(source, "original-issue-intent-changed", ct);
+                        continue;
+                    }
+                    var coordinator = new CodexRecoveryCoordinator(config, git, history, _repositoryGate, _output, _clock);
+                    var rejection = await coordinator.PrepareStandaloneImplementationAsync(source, entries, ct);
+                    if (rejection is null)
+                    {
+                        await RecordImplementationContinuationAsync(source, now, ct);
+                        continue;
+                    }
+                    await ReportStandaloneBlockerAsync(source, "implementation-recovery-unproven", ct,
+                        rejection + ". Preserve the workspace; inspect retained ownership/session evidence.");
+                    continue;
+                }
                 await _repositoryGate.WaitAsync(ct);
                 try
                 {
@@ -185,6 +235,41 @@ public sealed partial class Worker
                                 ? "This retained post-repair history has not passed legacy process, workspace, session, Issue-intent, and execution-profile reconstruction. Preserve it for review; automatic resume and retirement are blocked."
                                 : $"Legacy recovery proof failed: {legacyReview}. Preserve the worktree; automatic resume and retirement are blocked.");
                         continue;
+                    }
+                    if (source.State == "InfrastructureFailure")
+                    {
+                        var rejection = CodexRecoveryCoordinator.ValidateImplementationInterruption(source) ??
+                            CodexRecoveryCoordinator.ValidateMetadata(source, entries, config);
+                        if (source.OriginalIssueBody != issue.Body || source.IssueTitle != issue.Title)
+                            rejection = "Current Issue title/body differs from the original execution intent";
+                        if (!Has(config.GitHub.ReadyLabel)) rejection = "Explicit ready is required to reconsider this infrastructure interruption";
+                        if (rejection is null && !inspection.NoWork)
+                        {
+                            rejection = await git.ValidateCodexRecoveryAsync(source, ct);
+                            if (rejection is null)
+                            {
+                                var candidate = source with
+                                {
+                                    RecoveryState = "codex-interrupted",
+                                    CodexRecovery = source.CodexRecovery is { RetryAfterUtc: null } saved
+                                        ? saved with { RetryAfterUtc = source.CompletedAtUtc?.AddMinutes(5) }
+                                        : source.CodexRecovery
+                                };
+                                if (await history.TryReconstructCodexRecoveryAsync(candidate, ct, source.CodexRecovery))
+                                {
+                                    await RecordImplementationContinuationAsync(candidate, now, ct);
+                                }
+                                continue;
+                            }
+                        }
+                        if (rejection is not null)
+                        {
+                            await ReportStandaloneBlockerAsync(source, "implementation-recovery-unproven", ct,
+                                rejection + ". Preserve the workspace and inspect retained execution evidence before retrying.");
+                            continue;
+                        }
+                        // Only a verified workspace with no edits and no feature commits
+                        // may use the existing retirement/fresh-attempt route below.
                     }
                     var continuationBlocker = source.RecoveryState == "standalone-retiring" ? "retirement-already-started" :
                         source.State == "InfrastructureFailure" ? "execution-infrastructure-failure" :
@@ -245,6 +330,11 @@ public sealed partial class Worker
                     if (!await history.TryTransitionStandaloneAsync(retiring, "standalone-retired", inspection, ct))
                         throw new WorkerInfrastructureException("Standalone retirement changed while cleanup was recorded.");
                     await github.RemoveLabelAsync(issue.Number, config.GitHub.WorkingLabel, ct);
+                    if (inspection.NoWork)
+                        await history.SaveStandaloneRecoveryDiagnosticAsync(source.ExecutionId,
+                            System.Text.Json.JsonSerializer.Serialize(new StandaloneRecoveryDiagnostic(source.ExecutionId,
+                                source.IssueNumber, "verified-fresh-attempt", "No edits or feature commits remain; verified non-integration and exclusive ownership authorized a fresh ready attempt. Original history retained.",
+                                "retired", now)), ct);
                     _operationalLog($"Execution {source.ExecutionId} · superseded after verified non-integration; history and feature commits retained; ready Issue will start a fresh attempt.");
                 }
                 finally { _repositoryGate.Release(); }
@@ -283,6 +373,13 @@ public sealed partial class Worker
         return null;
     }
 
+    private Task RecordImplementationContinuationAsync(ExecutionHistoryEntry source, DateTimeOffset now, CancellationToken ct) =>
+        (history ?? throw new InvalidOperationException("Standalone recovery history is unavailable."))
+            .SaveStandaloneRecoveryDiagnosticAsync(source.ExecutionId,
+                System.Text.Json.JsonSerializer.Serialize(new StandaloneRecoveryDiagnostic(source.ExecutionId,
+                    source.IssueNumber, "implementation-continuation",
+                    "Verified interrupted implementation; awaiting execution readiness and resume cooldown.", "queued", now)), ct);
+
     private static DateTimeOffset RecoveryDiagnosticAge(ExecutionHistoryEntry entry)
     {
         if (entry.StandaloneRecoveryDiagnosticJson is null) return DateTimeOffset.MinValue;
@@ -305,7 +402,10 @@ public sealed partial class Worker
             "execution-profile-unproven" => "The retained execution model/effort profile is missing or invalid.",
             "recovery-configuration-changed" => "Current configuration does not match the retained workspace fingerprint.",
             "implementation-checkpoint-unproven" => "History does not prove implementation completed with a valid continuation checkpoint.",
-            "execution-infrastructure-failure" => "The original execution records an infrastructure failure; standalone validation continuation is not authorized.",
+            "execution-infrastructure-failure" => "Infrastructure interruption requires implementation/workspace verification. Explicitly mark the original Issue ready to request a bounded recovery inspection.",
+            "retry-requires-ready-label" => "Explicitly mark the original open Issue ready to request infrastructure recovery; preserved-work verification is still required.",
+            "workspace-process-active" => "A process still uses the preserved workspace. Wait for it to exit or stop it through the owning service before recovery.",
+            "integration-or-ownership-metadata-unproven" => "Original base, repository ownership or integration metadata is missing or inconsistent. Preserve the worktree and reconcile execution history before retrying.",
             "process-scope-unreadable" => "A live process has unreadable cgroup evidence; the Worker cannot prove it is outside the owned execution scope.",
             "process-scope-missing" => "No historical Linux process scope or joined-child shutdown proof is available. Preserve the workspace.",
             "relevant-process-unreadable" => "A potentially owned live process has an unreadable workspace link. Preserve the workspace and inspect service process permissions.",

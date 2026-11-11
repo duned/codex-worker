@@ -317,7 +317,9 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         var codex = new AlreadyCompleteCodex(workspace, session.ToString());
         var validation = new CountingLegacyValidation();
         var readyClock = new FixedRecoveryClock(clock.GetUtcNow().AddMinutes(6));
-        var worker = new Worker(config, new ConcurrentGitHub(fixture.Issue), restartedGit, codex, validation,
+        var github = new ConcurrentGitHub(fixture.Issue);
+        github.Labels.Add((source.IssueNumber, config.GitHub.ReadyLabel));
+        var worker = new Worker(config, github, restartedGit, codex, validation,
             telegram, console, history, timeProvider: readyClock);
         var result = await worker.ProcessOneAsync(CancellationToken.None);
         Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
@@ -2090,11 +2092,12 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
             Worker = new WorkerSettings()
         };
         var codex = new ShutdownCodex();
+        var github = new ConcurrentGitHub(fixture.Issue);
         ExecutionHistoryEntry interrupted;
         using (var git = fixture.CreateRepository(config.Git))
         {
             await git.InitializeAsync(CancellationToken.None);
-            var worker = new Worker(config, new ConcurrentGitHub(fixture.Issue), git, codex,
+            var worker = new Worker(config, github, git, codex,
                 new ImmediateValidation(), telegram, console, history, shutdownToken: shutdown.Token);
             var task = (await worker.ClaimNextAsync(shutdown.Token))!;
             var workspace = await codex.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -2113,7 +2116,10 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         await restartedGit.InitializeAsync(CancellationToken.None);
         var continuation = new FileCodex();
         var clock = new FixedRecoveryClock((interrupted.CodexRecovery?.RetryAfterUtc ?? DateTimeOffset.UtcNow).AddSeconds(1));
-        var restarted = new Worker(config, new ConcurrentGitHub(fixture.Issue), restartedGit,
+        // GitHub state survives Worker restarts, including the interrupted claim's working label.
+        Assert.Equal(config.GitHub.WorkingLabel,
+            Assert.Single((await github.ReadIssueStateAsync(interrupted.IssueNumber, CancellationToken.None)).Labels));
+        var restarted = new Worker(config, github, restartedGit,
             continuation, new ImmediateValidation(), telegram, console, history, timeProvider: clock);
         // Preserved interruption is discovered before any new ready-label implementation.
         var retry = await restarted.ProcessOneAsync(CancellationToken.None);
