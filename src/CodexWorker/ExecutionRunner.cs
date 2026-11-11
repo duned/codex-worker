@@ -427,7 +427,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (context.ResolveIntegrationConflict)
             {
                 if (github is null) throw new WorkerInfrastructureException("Issue verification is unavailable.");
-                await StandaloneConflictResolution.VerifyIntentAsync(config, github, context.RetryOf, ct);
+                var verified = await StandaloneConflictResolution.VerifyIntentAsync(config, github, context.RetryOf, ct);
+                if (verified.ParentProvenance != context.Execution.ParentProvenance)
+                    throw ConflictIssueIntent.Refuse("issue-parent-proof-changed");
             }
             return;
         }
@@ -727,7 +729,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             AssignmentId: execution.AssignmentId,
             OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery,
             CodexThreadId: execution.CodexThreadId, CodexSessionOwner: execution.CodexSessionOwner,
-            ParentIssueNumber: execution.ParentIssueNumber);
+            ParentIssueNumber: execution.ParentIssueNumber, ParentIssueCaptured: execution.ParentIssueCaptured, ParentProvenance: execution.ParentProvenance);
 
     private static string? Extract(string? text, string pattern)
     {

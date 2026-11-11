@@ -1263,16 +1263,17 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
     }
 
     [Theory]
-    [InlineData("success", false)]
-    [InlineData("failed", false)]
-    [InlineData("cancelled", false)]
-    [InlineData("changed-intent", false)]
-    [InlineData("success", true)]
-    [InlineData("failed", true)]
-    [InlineData("cancelled", true)]
+    [InlineData("success", true, true)]
+    [InlineData("success", false, false)]
+    [InlineData("failed", false, false)]
+    [InlineData("cancelled", false, false)]
+    [InlineData("changed-intent", false, false)]
+    [InlineData("success", true, false)]
+    [InlineData("failed", true, false)]
+    [InlineData("cancelled", true, false)]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    public async Task ExplicitResolutionEditsThePreservedWorktreeAndPreservesFailures(string outcome, bool managed)
+    public async Task ExplicitResolutionEditsThePreservedWorktreeAndPreservesFailures(string outcome, bool managed, bool legacyParent)
     {
         using var fixture = await seed.CreateAsync();
         var config = new WorkerConfiguration
@@ -1296,19 +1297,24 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
             preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
             "original implementation", "passed", 0, [], preserved.BaseCommit, "main", null, "conflict",
             RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit, OriginalIssueBody: fixture.Issue.Body,
-            ServerExecutionId: managed ? "server-source" : null);
+            ServerExecutionId: managed ? "server-source" : null, ParentIssueCaptured: !legacyParent);
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../explicit-conflict.db"));
         await history.CreateAsync(source);
-        var execution = WorkerExecution.Create(config.Project, config.Git, fixture.Issue, retryOfExecutionId: id,
+        var proof = legacyParent ? JsonSerializer.Serialize(new CodexProvisioning.IssueParentProvenance(
+            source.Repository, source.IssueNumber, "native-issue", source.StartedAtUtc.AddDays(-1), source.StartedAtUtc, 32,
+            [new("native-parent-added", source.StartedAtUtc.AddMinutes(-1), true, 32)])) : null;
+        var verifiedIssue = fixture.Issue with { ParentIssueCaptured = true, ParentIssueNumber = legacyParent ? 32 : null, ParentProvenance = proof };
+        var execution = WorkerExecution.Create(config.Project, config.Git, verifiedIssue, retryOfExecutionId: id,
             attemptNumber: 2, resumed: true, featureBranchOverride: source.FeatureBranch,
             serverExecutionId: managed ? "server-recovery" : null, assignmentId: managed ? "assignment" : null,
             ownershipGeneration: managed ? 1 : null);
         execution.TransitionTo(ExecutionState.Claimed);
         var attempt = source with { ExecutionId = execution.ExecutionId, CompletedAtUtc = null, State = "Created",
-            RetryOfExecutionId = id, AttemptNumber = 2, RecoveryState = null };
+            RetryOfExecutionId = id, AttemptNumber = 2, RecoveryState = null, ParentIssueCaptured = true,
+            ParentIssueNumber = verifiedIssue.ParentIssueNumber, ParentProvenance = proof };
         Assert.True(await history.TryClaimIntegrationRecoveryAsync(source, attempt, "explicit", true));
         using var cancellation = new CancellationTokenSource();
-        var github = new ConcurrentGitHub(fixture.Issue);
+        var github = new ConcurrentGitHub(fixture.Issue) { ParentNumber = verifiedIssue.ParentIssueNumber, ParentProvenance = proof };
         github.Labels.Add((fixture.Issue.Number, config.GitHub.WorkingLabel));
         var engine = new ConflictFileEngine(workspace, outcome, cancellation, () => github.ChangedBody = "changed intent");
         using var repository = original.CreateExecutionRepository();
@@ -2585,6 +2591,10 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
     private sealed class ConcurrentGitHub(GitHubIssue template) : IGitHubClient
     {
+        public int? ParentNumber { get; set; } = template.ParentIssueNumber;
+        public string? ParentProvenance { get; set; }
+        public Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct) => Task.FromResult(ParentNumber);
+        public Task<string?> GetParentProvenanceAsync(int issueNumber, DateTimeOffset startedAt, int? currentParent, CancellationToken ct) => Task.FromResult(ParentProvenance);
         public string? ChangedBody { get; set; }
         public Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken ct) =>
             Task.FromResult<GitHubIssue?>(template with { Number = issueNumber, Body = ChangedBody ?? template.Body });

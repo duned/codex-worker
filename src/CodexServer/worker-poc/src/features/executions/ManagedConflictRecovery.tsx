@@ -9,7 +9,7 @@ import { t, useLanguage } from '../../shared/i18n';
 import { execution, type Execution } from './model';
 
 type Candidate = { projectId: string; serverExecutionId: string; workerExecutionId: string; integrationBase: string;
-  kind: string; automaticRetryExhausted: boolean; preservedCommit?: string | null; refusalReason?: string | null; refusalCode?: string | null };
+  kind: string; automaticRetryExhausted: boolean; preservedCommit?: string | null; refusalReason?: string | null; refusalCode?: string | null; parentProvenance?: string | null };
 type Preview = { executionId: string; workerId?: string; candidate?: Candidate; eligible: boolean; reason: string; reasonCode?: string | null };
 export const conflictPreview: Validator<Preview> = value => {
   if (!value || typeof value !== 'object') throw new Error('Invalid recovery preview.');
@@ -22,7 +22,8 @@ export const conflictPreview: Validator<Preview> = value => {
         typeof candidate.kind !== 'string' || typeof candidate.automaticRetryExhausted !== 'boolean' ||
         candidate.preservedCommit != null && typeof candidate.preservedCommit !== 'string' ||
         candidate.refusalReason != null && typeof candidate.refusalReason !== 'string' ||
-        candidate.refusalCode != null && typeof candidate.refusalCode !== 'string') ||
+        candidate.refusalCode != null && typeof candidate.refusalCode !== 'string' ||
+        candidate.parentProvenance != null && (typeof candidate.parentProvenance !== 'string' || candidate.parentProvenance.length > 262144)) ||
       item.eligible && (!item.workerId || !candidate || !candidate.preservedCommit || candidate.kind !== 'Integration'))
     throw new Error('Invalid recovery preview.');
   return item;
@@ -76,7 +77,10 @@ export function ManagedConflictRecovery({ item }: { item: Execution }) {
     {preview && <div className="mt-4"><Notice>{preview.reason}</Notice>{preview.candidate && <details className="mt-3 break-all text-sm text-secondary"><summary>{t('conflicts.evidence')}</summary>
       <p>{t('conflicts.worker')}: {preview.workerId}</p><p>{t('conflicts.execution')}: {preview.candidate.workerExecutionId}</p>
       <p>{t('conflicts.commit')}: {preview.candidate.preservedCommit}</p><p>{t('conflicts.base')}: {preview.candidate.integrationBase}</p>
-      <p>{preview.candidate.automaticRetryExhausted ? t('conflicts.exhausted') : t('conflicts.automaticAvailable')}</p>
+      {preview.candidate.parentProvenance && <details className="mt-3"><summary>{t('conflicts.parentEvidence')}</summary>
+        <p className="mt-2">{t('conflicts.parentReview')}</p><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs">{preview.candidate.parentProvenance}</pre>
+      </details>}
+      <p>{preview.candidate.parentProvenance ? t('conflicts.parentExplicit') : preview.candidate.automaticRetryExhausted ? t('conflicts.exhausted') : t('conflicts.automaticAvailable')}</p>
     </details>}</div>}
     {message && <div className="mt-4"><Notice>{message} {t('conflicts.refreshResult')}</Notice></div>}
     {result && <Link className="mt-4 block text-sm font-semibold text-brand-secondary hover:underline" to={`/executions/${encodeURIComponent(result.id)}`}>{t('conflicts.result')}</Link>}

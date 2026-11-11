@@ -120,14 +120,15 @@ internal sealed class IntegrationRecoveryCoordinator(WorkerConfiguration config,
             }
             var refusal = StandaloneConflictResolution.Refusal(source, entries, managed: true);
             string? refusalCode = null;
+            string? parentProvenance = null;
             if (refusal is null)
             {
-                try { await StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct); }
+                try { parentProvenance = (await StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct)).ParentProvenance; }
                 catch (ConflictIntentException ex) { refusal = ex.Message; refusalCode = ex.ReasonCode; }
             }
             candidates.Add(new(projectId, source.ServerExecutionId, source.ExecutionId.ToString(), integrationBase,
                 AutomaticRetryExhausted: source.IntegrationRecoveryAttemptBase == integrationBase,
-                PreservedCommit: source.RecoveryBaseCommit, RefusalReason: refusal, RefusalCode: refusalCode));
+                PreservedCommit: source.RecoveryBaseCommit, RefusalReason: refusal, RefusalCode: refusalCode, ParentProvenance: parentProvenance));
             if (candidates.Count == 128) break;
         }
         return candidates;

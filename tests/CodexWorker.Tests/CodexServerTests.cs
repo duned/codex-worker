@@ -3042,8 +3042,10 @@ public sealed class CodexServerTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    [Fact]
-    public async Task ExplicitManagedConflictRearmsExhaustedBaseOnceWithDurableIdempotencyAndOriginalWorkerLease()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitManagedConflictRearmsExhaustedBaseOnceWithDurableIdempotencyAndOriginalWorkerLease(bool reconcileParent)
     {
         using var temporary = new TemporaryDirectory();
         var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-09-15T00:00:00Z"));
@@ -3073,6 +3075,17 @@ public sealed class CodexServerTests
         await store.ReportExecutionAsync(automatic.ServerExecutionId, new WorkerExecutionReport(owner, automatic.AssignmentId,
             Guid.NewGuid().ToString(), "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: automatic.Lease?.Generation ?? 0));
         candidate = candidate with { AutomaticRetryExhausted = true };
+        if (reconcileParent)
+        {
+            var proof = new CodexProvisioning.IssueParentProvenance(project.Repository, 17, "original-issue-node",
+                clock.GetUtcNow().AddDays(-1), clock.GetUtcNow().AddSeconds(5), 32,
+                [new("native-added-event", clock.GetUtcNow().AddSeconds(-51), true, 32)]);
+            candidate = candidate with { ParentProvenance = System.Text.Json.JsonSerializer.Serialize(proof) };
+            var late = proof with { Events = [new("late-parent", clock.GetUtcNow().AddSeconds(1), true, 32)] };
+            var incomplete = candidate with { ParentProvenance = System.Text.Json.JsonSerializer.Serialize(late) };
+            Assert.False((await store.RequestAssignmentAsync(poll with { IntegrationRecoveries = [incomplete] })).HasWork);
+            Assert.Equal("issue-parent-history-incomplete", (await store.InspectManagedConflictAsync(original.Id)).ReasonCode);
+        }
         poll = poll with { IntegrationRecoveries = [candidate] };
         Assert.False((await store.RequestAssignmentAsync(poll)).HasWork);
         var refusal = candidate with { RefusalCode = "issue-parent-changed",
@@ -3101,6 +3114,22 @@ public sealed class CodexServerTests
         Assert.False((await store.InspectManagedConflictAsync(original.Id)).Eligible);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RetryManagedConflictAsync(original.Id,
             request with { OperationId = Guid.NewGuid().ToString("N") }));
+        if (!reconcileParent)
+        {
+            // Durable requests created before parent provenance existed must retain idempotency.
+            await using var connection = new Microsoft.Data.Sqlite.SqliteConnection(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder { DataSource = path }.ToString());
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT metadata_json FROM execution_metadata WHERE execution_id=$id;";
+            command.Parameters.AddWithValue("$id", retry.Id);
+            var metadataJson = Assert.IsType<string>(await command.ExecuteScalarAsync());
+            var metadata = Assert.IsType<Dictionary<string, string>>(System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(metadataJson));
+            metadata["explicitRecoveryCandidate"] = metadata["explicitRecoveryCandidate"].Replace(
+                ",\"ParentProvenance\":null", "", StringComparison.Ordinal);
+            command.CommandText = "UPDATE execution_metadata SET metadata_json=$metadata WHERE execution_id=$id;";
+            command.Parameters.AddWithValue("$metadata", System.Text.Json.JsonSerializer.Serialize(metadata));
+            await command.ExecuteNonQueryAsync();
+        }
         var restarted = new SqliteRegistryStore(path, timeProvider: clock);
         await restarted.InitializeAsync();
         Assert.Equal(retry.Id, (await restarted.RetryManagedConflictAsync(original.Id, request)).Id);
@@ -3114,6 +3143,7 @@ public sealed class CodexServerTests
         Assert.Equal("Active", assigned.Lease.State);
         Assert.Equal(request.OperationId, assigned.Metadata["explicitIntegrationRecovery"]);
         Assert.Equal(candidate.PreservedCommit, assigned.Metadata["preservedCommit"]);
+        Assert.Equal(candidate.ParentProvenance, assigned.Metadata.GetValueOrDefault("parentProvenance"));
         await restarted.ReportExecutionAsync(retry.Id, new WorkerExecutionReport(owner, assigned.AssignmentId,
             Guid.NewGuid().ToString(), "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: assigned.Lease.Generation));
         // Explicit retry never erases the automatic fingerprint.

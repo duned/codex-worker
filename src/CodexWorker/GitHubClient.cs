@@ -3,11 +3,11 @@ using System.Text.Json;
 namespace CodexWorker;
 
 public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt,
-    IReadOnlyList<string>? Labels = null, string CommentContext = "", int? ParentIssueNumber = null);
+    IReadOnlyList<string>? Labels = null, string CommentContext = "", int? ParentIssueNumber = null, bool ParentIssueCaptured = false, string? ParentProvenance = null);
 public sealed record GitHubIssueState(bool IsOpen, IReadOnlyList<string> Labels);
 public sealed record RequiredGitHubLabel(string Name, string Color, string Description);
 
-public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
+public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
 {
     private readonly string repository;
     private readonly GitHubRetryPolicy retry;

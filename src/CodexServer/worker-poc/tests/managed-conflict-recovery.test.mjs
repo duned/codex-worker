@@ -37,3 +37,12 @@ test('specific intent diagnostic and operator step survive the dashboard preview
   assert.throws(() => conflictPreview({ ...refused, reasonCode: 42 }));
   assert.throws(() => conflictPreview({ ...refused, candidate: { ...refused.candidate, refusalCode: 42 } }));
 });
+
+
+test('legacy parent evidence remains part of the exact operator-reviewed candidate', () => {
+  const proof = JSON.stringify({ Repository: 'owner/repo', IssueNumber: 34, ParentNumber: 32, Events: [] });
+  const legacy = { ...preview, candidate: { ...preview.candidate, parentProvenance: proof } };
+  assert.equal(conflictPreview(legacy).candidate.parentProvenance, proof);
+  assert.throws(() => conflictPreview({ ...legacy, candidate: { ...legacy.candidate, parentProvenance: 32 } }));
+  assert.throws(() => conflictPreview({ ...legacy, candidate: { ...legacy.candidate, parentProvenance: 'x'.repeat(262145) } }));
+});

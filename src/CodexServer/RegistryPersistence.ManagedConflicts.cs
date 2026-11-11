@@ -58,6 +58,15 @@ public sealed partial class SqliteRegistryStore
         if (evidence is null) return Refuse("No fresh preserved-workspace preview. Wait for the original Worker's capacity/discovery poll, then refresh; inspect its recovery diagnostics if absent.");
         if (evidence.ProjectId != source.ProjectId || evidence.WorkerExecutionId != source.WorkerExecutionId || evidence.PreservedCommit is null)
             return Refuse("Original execution identity or exact preserved commit is unavailable; inspect Worker history.", evidence);
+        if (evidence.ParentProvenance is { } provenance)
+        {
+            var proof = IssueParentProvenance.Parse(provenance);
+            if (proof is null || !string.Equals(proof.Repository, project.Repository, StringComparison.OrdinalIgnoreCase) ||
+                proof.IssueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture) != source.WorkReference.Id ||
+                source.AssignedAtUtc is not { } assigned || !proof.IsConsistent(assigned))
+                return Refuse("Parent history cannot prove the same parent before the original Server assignment. Preserve the implementation and inspect native history; manual attestation is unsupported.",
+                    evidence, "issue-parent-history-incomplete");
+        }
         if (evidence.RefusalReason is { } reason) return Refuse(reason, evidence, evidence.RefusalCode);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(ct);
@@ -72,7 +81,10 @@ public sealed partial class SqliteRegistryStore
         if (Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture) != 0)
             return Refuse("Another queued, active, completed or uncertain execution owns this Issue; inspect it first.", evidence);
         return new(executionId, worker.WorkerId, evidence, true,
-            "Eligible for one bounded resolution attempt. The Worker rechecks Issue intent, exact workspace identity and current lease before mutation.");
+            evidence.ParentProvenance is null
+                ? "Eligible for one bounded resolution attempt. The Worker rechecks Issue intent, exact workspace identity and current lease before mutation."
+                : "Legacy parent metadata is missing. Complete native GitHub history proves the same parent before assignment. Review the evidence before authorizing one bounded attempt; original history remains unchanged and the Worker rechecks proof and lease before mutation.",
+            evidence.ParentProvenance is null ? null : "issue-parent-metadata-missing");
     }
 
     public async Task<ExecutionRequest> RetryManagedConflictAsync(string executionId, ManagedConflictRetry request, CancellationToken ct = default)
@@ -82,7 +94,7 @@ public sealed partial class SqliteRegistryStore
             request.Candidate.ServerExecutionId != executionId || request.Candidate.Kind != "Integration" ||
             !Printable(request.Candidate.ProjectId, 80) || !Guid.TryParse(request.Candidate.WorkerExecutionId, out _) ||
             !ValidRecoveryCommit(request.Candidate.IntegrationBase) || !ValidRecoveryCommit(request.Candidate.PreservedCommit) ||
-            request.Candidate.RefusalReason is not null || request.Candidate.RefusalCode is not null)
+            request.Candidate.ParentProvenance is { Length: > 262144 } || request.Candidate.RefusalReason is not null || request.Candidate.RefusalCode is not null)
             throw new InvalidDataException("Invalid explicit conflict recovery scope.");
         // Stable operation ID is also the retry execution ID. Lost replies and restart cannot
         // enqueue another attempt; returning a prior result does not require a live Worker.
@@ -140,8 +152,20 @@ public sealed partial class SqliteRegistryStore
         command.Parameters.AddWithValue("$worker", request.WorkerId);
         var json = await command.ExecuteScalarAsync(ct) as string;
         var metadata = json is null ? null : JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+        // Compare the persisted contract, including optional fields. Older durable requests
+        // omitted ParentProvenance rather than serializing it as null.
+        IntegrationRecoveryCandidate? recordedCandidate;
+        try
+        {
+            recordedCandidate = metadata?.GetValueOrDefault("explicitRecoveryCandidate") is { } recorded
+                ? JsonSerializer.Deserialize<IntegrationRecoveryCandidate>(recorded) : null;
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException("Recorded recovery scope is invalid; preserve and inspect the request.");
+        }
         if (prior.RetryOfExecutionId != executionId || metadata?.GetValueOrDefault("explicitIntegrationRecovery") != request.OperationId ||
-            metadata.GetValueOrDefault("explicitRecoveryCandidate") != JsonSerializer.Serialize(request.Candidate))
+            recordedCandidate != request.Candidate)
             throw new InvalidOperationException("Operation ID already belongs to another request.");
         return prior;
     }

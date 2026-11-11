@@ -172,7 +172,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     }
                 }
                 else issue = new GitHubIssue(source.IssueNumber, source.IssueTitle, originalBody, source.StartedAtUtc,
-                    ParentIssueNumber: source.ParentIssueNumber);
+                    ParentIssueNumber: source.ParentIssueNumber, ParentIssueCaptured: source.ParentIssueCaptured, ParentProvenance: source.ParentProvenance);
                 if (!await github.IsIssueOpenAsync(source.IssueNumber, ct))
                 {
                     if (source.ValidationOutcome == "legacy: pending validation")
@@ -366,6 +366,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             // A historical redacted/LF-only prompt is evidence, not the current GitHub payload.
             if (resolveIntegrationConflict)
                 issue = await VerifyConflictResolutionAsync(source, allHistory, ct, managed: managedExplicit);
+            if (managedExplicit && assignment?.Metadata.GetValueOrDefault("parentProvenance") != issue.ParentProvenance)
+                throw ConflictIssueIntent.Refuse("issue-parent-proof-changed");
             if (managedExplicit && (assignment?.Metadata.GetValueOrDefault("preservedCommit") != source.RecoveryBaseCommit ||
                 assignment?.Metadata.GetValueOrDefault("integrationBase") != integrationBase))
                 throw new InvalidOperationException("Preserved commit or integration base changed since preview; inspect again.");
@@ -406,11 +408,11 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 return null;
             }
             claimedExecution = execution;
-            if (resolveIntegrationConflict) await VerifyConflictIntentAsync(source, ct);
+            if (resolveIntegrationConflict) await VerifyConflictIntentAsync(source, ct, execution.ParentProvenance);
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, ct);
-            if (resolveIntegrationConflict) await VerifyConflictIntentAsync(source, ct);
+            if (resolveIntegrationConflict) await VerifyConflictIntentAsync(source, ct, execution.ParentProvenance);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel, ct);
             _operationalLog($"Integration recovery claimed · Issue #{issue.Number} · execution {execution.ExecutionId} · original execution {source.ExecutionId}");
             DisplayIssueStart(issue, execution);
@@ -663,7 +665,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     }
 
     private async Task<GitHubIssue> PrepareCommentContextAsync(GitHubIssue issue, CancellationToken ct) =>
-        issue with { ParentIssueNumber = await github.GetParentIssueNumberAsync(issue.Number, ct),
+        issue with { ParentIssueNumber = issue.ParentIssueCaptured ? issue.ParentIssueNumber : await github.GetParentIssueNumberAsync(issue.Number, ct), ParentIssueCaptured = true,
             CommentContext = await github.GetIssueCommentContextAsync(issue.Number, ct,
             config.Environment.Variables.Values.ToArray()) };
 
@@ -720,7 +722,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     ExecutionCompletion.Read(pending) with { Report = ExecutionCompletion.Sanitize(report, config.Environment.Variables.Values.ToArray()) }, false, ct);
             try
             {
-                if (resolveIntegrationConflict && retryOf is not null) await VerifyConflictIntentAsync(retryOf, ct);
+                if (resolveIntegrationConflict && retryOf is not null) await VerifyConflictIntentAsync(retryOf, ct, execution.ParentProvenance);
                 report = await ReportResultAsync(issue, reportedResult, ct);
                 execution.QuotaAtEnd = report.QuotaAtEnd;
                 reportedResult = result with { Report = report };
@@ -1162,7 +1164,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             AssignmentId: execution.AssignmentId,
             OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery,
             CodexThreadId: execution.CodexThreadId, CodexSessionOwner: execution.CodexSessionOwner,
-            ParentIssueNumber: execution.ParentIssueNumber);
+            ParentIssueNumber: execution.ParentIssueNumber, ParentIssueCaptured: execution.ParentIssueCaptured, ParentProvenance: execution.ParentProvenance);
 
     private static string? Extract(string? text, string pattern)
     {

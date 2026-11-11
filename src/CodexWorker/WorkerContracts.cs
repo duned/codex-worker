@@ -25,6 +25,8 @@ public interface IGitHubClient
     Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
         IReadOnlyList<string>? secretValues = null);
     Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct) => Task.FromResult<int?>(null);
+    Task<string?> GetParentProvenanceAsync(int issueNumber, DateTimeOffset startedAt, int? currentParent, CancellationToken ct) =>
+        Task.FromResult<string?>(null);
     Task<IReadOnlyList<int>?> GetBlockerIssueNumbersAsync(int issueNumber, CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<int>?>(null);
     Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(true);

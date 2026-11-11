@@ -3295,6 +3295,9 @@ public sealed class WorkerV011Tests
 
     [Theory]
     [InlineData("success")]
+    [InlineData("legacy-success")]
+    [InlineData("legacy-stale-lease")]
+    [InlineData("legacy-changed-proof")]
     [InlineData("historical-crlf")]
     [InlineData("fingerprinted-redaction")]
     [InlineData("failed")]
@@ -3309,6 +3312,8 @@ public sealed class WorkerV011Tests
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
         using var h = new Harness(history: history);
+        var legacy = scenario.StartsWith("legacy-", StringComparison.Ordinal);
+        if (legacy) h.GitHub.Issue = h.GitHub.Issue with { ParentIssueNumber = 32 };
         if (scenario == "historical-crlf")
         {
             h.GitHub.Issue = h.GitHub.Issue with { Body = "Original task\r\nDetails\r\n", ParentIssueNumber = 32 };
@@ -3320,7 +3325,10 @@ public sealed class WorkerV011Tests
             AssignmentId = Guid.NewGuid().ToString("N"), OwnershipGeneration = 1,
             OriginalIssueBody = FailureDiagnosticRedactor.Redact(h.GitHub.Issue.Body),
             OriginalIssueBodyFingerprint = scenario == "fingerprinted-redaction" ? ConflictIssueIntent.BodyFingerprint(h.GitHub.Issue.Body) : null,
-            ParentIssueNumber = h.GitHub.Issue.ParentIssueNumber, IntegrationRecoveryAttemptBase = "current-main" };
+            ParentIssueNumber = legacy ? null : h.GitHub.Issue.ParentIssueNumber, ParentIssueCaptured = !legacy, IntegrationRecoveryAttemptBase = "current-main" };
+        if (legacy) h.GitHub.ParentProvenance = System.Text.Json.JsonSerializer.Serialize(new CodexProvisioning.IssueParentProvenance(
+            source.Repository, source.IssueNumber, "issue-node", source.StartedAtUtc.AddDays(-1), source.StartedAtUtc, 32,
+            [new("parent-added", source.StartedAtUtc.AddSeconds(-51), true, 32)]));
         await history.CreateAsync(source);
         var now = DateTimeOffset.UtcNow;
         var serverId = Guid.NewGuid().ToString("N");
@@ -3329,7 +3337,7 @@ public sealed class WorkerV011Tests
         await WorkerAuthentication.LoadOrCreateTokenAsync(identity);
         var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = identity };
         var lease = new ServerExecutionLeaseContract(serverId, workerId, 3, now, now.AddMinutes(5), "Active");
-        using var handler = new ConflictRecoveryHandler(lease) { RejectLease = scenario == "stale-lease" };
+        using var handler = new ConflictRecoveryHandler(lease) { RejectLease = scenario is "stale-lease" or "legacy-stale-lease" };
         using var client = new HttpClient(handler);
         var worker = new Worker(h.Worker.Configuration, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram,
             history: history, serverSettings: settings, registrationClient: new WorkerRegistrationClient(client));
@@ -3347,6 +3355,9 @@ public sealed class WorkerV011Tests
                 ["preservedCommit"] = scenario == "changed-commit" ? "other-commit" : source.RecoveryBaseCommit ?? "",
                 ["integrationBase"] = "current-main"
             }, lease);
+        if (candidate.ParentProvenance is { } proof)
+            assignment = assignment with { Metadata = assignment.Metadata.Append(new KeyValuePair<string, string>("parentProvenance", proof)).ToDictionary() };
+        if (scenario == "legacy-changed-proof") h.GitHub.ParentProvenance = h.GitHub.ParentProvenance?.Replace("parent-added", "different-event", StringComparison.Ordinal);
         h.Git.RequestConflictResolution = true;
         h.Codex.ConflictAction = () =>
         {
@@ -3359,12 +3370,12 @@ public sealed class WorkerV011Tests
             var task = await worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
             return task is null ? null : await task;
         }
-        if (scenario is "success" or "historical-crlf" or "fingerprinted-redaction" or "failed")
+        if (scenario is "success" or "legacy-success" or "historical-crlf" or "fingerprinted-redaction" or "failed")
             Assert.Equal(scenario != "failed" ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict, (await RunAsync())?.Kind);
         else await Assert.ThrowsAnyAsync<Exception>(RunAsync);
         Assert.Empty(h.Codex.Issues);
-        Assert.Equal(scenario is "stale-lease" or "changed-commit" ? 0 : 1, h.Codex.ConflictResolutions);
-        if (scenario is "success" or "historical-crlf" or "fingerprinted-redaction")
+        Assert.Equal(scenario is "stale-lease" or "legacy-stale-lease" or "legacy-changed-proof" or "changed-commit" ? 0 : 1, h.Codex.ConflictResolutions);
+        if (scenario is "success" or "legacy-success" or "historical-crlf" or "fingerprinted-redaction")
         {
             Assert.True(h.Validation.Calls > 0);
             Assert.Contains(handler.Reports, report => report.State == "Completed" && report.Generation == 3);
@@ -3374,7 +3385,7 @@ public sealed class WorkerV011Tests
             Assert.False(h.GitHub.Closed);
             Assert.DoesNotContain("working->done", h.GitHub.Labels);
         }
-        if (scenario is "success" or "historical-crlf" or "fingerprinted-redaction" or "failed")
+        if (scenario is "success" or "legacy-success" or "historical-crlf" or "fingerprinted-redaction" or "failed")
         {
             // A redelivered assignment after either outcome cannot re-run resolution, even on restart.
             Assert.Null(await worker.ClaimAssignedAsync(assignment, CancellationToken.None));
@@ -3384,6 +3395,8 @@ public sealed class WorkerV011Tests
             Assert.Equal(1, h.Codex.ConflictResolutions);
             var attempt = Assert.Single(await history.ReadAllAsync(), entry => entry.RetryOfExecutionId == source.ExecutionId);
             Assert.Equal(source.OriginalIssueBodyFingerprint, attempt.OriginalIssueBodyFingerprint);
+            Assert.Equal(candidate.ParentProvenance, attempt.ParentProvenance);
+            Assert.Equal(source.ParentIssueNumber, (await history.ReadExecutionAsync(source.ExecutionId))?.ParentIssueNumber);
             Assert.Equal(source.OriginalIssueBody, h.Codex.ConflictIssueBody);
         }
     }
@@ -3436,7 +3449,7 @@ public sealed class WorkerV011Tests
     [InlineData("closed", "issue-closed")]
     [InlineData("title", "issue-title-changed")]
     [InlineData("body", "issue-body-changed")]
-    [InlineData("parent", "issue-parent-changed")]
+    [InlineData("parent", "issue-original-parent-absent")]
     [InlineData("label", "issue-recovery-label-missing")]
     [InlineData("conflicting-label", "issue-conflicting-lifecycle-label")]
     [InlineData("redacted-history", "issue-original-metadata-missing")]
@@ -3492,10 +3505,28 @@ public sealed class WorkerV011Tests
         Assert.Equal("issue-body-changed", error.ReasonCode);
     }
 
+    [Theory]
+    [InlineData(true, null, "issue-original-parent-absent")]
+    [InlineData(false, null, "issue-parent-history-unavailable")]
+    [InlineData(false, 2, "issue-parent-changed")]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task CapturedAbsentParentAndMissingLegacyParentHaveDifferentDiagnostics(bool captured, int? recordedParent, string expected)
+    {
+        using var h = new Harness();
+        h.GitHub.Issue = h.GitHub.Issue with { ParentIssueNumber = 32 };
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body,
+            ServerExecutionId = Guid.NewGuid().ToString("N"), ParentIssueNumber = recordedParent, ParentIssueCaptured = captured };
+        var error = await Assert.ThrowsAsync<ConflictIntentException>(() =>
+            StandaloneConflictResolution.VerifyIntentAsync(h.Worker.Configuration, h.GitHub, source, CancellationToken.None));
+        Assert.Equal(expected, error.ReasonCode);
+        Assert.Empty(h.GitHub.Labels);
+    }
+
     private static ExecutionHistoryEntry PreservedConflict() => new(Guid.NewGuid(), "Test Project", "owner/repo", 17,
         "Example task", "feature/example-task-17", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
         "IntegrationConflict", 1000, "Original implementation intent", "passed", 0, [], "preserved-head", "main", null,
-        "integration conflict", "integration-conflict", "preserved-head", "preserved implementation", EffectiveEffort: "high");
+        "integration conflict", "integration-conflict", "preserved-head", "preserved implementation", EffectiveEffort: "high", ParentIssueCaptured: true);
 
     [Trait("TestType", "Component")]
     [Trait("Duration", "Fast")]
@@ -3816,6 +3847,8 @@ public sealed class WorkerV011Tests
         public string CommentContext { get; set; } = "";
         public Exception? CommentFetchFailure { get; set; }
         public int CommentFetches { get; private set; }
+        internal string? ParentProvenance { get; set; }
+        public Task<string?> GetParentProvenanceAsync(int issueNumber, DateTimeOffset startedAt, int? currentParent, CancellationToken ct) => Task.FromResult(ParentProvenance);
         public Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct) => Task.FromResult(Issue.ParentIssueNumber);
         public Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
             IReadOnlyList<string>? secretValues = null)

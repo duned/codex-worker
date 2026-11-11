@@ -71,20 +71,37 @@ internal static class StandaloneConflictResolution
             if (ConflictIssueIntent.NormalizeBody(issue.Body) != ConflictIssueIntent.NormalizeBody(source.OriginalIssueBody))
                 throw ConflictIssueIntent.Refuse("issue-body-changed");
         }
-        if (parent != source.ParentIssueNumber) throw ConflictIssueIntent.Refuse("issue-parent-changed");
+        string? provenance = null;
+        if (!source.ParentIssueCaptured && source.ParentIssueNumber is null && source.ServerExecutionId is not null)
+        {
+            provenance = await github.GetParentProvenanceAsync(source.IssueNumber, source.StartedAtUtc, parent, ct)
+                ?? throw ConflictIssueIntent.Refuse("issue-parent-history-unavailable");
+            var proof = CodexProvisioning.IssueParentProvenance.Parse(provenance);
+            if (proof is null || !string.Equals(proof.Repository, source.Repository, StringComparison.OrdinalIgnoreCase) ||
+                proof.IssueNumber != source.IssueNumber || proof.ExecutionStartedAtUtc != source.StartedAtUtc ||
+                proof.ParentNumber != parent || !proof.IsConsistent(source.StartedAtUtc))
+                throw ConflictIssueIntent.Refuse("issue-parent-history-incomplete");
+        }
+        else if (parent != source.ParentIssueNumber)
+            throw ConflictIssueIntent.Refuse(source.ParentIssueNumber is not null ? "issue-parent-changed" :
+                source.ParentIssueCaptured ? "issue-original-parent-absent" : "issue-parent-metadata-missing");
         bool Has(string label) => state.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
         if (new[] { config.GitHub.DoneLabel, config.GitHub.ReadyLabel, config.GitHub.BlockedLabel, config.GitHub.FailedLabel }.Any(Has))
             throw ConflictIssueIntent.Refuse("issue-conflicting-lifecycle-label");
         if (!new[] { config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel }.Any(Has))
             throw ConflictIssueIntent.Refuse("issue-recovery-label-missing");
-        return issue;
+        return issue with { ParentIssueNumber = parent, ParentIssueCaptured = true, ParentProvenance = provenance };
     }
 }
 
 public sealed partial class Worker
 {
-    private Task VerifyConflictIntentAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
-        StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct);
+    private async Task VerifyConflictIntentAsync(ExecutionHistoryEntry source, CancellationToken ct, string? expectedProvenance = null)
+    {
+        var issue = await StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct);
+        if (issue.ParentProvenance != expectedProvenance)
+            throw ConflictIssueIntent.Refuse("issue-parent-proof-changed");
+    }
 
     private async Task<GitHubIssue> VerifyConflictResolutionAsync(ExecutionHistoryEntry source,
         IReadOnlyList<ExecutionHistoryEntry> entries, CancellationToken ct, bool managed = false)

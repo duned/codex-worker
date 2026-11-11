@@ -1095,7 +1095,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             request.IntegrationRecoveries is { Count: > 128 } || request.IntegrationRecoveries?.Any(item => item is null ||
                 !Printable(item.ProjectId, 80) || !Guid.TryParse(item.ServerExecutionId, out _) ||
                 item.PreservedCommit is not null && !ValidRecoveryCommit(item.PreservedCommit) ||
-                item.RefusalReason is { Length: > 2000 } ||
+                item.RefusalReason is { Length: > 2000 } || item.ParentProvenance is { Length: > 262144 } ||
                 item.RefusalCode is { } code && (item.RefusalReason is null || code.Length is < 1 or > 80 ||
                     code.Any(character => character is not (>= 'a' and <= 'z') and not '-')) || item.Kind is not ("Integration" or "Codex") || !Guid.TryParse(item.WorkerExecutionId, out _) || !ValidRecoveryCommit(item.IntegrationBase)) == true)
             throw new InvalidDataException("Worker assignment request contract is invalid.");
@@ -1350,7 +1350,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         foreach (var recovery in request.IntegrationRecoveries ?? [])
         {
             if (recovery.RefusalReason is not null || recovery.RefusalCode is not null) continue;
-            if (explicitOperationId is null && recovery.AutomaticRetryExhausted) continue;
+            if (explicitOperationId is null && (recovery.AutomaticRetryExhausted || recovery.ParentProvenance is not null)) continue;
             if (!request.ProjectCapacities.TryGetValue(recovery.ProjectId, out var capacity) || capacity <= 0 ||
                 !projects.TryGetValue(recovery.ProjectId, out var project) || !project.Enabled) continue;
             if (recovery.Kind == "Codex")
@@ -1435,6 +1435,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 metadata["preservedCommit"] = recovery.PreservedCommit ?? "";
                 metadata["explicitIntegrationRecovery"] = explicitOperationId;
                 metadata["explicitRecoveryCandidate"] = JsonSerializer.Serialize(recovery);
+                if (recovery.ParentProvenance is { } parentProvenance) metadata["parentProvenance"] = parentProvenance;
             }
             command.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(metadata));
             await command.ExecuteNonQueryAsync(ct);

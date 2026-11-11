@@ -34,6 +34,8 @@ public sealed class WorkerExecution
         IssueTitle = issue.Title;
         IssueBody = issue.Body;
         ParentIssueNumber = issue.ParentIssueNumber;
+        ParentIssueCaptured = issue.ParentIssueCaptured;
+        ParentProvenance = issue.ParentProvenance;
         BaseBranch = baseBranch;
         FeatureBranch = featureBranch;
         StartedAtUtc = startedAtUtc;
@@ -53,6 +55,8 @@ public sealed class WorkerExecution
     public string IssueTitle { get; }
     public string IssueBody { get; }
     public int? ParentIssueNumber { get; }
+    public bool ParentIssueCaptured { get; }
+    public string? ParentProvenance { get; }
     public string? CodexThreadId { get; internal set; }
     public string? CodexSessionOwner { get; internal set; }
     public string BaseBranch { get; }
@@ -99,7 +103,7 @@ public sealed class WorkerExecution
 
     internal static WorkerExecution Continue(ExecutionHistoryEntry source, WorkerConfiguration config, GitHubIssue issue)
     {
-        var execution = new WorkerExecution(source.Project, source.Repository, issue with { ParentIssueNumber = source.ParentIssueNumber }, source.BaseBranch,
+        var execution = new WorkerExecution(source.Project, source.Repository, issue with { ParentIssueNumber = source.ParentIssueNumber, ParentIssueCaptured = source.ParentIssueCaptured, ParentProvenance = source.ParentProvenance }, source.BaseBranch,
             source.FeatureBranch, source.StartedAtUtc, source.RetryOfExecutionId, source.AttemptNumber, source.Resumed)
         {
             RetryMode = source.RetryMode,
