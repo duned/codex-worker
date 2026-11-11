@@ -130,9 +130,12 @@ public sealed partial class Worker
                 if (cachedIssue.Next > now)
                     remote = await github.ReadIssueStateAsync(source.IssueNumber, ct);
                 bool Has(string label) => remote.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
+                // Explicit ready authorizes re-evaluation even if a previous failure
+                // label remains. It does not bypass any preserved-work safety checks.
                 if (source.CompletionJson is null && (!remote.IsOpen ||
                         !Has(config.GitHub.ReadyLabel) && !Has(config.GitHub.WorkingLabel) ||
-                        Has(config.GitHub.DoneLabel) || Has(config.GitHub.BlockedLabel) || Has(config.GitHub.FailedLabel)) ||
+                        Has(config.GitHub.DoneLabel) || !Has(config.GitHub.ReadyLabel) &&
+                        (Has(config.GitHub.BlockedLabel) || Has(config.GitHub.FailedLabel))) ||
                     source.CompletionJson is not null && !remote.IsOpen && Has(config.GitHub.DoneLabel))
                 {
                     await ReportStandaloneBlockerAsync(source, "issue-no-longer-eligible", ct);
@@ -218,6 +221,9 @@ public sealed partial class Worker
                         // Keep the same execution identity. The runner rechecks ownership and
                         // validates the preserved source through the normal integration pipeline.
                         await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
+                        if (Has(config.GitHub.ReadyLabel))
+                            foreach (var staleLabel in new[] { config.GitHub.BlockedLabel, config.GitHub.FailedLabel }.Distinct(StringComparer.OrdinalIgnoreCase))
+                                if (Has(staleLabel)) await github.RemoveLabelAsync(issue.Number, staleLabel, ct);
                         _operationalLog($"Execution {source.ExecutionId} · " + (inspection.NoWorkspace
                             ? "resuming the unstarted claim through normal execution."
                             : "continuing interrupted validation/integration without rerunning implementation."));

@@ -24,9 +24,29 @@ Completion follows ordinary authoritative validation, repair, rebase/revalidatio
 
 Managed recovery is offered through the existing preserved-work assignment protocol with kind `Codex`. The Server verifies the original node/execution identity, outcome and competing reservations, then supplies a fresh assignment/lease. If a pre-integration lease expired and its retry is still queued, the returning owner may attach verified work to that queued retry. It cannot take back an assigned/completed execution. Expired preserved continuations wait for their original node; cached configuration and an expired lease confer no execution authority.
 
+## Explicit readiness after an interruption
+
+An explicit ready label asks the standalone Worker to re-evaluate an interrupted
+Issue even when an older blocked or failed label remains. Closed or done Issues
+remain excluded. The Worker still checks the original intent, process scope,
+registered worktree, configuration, execution profile and remote integration state.
+Verified validation checkpoints continue on the preserved workspace; a safe clean
+retirement can instead permit a fresh attempt while retaining feature commits and
+history. Dirty or uncertain work that cannot be verified remains protected with a
+queryable recovery reason. Stale failure labels are removed only after continuation
+is durably claimed. A ready label never resets the Codex resume budget or grants
+managed lease authority.
+
+A successful CLI process exit without a final task response does not establish
+success. Recognized CLI error events still identify usage or context limits; absent
+that evidence the cause remains unknown and cannot authorize automatic Codex
+recovery. An operator report of “token exhaustion” alone cannot distinguish account
+quota from model context exhaustion. Use the owning node's durable execution history
+and CLI evidence to establish the cause; do not infer it from the Issue label.
+
 ## Operator evidence
 
-Execution history retains interruption reason, lineage, changed-path summary, session UUID, configuration fingerprint and resume count. GitHub receives a concise interruption/recovery comment, without arbitrary raw Codex output; the Issue does not need a new ready label for continuation. Status/journal report degraded readiness and restored execution readiness. Pending or exhausted interruption resources remain protected from automatic cleanup. GitHub recovery guidance includes the earliest resume time or states that the resume budget is exhausted; reapplying ready does not reset it. Workspace/configuration rejection reasons are retained in execution history for status inspection, and parked records are not re-reported on every scheduler poll.
+Execution history retains interruption reason, lineage, changed-path summary, session UUID, configuration fingerprint and resume count. GitHub and Telegram receive the specific recognized cause and shared cooldown or exhausted-budget guidance, without arbitrary raw Codex output; the Issue does not need a new ready label for continuation. Status/journal report degraded readiness and restored execution readiness. Pending or exhausted interruption resources remain protected from automatic cleanup. GitHub recovery guidance includes the earliest resume time or states that the resume budget is exhausted; reapplying ready does not reset it. Workspace/configuration rejection reasons are retained in execution history for status inspection, and parked records are not re-reported on every scheduler poll.
 
 Legacy `uncertain` interruptions can be reconstructed before scheduling when independent history, Git and session evidence agrees. Original Issue intent and effective profile must still exist in Worker history; conversation text cannot supply ownership or missing intent. Legacy post-repair validation is eligible only for a cancelled uncertain attempt with an implementation summary, a contiguous bounded repair journal whose last structured repair completed, no post-repair validation result, and no commit or integration evidence. The Worker pins this recovered state as `legacy: pending validation`, reruns the full authoritative validation on the preserved worktree, and carries the recorded repairs forward so it consumes only the remaining repair budget. A placeholder interrupted repair, failed/blocked terminal outcome, prior validation success, or ambiguous lifecycle remains review-only. The preserved worktree must be registered in the configured repository, have the execution's exact path and Issue/attempt branch, and have no unfinished Git operation. Its HEAD must agree with any recorded starting commit and be an ancestor of the current base. Dirty tracked files, deletions and untracked additions are retained unchanged.
 

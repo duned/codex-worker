@@ -793,13 +793,20 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         Exception? primaryFailure = null, bool suppressGitHubMutations = false)
     {
         var safeReason = Limit(FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray()), 1200);
-        if (primaryFailure is CodexExecutionInfrastructureException)
-            await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, _clock.GetUtcNow() - execution.StartedAtUtc,
-                execution.ExecutionId, safeReason, CancellationToken.None);
         var primaryGitHubFailure = primaryFailure is null ? null : GitHubOperationException.Find(primaryFailure);
         var recoveryState = primaryGitHubFailure is { IsMutation: true }
             ? GitHubOperationException.ReconciliationRequiredState : "uncertain";
         if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, safeReason, recoveryState);
+        var recovery = history is null ? null : await history.ReadExecutionAsync(execution.ExecutionId, CancellationToken.None);
+        var recoveryGuidance = recovery?.RecoveryState switch
+        {
+            "codex-interrupted" => $"Eligible recovery resumes automatically after execution readiness and cooldown ({recovery.CodexRecovery?.RetryAfterUtc:O}), within the remaining resume budget.",
+            "codex-recovery-exhausted" => "Automatic recovery budget exhausted. Inspect the preserved workspace and execution history before requesting further recovery; reapplying the ready label does not reset this budget.",
+            _ => "Inspect execution history and the preserved workspace, and reconcile Git and GitHub state before requesting another attempt."
+        };
+        if (primaryFailure is CodexExecutionInfrastructureException)
+            await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, _clock.GetUtcNow() - execution.StartedAtUtc,
+                execution.ExecutionId, safeReason + "\nWorkspace preserved. " + recoveryGuidance, CancellationToken.None);
         var diagnostic = primaryGitHubFailure is not null && execution.IsTerminal &&
             execution.State is not (ExecutionState.InfrastructureFailure or ExecutionState.Cancelled)
             ? $"Execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · Issue #{issue.Number} · outcome {execution.State} · GitHub reporting failure · {safeReason}"
@@ -850,13 +857,6 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             // reconciliation and must never be replayed as an automatic retry.
             if (primaryFailure is not CodexExecutionInfrastructureException { Recoverable: true })
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, CancellationToken.None);
-            var recovery = history is null ? null : await history.ReadExecutionAsync(execution.ExecutionId, CancellationToken.None);
-            var recoveryGuidance = recovery?.RecoveryState switch
-            {
-                "codex-interrupted" => $"Eligible recovery resumes automatically after execution readiness and cooldown ({recovery.CodexRecovery?.RetryAfterUtc:O}), within the remaining resume budget.",
-                "codex-recovery-exhausted" => "Automatic recovery budget exhausted. Inspect the preserved workspace and execution history before requesting further recovery; reapplying the ready label does not reset this budget.",
-                _ => "Inspect execution history and the preserved workspace, and reconcile Git and GitHub state before requesting another attempt."
-            };
             await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
                 $"### Execution interrupted\n\nExecution `{execution.ExecutionId}` stopped because of an infrastructure failure.\n\n{safeReason}\n\n" +
                 (execution.CodexProfile is { } profile ? $"Codex model: `{profile.EffectiveModel ?? "unknown (CLI model unavailable)"}` · effort: `{profile.Effort}`.\n\n" : "") +

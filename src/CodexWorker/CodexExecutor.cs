@@ -292,10 +292,12 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             {
                 if (!modelReported && string.IsNullOrWhiteSpace(settings.Model)) _modelObserver?.Invoke(null);
             }
-            if (result.ExitCode != 0)
+            // A successful process exit does not establish that the turn completed.
+            // A missing final response must still retain positively identified causes.
+            if (result.ExitCode != 0 || !File.Exists(outputPath))
             {
                 var evidence = result.StandardOutput + "\n" + result.StandardError;
-                if (args.Contains("resume") && TryReadSession(result.StandardOutput) is null &&
+                if (result.ExitCode != 0 && args.Contains("resume") && TryReadSession(result.StandardOutput) is null &&
                     (evidence.Contains("No session found", StringComparison.OrdinalIgnoreCase) ||
                      evidence.Contains("session not found", StringComparison.OrdinalIgnoreCase)))
                 {
@@ -303,12 +305,13 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                     return await RunStructuredAsync(projectDirectory, prompt, ct, useStandardInput);
                 }
                 var failure = CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError));
+                if (result.ExitCode == 0 && !failure.Recoverable)
+                    throw new CodexExecutionInfrastructureException("Unknown Codex failure",
+                        "Codex execution produced no structured final response and no recognized external cause.");
                 throw new CodexExecutionInfrastructureException(failure.Category,
                     $"{failure.Summary}. Exit code {result.ExitCode}.")
                     { Recoverable = failure.Recoverable, FailureSummary = failure.Summary };
             }
-            if (!File.Exists(outputPath)) throw new CodexExecutionInfrastructureException("Unknown Codex failure",
-                "Codex execution produced no structured final response.");
             try { return CodexResultParser.Parse(await File.ReadAllTextAsync(outputPath, ct)); }
             catch (Exception ex) when (ex is not OperationCanceledException)
             { throw new CodexExecutionInfrastructureException("Unknown Codex failure",

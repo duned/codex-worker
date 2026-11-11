@@ -460,6 +460,46 @@ public sealed class CodexServiceEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(0, "insufficient_quota", "Codex usage limit", true)]
+    [InlineData(1, "insufficient_quota", "Codex usage limit", true)]
+    [InlineData(0, "context_length_exceeded", "Codex context limit", true)]
+    [InlineData(1, "context_length_exceeded", "Codex context limit", true)]
+    [InlineData(0, "unrecognized", "Unknown Codex failure", false)]
+    [InlineData(1, "unrecognized", "Codex CLI/process failure", false)]
+    public async Task MissingFinalResponseRetainsExplicitCliCause(int exitCode, string code, string category, bool recoverable)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var directory = CreateDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE");
+        try
+        {
+            var executable = Path.Combine(directory, "codex");
+            await File.WriteAllTextAsync(executable, $$$"""
+                #!/bin/sh
+                printf '%s\n' '{"type":"turn.failed","error":{"code":"{{{code}}}","message":"token=private-value"}}'
+                exit {{{exitCode}}}
+                """);
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", executable);
+            var instructions = Path.Combine(directory, "AGENTS.md");
+            await File.WriteAllTextAsync(instructions, "Test instructions");
+            var executor = new CodexExecutor(new ProcessRunner(), new CodexSettings());
+            var failure = await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => executor.RunAsync(directory,
+                instructions, new GitHubIssue(1, "Test", "Test", DateTimeOffset.UtcNow), CancellationToken.None));
+            Assert.Equal(category, failure.Category);
+            Assert.Equal(recoverable, failure.Recoverable);
+            Assert.DoesNotContain("private-value", failure.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", previous);
+            Directory.Delete(directory, true);
+        }
+    }
+
     private static string CreateDirectory()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"codex-service-test-{Guid.NewGuid():N}");

@@ -243,17 +243,19 @@ public sealed class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ContextExhaustionContinuesPreservedWorkWithBoundedAttempts(bool managed)
+    [InlineData(false, "context_length_exceeded", true)]
+    [InlineData(true, "context_length_exceeded", true)]
+    [InlineData(false, "usage_limit_reached", false)]
+    [InlineData(true, "usage_limit_reached", false)]
+    public async Task CodexLimitsContinuePreservedWorkWithBoundedAttempts(bool managed, string evidence, bool freshSession)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
         var clock = new RecoveryClock();
-        using var h = new Harness(history: history, timeProvider: clock);
+        using var h = new Harness(history: history, timeProvider: clock, telegramEnabled: true);
         h.GitHub.CancelWhenEmpty = false;
         h.Git.Snapshot = new("feature/example-task-17", "base-sha", "preserved changes");
-        var failure = CodexFailure.Classify("context_length_exceeded");
+        var failure = CodexFailure.Classify(evidence);
         h.Codex.InitialException = new CodexExecutionInfrastructureException(failure.Category, failure.Summary)
             { Recoverable = failure.Recoverable, FailureSummary = failure.Summary };
         if (managed)
@@ -269,7 +271,10 @@ public sealed class WorkerV011Tests
         else await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => h.ProcessOneAsync());
         var original = Assert.Single(await history.ReadAllAsync());
         Assert.Equal("codex-interrupted", original.RecoveryState);
-        Assert.True(CodexFailure.RequiresFreshSession(original));
+        Assert.Equal(freshSession, CodexFailure.RequiresFreshSession(original));
+        Assert.Contains(failure.Category, h.GitHub.Comments[^1], StringComparison.Ordinal);
+        Assert.Contains(h.TelegramMessages, message => message.Contains(failure.Category, StringComparison.Ordinal) &&
+            message.Contains("after execution readiness and cooldown", StringComparison.Ordinal));
         h.GitHub.Issue = h.GitHub.Issue with { Labels = ["ready"] };
         for (var attempt = 1; attempt <= CodexInterruptionRecovery.MaximumResumes; attempt++)
         {
@@ -301,6 +306,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("codex-recovery-exhausted", exhausted.RecoveryState);
         Assert.Contains("budget exhausted", exhausted.FailureReason, StringComparison.Ordinal);
         Assert.Contains("budget exhausted", h.GitHub.Comments[^1], StringComparison.Ordinal);
+        Assert.Contains(h.TelegramMessages, message => message.Contains("budget exhausted", StringComparison.Ordinal) &&
+            message.Contains("ready label does not reset", StringComparison.Ordinal));
         clock.Advance(TimeSpan.FromDays(1));
         Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
         Assert.Equal(1, h.Git.Started);

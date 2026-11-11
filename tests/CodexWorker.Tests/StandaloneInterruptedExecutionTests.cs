@@ -232,11 +232,15 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [InlineData(false, "working")]
+    [InlineData(true, "working")]
+    [InlineData(false, "blocked")]
+    [InlineData(true, "blocked")]
+    [InlineData(false, "failed")]
+    [InlineData(true, "failed")]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Slow")]
-    public async Task ObservedExecution724ce14eResolvesWithRecoveryOrSafeRetry(bool originalIntent)
+    public async Task ObservedExecution724ce14eResolvesWithRecoveryOrSafeRetry(bool originalIntent, string previousLabel)
     {
         if (!OperatingSystem.IsLinux()) return;
         using var fixture = await seed.CreateAsync();
@@ -246,7 +250,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         await git.InitializeAsync(CancellationToken.None);
         var source = await PreserveAsync(fixture, git, config, history, Guid.Parse("724ce14e-d3fa-4f33-b6ab-585bf63e4872"), originalIntent: originalIntent);
         var featureTip = await fixture.Git("rev-parse", source.FeatureBranch);
-        var github = new GitHub(fixture.Issue) { Labels = ["ready", "working"] };
+        var github = new GitHub(fixture.Issue) { Labels = ["ready", previousLabel] };
         var codex = new Codex(path => File.WriteAllTextAsync(Path.Combine(path, "fresh.txt"), "safe fresh attempt"));
         using var telegram = new TelegramNotifier(false);
         var worker = new Worker(config, github, git, codex, new Validation(), telegram, history: history);
@@ -254,6 +258,8 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         var saved = await history.ReadAllAsync();
         Assert.Equal("recovery-ambiguous", (await git.InspectCleanupAsync(Assert.Single(saved), saved, CancellationToken.None)).ReasonCode);
         Assert.Equal(IssueOutcomeKind.Succeeded, (await worker.ProcessOneAsync(CancellationToken.None))?.Kind);
+        Assert.DoesNotContain("blocked", github.Labels);
+        Assert.DoesNotContain("failed", github.Labels);
         var entries = await history.ReadAllAsync();
         if (originalIntent)
         {
@@ -291,6 +297,8 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
     [InlineData("integrated-without-provenance", "integration-present-without-validated-provenance")]
     [InlineData("closed", "issue-no-longer-eligible")]
     [InlineData("not-ready", "issue-no-longer-eligible")]
+    [InlineData("blocked-without-ready", "issue-no-longer-eligible")]
+    [InlineData("done-with-ready", "issue-no-longer-eligible")]
     [InlineData("active-process", "workspace-process-active")]
     [InlineData("newer-attempt", "newer-or-completed-attempt-exists")]
     [InlineData("active-attempt", "another-attempt-or-recovery-active")]
@@ -332,6 +340,8 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
             }
             if (scenario == "closed") github.Open = false;
             if (scenario == "not-ready") github.Labels = [];
+            if (scenario == "blocked-without-ready") github.Labels = ["working", "blocked"];
+            if (scenario == "done-with-ready") github.Labels = ["ready", "done"];
             if (scenario == "uncompleted-implementation") github.Labels = ["working"];
             if (scenario is "newer-attempt" or "active-attempt")
                 await history.CreateAsync(source with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2, RetryOfExecutionId = source.ExecutionId,
