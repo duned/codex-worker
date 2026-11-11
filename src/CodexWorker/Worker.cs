@@ -741,7 +741,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         catch (Exception ex)
         {
             await ReportInterruptedExecutionAsync(execution, issue,
-                ex is CodexExecutionInfrastructureException codexError ? $"{codexError.Category}. Execution preserved; waiting for Codex readiness." : ex.Message, ex,
+                ex is CodexExecutionInfrastructureException codexError ? codexError.Summary : ex.Message, ex,
                 suppressGitHubMutations: resolveIntegrationConflict);
             if (ex is GitHubOperationException githubFailure)
                 throw githubFailure.ForExecution(execution.ExecutionId);
@@ -789,6 +789,9 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         Exception? primaryFailure = null, bool suppressGitHubMutations = false)
     {
         var safeReason = Limit(FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray()), 1200);
+        if (primaryFailure is CodexExecutionInfrastructureException)
+            await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, _clock.GetUtcNow() - execution.StartedAtUtc,
+                execution.ExecutionId, safeReason, CancellationToken.None);
         var primaryGitHubFailure = primaryFailure is null ? null : GitHubOperationException.Find(primaryFailure);
         var recoveryState = primaryGitHubFailure is { IsMutation: true }
             ? GitHubOperationException.ReconciliationRequiredState : "uncertain";
@@ -967,8 +970,11 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             await _output.StopWaitingAsync();
             var infrastructure = ex as WorkerInfrastructureException ??
                 new WorkerInfrastructureException($"Unexpected worker failure; queue processing stopped: {ex.Message}", ex);
-            _output.InfrastructureFailure($"Infrastructure failure: {infrastructure.Message}");
-            await telegram.CriticalAsync(config.Project.Name, infrastructure.Message, CancellationToken.None);
+            var reason = infrastructure is CodexExecutionInfrastructureException codexFailure
+                ? FailureDiagnosticRedactor.Redact(codexFailure.Summary, config.Environment.Variables.Values.ToArray())
+                : infrastructure.Message;
+            _output.InfrastructureFailure($"Infrastructure failure: {reason}");
+            await telegram.CriticalAsync(config.Project.Name, reason, CancellationToken.None);
             throw infrastructure;
         }
         finally

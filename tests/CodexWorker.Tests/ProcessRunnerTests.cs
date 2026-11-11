@@ -34,6 +34,22 @@ public sealed class ProcessRunnerTests
         finally { Directory.Delete(directory, true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task TailCaptureRetainsTerminalErrorAfterLargeAgentOutput()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var result = await new ProcessRunner().RunAsync("/bin/sh",
+            ["-c", "head -c 180000 /dev/zero | tr '\\000' x; printf '\\n{\"type\":\"turn.failed\",\"error\":{\"code\":\"context_length_exceeded\"}}\\n'; exit 1"],
+            Path.GetTempPath(), TimeSpan.FromSeconds(10), captureTail: true);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.True(result.StandardOutput.Length < 161000);
+        Assert.Contains("showing tail", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal("Codex context limit", CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError)).Category);
+    }
+
     private static bool IsRunning(int pid)
     {
         try

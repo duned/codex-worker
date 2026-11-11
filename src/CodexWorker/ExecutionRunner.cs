@@ -266,7 +266,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     "Codex execution did not complete; see execution history for details.");
             else if (ex is OperationCanceledException && ct.IsCancellationRequested)
                 output.FailureReason(execution.ExecutionId, "Cancellation/interruption", "Execution was cancelled or interrupted.");
-            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message,
+            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex is CodexExecutionInfrastructureException failure ? failure.Summary : ex.Message,
                 ex switch
                 {
                     CodexExecutionInfrastructureException { Recoverable: true } when execution.CodexRecovery is not null &&

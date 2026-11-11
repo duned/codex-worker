@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace CodexWorker;
 
@@ -15,13 +16,27 @@ internal sealed record CodexFailure(string Category, string Reason, bool Recover
         if (timedOut) return new("Codex timeout", "Codex preflight/execution timed out; check network/service availability", true);
         if (text.Contains("selected model is at capacity", StringComparison.Ordinal))
             return new(ModelCapacity, "Selected model is at capacity; preserving execution and retrying the same model after cooldown", true);
-        if (Contains(text, "usage limit", "rate limit", "rate_limit", "quota exceeded", "insufficient_quota", "subscription limit", "usage_limit"))
-            return new("Codex usage limit", "Codex usage/rate/subscription limit reached; restore quota or wait for the limit to reset", true);
-        if (Contains(text, "unauthorized", "authentication required", "not logged in", "please log in", "token expired", "refresh token", "invalid_api_key", "401 unauthorized"))
+        if (Contains(text, "context_length_exceeded", "contextwindowexceeded", "context_window_exceeded", "context window", "maximum context length", "too many tokens in the input"))
+            return new("Codex context limit", "Model context window exhausted; inspect the preserved workspace and start a fresh session with reduced context", false);
+        if (Contains(text, "usage limit", "usagelimitexceeded", "quota exceeded", "insufficient_quota", "subscription limit", "usage_limit", "usage_not_included", "exceeded your current quota"))
+            return new("Codex usage limit", "Account/subscription usage quota exhausted; check account usage and billing or wait for quota to reset" + RetryTiming(evidence), true);
+        if (Contains(text, "rate limit", "ratelimitexceeded", "rate_limit", "too many requests", "http 429", "status 429"))
+            return new("Codex rate limit", "Request/token rate limit reached; wait before retrying and reduce request frequency" + RetryTiming(evidence), true);
+        if (Contains(text, "unauthorized", "authentication required", "not logged in", "please log in", "token expired", "refresh token", "invalid_api_key", "401 unauthorized", "authentication_error", "token_expired"))
             return new("Codex authentication", "Codex authentication/session unavailable; use the supported node authentication flow", true);
-        if (Contains(text, "connection refused", "connection reset", "network is unreachable", "failed to connect", "service unavailable", "502 bad gateway", "503", "stream disconnected", "error sending request", "temporarily unavailable"))
+        if (Contains(text, "connection refused", "connection reset", "network is unreachable", "failed to connect", "service unavailable", "502 bad gateway", "503", "stream disconnected", "error sending request", "temporarily unavailable", "server_error", "internal server error"))
             return new("Codex service/network", "Codex service/network unavailable; check connectivity and service status", true);
         return new("Codex CLI/process failure", "Codex CLI failed without a recognized external cause; inspect sanitized execution diagnostics and repair the CLI/environment", false);
+    }
+
+    internal string Summary => $"{Category}: {Reason}";
+
+    private static string RetryTiming(string evidence)
+    {
+        // Copy only a bounded numeric duration, never arbitrary provider text or prompts.
+        var match = Regex.Match(evidence, @"\b(?:retry|try again) (?:after|in) (\d{1,6}(?:\.\d{1,3})?) (seconds?|minutes?|hours?)\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success ? $"; provider retry timing: {match.Groups[1].Value} {match.Groups[2].Value.ToLowerInvariant()}" : "";
     }
 
     private static bool Contains(string text, params string[] patterns) => patterns.Any(text.Contains);
@@ -39,7 +54,12 @@ internal sealed record CodexFailure(string Category, string Reason, bool Recover
                     type.ValueKind != JsonValueKind.String || type.GetString() is not ("error" or "turn.failed")) continue;
                 if (root.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.String)
                     messages.Add(message.GetString() ?? "");
-                if (root.TryGetProperty("error", out var error)) messages.Add(error.ToString());
+                if (root.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String)
+                    messages.Add(code.GetString() ?? "");
+                if (root.TryGetProperty("codex_error_info", out var info) && info.ValueKind is JsonValueKind.String or JsonValueKind.Object)
+                    messages.Add(info.ToString());
+                if (root.TryGetProperty("error", out var error) && error.ValueKind is JsonValueKind.Object or JsonValueKind.String)
+                    messages.Add(error.ToString());
             }
             catch (JsonException) { /* Do not interpret arbitrary agent/tool output as transport errors. */ }
         }
@@ -50,6 +70,9 @@ internal sealed record CodexFailure(string Category, string Reason, bool Recover
                 text.StartsWith("You've hit", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("You have hit", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("Selected model is at capacity", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("Codex ran out of room", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("Context window", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("Too many requests", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("Rate limit", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("Authentication required", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("Your authentication token", StringComparison.OrdinalIgnoreCase) ||

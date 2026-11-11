@@ -459,7 +459,7 @@ public sealed class WorkerHost
                         // The runner already durably preserved this execution. Keep siblings and
                         // the control plane alive; stop new Codex work until bounded preflight succeeds.
                         agentReady = false;
-                        readiness.Interrupt($"{ex.Category} · execution preserved · retrying preflight automatically");
+                        readiness.Interrupt($"{LimitCompletionDiagnostic(ex.Summary, project.Configuration)} · execution preserved · retrying preflight automatically");
                         heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability !=
                             WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).ToArray();
                         runtimeReadModel.Events.Publish("codex.interrupted", readiness.DiagnosticCode ?? ex.Category,

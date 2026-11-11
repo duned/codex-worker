@@ -193,7 +193,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             try
             {
                 result = await runner.RunAsync(Executable, args, tempDirectory,
-                    TimeSpan.FromSeconds(timeoutSeconds), ct, environment.Variables);
+                    TimeSpan.FromSeconds(timeoutSeconds), ct, environment.Variables, captureTail: true);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
@@ -204,7 +204,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 throw new WorkerInfrastructureException(reason, ex);
             }
             if (result.ExitCode != 0)
-                throw new WorkerInfrastructureException($"Codex process started but preflight exited with code {result.ExitCode}. {CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError)).Reason}. Exit code {result.ExitCode}. {CodexFailure.Evidence(result.StandardOutput, result.StandardError)}");
+                throw new WorkerInfrastructureException($"Codex process started but preflight exited with code {result.ExitCode}. {CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError)).Summary}.");
             var response = File.Exists(outputPath) ? (await File.ReadAllTextAsync(outputPath, ct)).Trim() : "";
             if (!response.Equals("OK", StringComparison.Ordinal))
                 throw new WorkerInfrastructureException("Codex process started but preflight returned an unexpected response; expected exactly 'OK'. Response omitted to protect authentication material.");
@@ -269,7 +269,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                             observedSession = session;
                             if (_sessionObserver is not null) await _sessionObserver(session);
                         }
-                    });
+                    }, captureTail: true);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
@@ -279,8 +279,8 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                     ? CodexFailure.Evidence(timeout.StandardOutput, timeout.StandardError, projectEnvironment?.Values.ToArray())
                     : FailureDiagnosticRedactor.Redact(ex.Message, projectEnvironment?.Values.ToArray());
                 throw new CodexExecutionInfrastructureException(failure.Category,
-                    failure.Reason + ". " + diagnostic, ex)
-                    { Recoverable = failure.Recoverable };
+                    failure.Summary + ". " + diagnostic, ex)
+                    { Recoverable = failure.Recoverable, FailureSummary = failure.Summary };
             }
             finally
             {
@@ -298,8 +298,8 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 }
                 var failure = CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError));
                 throw new CodexExecutionInfrastructureException(failure.Category,
-                    $"{failure.Reason}. Exit code {result.ExitCode}.\n{CodexFailure.Evidence(result.StandardOutput, result.StandardError, projectEnvironment?.Values.ToArray())}")
-                    { Recoverable = failure.Recoverable };
+                    $"{failure.Summary}. Exit code {result.ExitCode}.")
+                    { Recoverable = failure.Recoverable, FailureSummary = failure.Summary };
             }
             if (!File.Exists(outputPath)) throw new CodexExecutionInfrastructureException("Unknown Codex failure",
                 "Codex execution produced no structured final response.");
@@ -361,7 +361,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
 
     internal static IReadOnlyList<string> BuildPreflightArguments(CodexSettings settings, string outputPath)
     {
-        var args = new List<string> { "exec", "--approve-for-me", "--skip-git-repo-check", "--ephemeral", "--output-last-message", outputPath };
+        var args = new List<string> { "exec", "--json", "--approve-for-me", "--skip-git-repo-check", "--ephemeral", "--output-last-message", outputPath };
         AddModelAndReasoning(args, settings);
         args.Add("Reply only with OK. Do not inspect or modify project files.");
         return args;

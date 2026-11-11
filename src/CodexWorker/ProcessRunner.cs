@@ -206,6 +206,8 @@ public sealed class CodexExecutionInfrastructureException(string category, strin
     : WorkerInfrastructureException(message, inner)
 {
     public string Category { get; } = category;
+    internal string? FailureSummary { get; init; }
+    internal string Summary => FailureSummary ?? (Message.StartsWith(Category, StringComparison.Ordinal) ? Message : $"{Category}: {Message}");
     public bool Recoverable { get; init; }
 }
 

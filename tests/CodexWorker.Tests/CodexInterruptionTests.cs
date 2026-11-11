@@ -8,12 +8,20 @@ public sealed class CodexInterruptionTests
     [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("You've hit your usage limit", "Codex usage limit", true)]
-    [InlineData("rate_limit_exceeded", "Codex usage limit", true)]
+    [InlineData("rate_limit_exceeded", "Codex rate limit", true)]
     [InlineData("401 Unauthorized token=secret-value", "Codex authentication", true)]
     [InlineData("Failed to refresh token", "Codex authentication", true)]
     [InlineData("error sending request: connection reset", "Codex service/network", true)]
     [InlineData("503 Service Unavailable", "Codex service/network", true)]
     [InlineData("Selected model is at capacity. Please try a different model.", "Codex model capacity", true)]
+    [InlineData("insufficient_quota", "Codex usage limit", true)]
+    [InlineData("You exceeded your current quota, please check your plan and billing details", "Codex usage limit", true)]
+    [InlineData("context_length_exceeded", "Codex context limit", false)]
+    [InlineData("Codex ran out of room in the model's context window", "Codex context limit", false)]
+    [InlineData("maximum context length is 100 tokens", "Codex context limit", false)]
+    [InlineData("Too many requests", "Codex rate limit", true)]
+    [InlineData("authentication_error", "Codex authentication", true)]
+    [InlineData("server_error", "Codex service/network", true)]
     [InlineData("process exited 1", "Codex CLI/process failure", false)]
     public void ClassificationUsesEvidenceAndUnknownFailuresRequireInspection(string evidence, string category, bool recoverable)
     {
@@ -44,6 +52,39 @@ public sealed class CodexInterruptionTests
         Assert.DoesNotContain("private-value", evidence, StringComparison.Ordinal);
         Assert.DoesNotContain("source fragments", evidence, StringComparison.Ordinal);
         Assert.True(evidence.Length < 2100);
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("{\"type\":\"error\",\"message\":\"request rejected\",\"code\":\"context_length_exceeded\"}", "Codex context limit")]
+    [InlineData("{\"type\":\"turn.failed\",\"error\":{\"code\":\"insufficient_quota\",\"message\":\"token=private-value\"}}", "Codex usage limit")]
+    [InlineData("{\"type\":\"error\",\"message\":\"Rate limit reached. Try again in 20 seconds. token=private-value\"}", "Codex rate limit")]
+    [InlineData("{\"type\":\"error\",\"codex_error_info\":\"ContextWindowExceeded\"}", "Codex context limit")]
+    [InlineData("{partial context_length_exceeded", "Codex CLI/process failure")]
+    [InlineData("{\"type\":\"item.completed\",\"item\":{\"text\":\"context_length_exceeded\"}}", "Codex CLI/process failure")]
+    [InlineData("{\"type\":\"error\",\"message\":null,\"error\":false}", "Codex CLI/process failure")]
+    public void StructuredErrorsProduceSafeSummaries(string stdout, string category)
+    {
+        var failure = CodexFailure.Classify(CodexFailure.ProcessEvidence(stdout, ""));
+        Assert.Equal(category, failure.Category);
+        Assert.DoesNotContain("private-value", failure.Summary, StringComparison.Ordinal);
+        Assert.DoesNotContain("token=", failure.Summary, StringComparison.Ordinal);
+        if (category == "Codex rate limit") Assert.Contains("20 seconds", failure.Reason, StringComparison.Ordinal);
+        else Assert.DoesNotContain("provider retry timing", failure.Reason, StringComparison.Ordinal);
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void PublicSummaryOmitsRawDiagnosticsAndDoesNotInventRetryTiming()
+    {
+        var failure = CodexFailure.Classify("rate_limit_exceeded token=private-value prompt=private-prompt");
+        var exception = new CodexExecutionInfrastructureException(failure.Category, "raw private-prompt token=private-value")
+            { FailureSummary = failure.Summary, Recoverable = failure.Recoverable };
+        Assert.Equal(failure.Summary, exception.Summary);
+        Assert.DoesNotContain("private", exception.Summary, StringComparison.Ordinal);
+        Assert.DoesNotContain("provider retry timing", exception.Summary, StringComparison.Ordinal);
     }
 
     [Trait("TestType", "Unit")]

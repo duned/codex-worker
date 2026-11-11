@@ -2129,6 +2129,38 @@ public sealed class WorkerV011Tests
     }
 
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("You've hit your usage limit. Try again in 30 minutes. token=private-value")]
+    [InlineData("Rate limit reached. Retry after 20 seconds. token=private-value")]
+    [InlineData("context_length_exceeded token=private-value")]
+    [InlineData("invalid_api_key token=private-value")]
+    [InlineData("server_error token=private-value")]
+    [InlineData("unknown CLI failure token=private-value")]
+    public async Task CodexFailureSummaryIsSharedByHistoryGitHubAndTelegram(string evidence)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, telegramEnabled: true);
+        var failure = CodexFailure.Classify(CodexFailure.ProcessEvidence("", "error: " + evidence));
+        h.Codex.InitialException = new CodexExecutionInfrastructureException(failure.Category, failure.Summary)
+            { Recoverable = failure.Recoverable };
+
+        await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => h.ProcessOneAsync());
+
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("InfrastructureFailure", entry.State);
+        Assert.Contains(failure.Summary, entry.FailureReason);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains(failure.Summary, StringComparison.Ordinal));
+        Assert.Contains(h.TelegramMessages, message => message.Contains(failure.Summary, StringComparison.Ordinal));
+        Assert.DoesNotContain("private-value", entry.FailureReason, StringComparison.Ordinal);
+        Assert.DoesNotContain(h.GitHub.Comments, comment => comment.Contains("private-value", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("private-value", StringComparison.Ordinal));
+        Assert.DoesNotContain("working->failed", h.GitHub.Labels);
+        Assert.Equal(0, h.Git.Cleanups);
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
     public async Task CodexInfrastructureFailureRetainsObservedModelInHistoryAndInterruptionReport()
