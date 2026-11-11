@@ -5,7 +5,7 @@ using Microsoft.Data.Sqlite;
 using System.Text.Json;
 
 public sealed record ManagedConflictPreview(string ExecutionId, string? WorkerId,
-    IntegrationRecoveryCandidate? Candidate, bool Eligible, string Reason);
+    IntegrationRecoveryCandidate? Candidate, bool Eligible, string Reason, string? ReasonCode = null);
 public sealed record ManagedConflictRetry(string OperationId, string WorkerId, IntegrationRecoveryCandidate Candidate);
 
 public sealed partial class SqliteRegistryStore
@@ -37,8 +37,8 @@ public sealed partial class SqliteRegistryStore
     public async Task<ManagedConflictPreview> InspectManagedConflictAsync(string executionId, CancellationToken ct = default)
     {
         var source = await GetExecutionAsync(executionId, ct);
-        ManagedConflictPreview Refuse(string reason, IntegrationRecoveryCandidate? candidate = null) =>
-            new(executionId, source?.AssignedWorkerId, candidate, false, reason);
+        ManagedConflictPreview Refuse(string reason, IntegrationRecoveryCandidate? candidate = null, string? reasonCode = null) =>
+            new(executionId, source?.AssignedWorkerId, candidate, false, reason, reasonCode);
         if (source is null) return Refuse("Original Server execution is missing.");
         if (source.State != "Failed" || source.FailureClassification != "IntegrationConflict" || !source.Recoverable || source.RecoveryState is not null)
             return Refuse("A settled recoverable integration conflict is required; reconcile uncertain outcomes first.");
@@ -58,7 +58,7 @@ public sealed partial class SqliteRegistryStore
         if (evidence is null) return Refuse("No fresh preserved-workspace preview. Wait for the original Worker's capacity/discovery poll, then refresh; inspect its recovery diagnostics if absent.");
         if (evidence.ProjectId != source.ProjectId || evidence.WorkerExecutionId != source.WorkerExecutionId || evidence.PreservedCommit is null)
             return Refuse("Original execution identity or exact preserved commit is unavailable; inspect Worker history.", evidence);
-        if (evidence.RefusalReason is { } reason) return Refuse(reason, evidence);
+        if (evidence.RefusalReason is { } reason) return Refuse(reason, evidence, evidence.RefusalCode);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(ct);
         await using var command = connection.CreateCommand();
@@ -82,7 +82,7 @@ public sealed partial class SqliteRegistryStore
             request.Candidate.ServerExecutionId != executionId || request.Candidate.Kind != "Integration" ||
             !Printable(request.Candidate.ProjectId, 80) || !Guid.TryParse(request.Candidate.WorkerExecutionId, out _) ||
             !ValidRecoveryCommit(request.Candidate.IntegrationBase) || !ValidRecoveryCommit(request.Candidate.PreservedCommit) ||
-            request.Candidate.RefusalReason is not null)
+            request.Candidate.RefusalReason is not null || request.Candidate.RefusalCode is not null)
             throw new InvalidDataException("Invalid explicit conflict recovery scope.");
         // Stable operation ID is also the retry execution ID. Lost replies and restart cannot
         // enqueue another attempt; returning a prior result does not require a live Worker.

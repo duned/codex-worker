@@ -3064,11 +3064,25 @@ public sealed class CodexServerTests
         var candidate = new CodexProvisioning.IntegrationRecoveryCandidate(project.Id, original.Id, local,
             new string('a', 40), PreservedCommit: new string('b', 40));
         poll = poll with { IntegrationRecoveries = [candidate] };
+        // A known intent refusal cannot silently authorize automatic recovery either.
+        var refusedCandidate = candidate with { RefusalCode = "issue-body-changed",
+            RefusalReason = "issue-body-changed: Review the original intent before recovery." };
+        Assert.False((await store.RequestAssignmentAsync(poll with { IntegrationRecoveries = [refusedCandidate] })).HasWork);
+        Assert.Equal(refusedCandidate.RefusalCode, (await store.InspectManagedConflictAsync(original.Id)).ReasonCode);
         var automatic = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(poll)).Assignment);
         await store.ReportExecutionAsync(automatic.ServerExecutionId, new WorkerExecutionReport(owner, automatic.AssignmentId,
             Guid.NewGuid().ToString(), "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: automatic.Lease?.Generation ?? 0));
         candidate = candidate with { AutomaticRetryExhausted = true };
         poll = poll with { IntegrationRecoveries = [candidate] };
+        Assert.False((await store.RequestAssignmentAsync(poll)).HasWork);
+        var refusal = candidate with { RefusalCode = "issue-parent-changed",
+            RefusalReason = "issue-parent-changed: Review the parent and retained history before recovery." };
+        Assert.False((await store.RequestAssignmentAsync(poll with { IntegrationRecoveries = [refusal] })).HasWork);
+        var refused = await store.InspectManagedConflictAsync(original.Id);
+        Assert.False(refused.Eligible);
+        Assert.Equal(refusal.RefusalCode, refused.ReasonCode);
+        Assert.Equal(refusal.RefusalReason, refused.Reason);
+        Assert.Equal(refusal, refused.Candidate);
         Assert.False((await store.RequestAssignmentAsync(poll)).HasWork);
         var preview = await store.InspectManagedConflictAsync(original.Id);
         Assert.True(preview.Eligible, preview.Reason);

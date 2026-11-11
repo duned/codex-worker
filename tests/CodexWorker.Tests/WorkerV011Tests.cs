@@ -3187,6 +3187,8 @@ public sealed class WorkerV011Tests
 
     [Theory]
     [InlineData("success")]
+    [InlineData("historical-crlf")]
+    [InlineData("fingerprinted-redaction")]
     [InlineData("failed")]
     [InlineData("cancelled")]
     [InlineData("stale-lease")]
@@ -3199,9 +3201,18 @@ public sealed class WorkerV011Tests
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
         using var h = new Harness(history: history);
+        if (scenario == "historical-crlf")
+        {
+            h.GitHub.Issue = h.GitHub.Issue with { Body = "Original task\r\nDetails\r\n", ParentIssueNumber = 32 };
+            h.GitHub.CompletionLabels = [h.Worker.Configuration.GitHub.IntegrationConflictLabel];
+        }
+        if (scenario == "fingerprinted-redaction")
+            h.GitHub.Issue = h.GitHub.Issue with { Body = "Task\r\npassword: example-placeholder\r\n" };
         var source = PreservedConflict() with { ServerExecutionId = Guid.NewGuid().ToString("N"),
             AssignmentId = Guid.NewGuid().ToString("N"), OwnershipGeneration = 1,
-            OriginalIssueBody = h.GitHub.Issue.Body, IntegrationRecoveryAttemptBase = "current-main" };
+            OriginalIssueBody = FailureDiagnosticRedactor.Redact(h.GitHub.Issue.Body),
+            OriginalIssueBodyFingerprint = scenario == "fingerprinted-redaction" ? ConflictIssueIntent.BodyFingerprint(h.GitHub.Issue.Body) : null,
+            ParentIssueNumber = h.GitHub.Issue.ParentIssueNumber, IntegrationRecoveryAttemptBase = "current-main" };
         await history.CreateAsync(source);
         var now = DateTimeOffset.UtcNow;
         var serverId = Guid.NewGuid().ToString("N");
@@ -3240,12 +3251,12 @@ public sealed class WorkerV011Tests
             var task = await worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
             return task is null ? null : await task;
         }
-        if (scenario is "success" or "failed")
-            Assert.Equal(scenario == "success" ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict, (await RunAsync())?.Kind);
+        if (scenario is "success" or "historical-crlf" or "fingerprinted-redaction" or "failed")
+            Assert.Equal(scenario != "failed" ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict, (await RunAsync())?.Kind);
         else await Assert.ThrowsAnyAsync<Exception>(RunAsync);
         Assert.Empty(h.Codex.Issues);
         Assert.Equal(scenario is "stale-lease" or "changed-commit" ? 0 : 1, h.Codex.ConflictResolutions);
-        if (scenario == "success")
+        if (scenario is "success" or "historical-crlf" or "fingerprinted-redaction")
         {
             Assert.True(h.Validation.Calls > 0);
             Assert.Contains(handler.Reports, report => report.State == "Completed" && report.Generation == 3);
@@ -3255,7 +3266,7 @@ public sealed class WorkerV011Tests
             Assert.False(h.GitHub.Closed);
             Assert.DoesNotContain("working->done", h.GitHub.Labels);
         }
-        if (scenario is "success" or "failed")
+        if (scenario is "success" or "historical-crlf" or "fingerprinted-redaction" or "failed")
         {
             // A redelivered assignment after either outcome cannot re-run resolution, even on restart.
             Assert.Null(await worker.ClaimAssignedAsync(assignment, CancellationToken.None));
@@ -3263,6 +3274,9 @@ public sealed class WorkerV011Tests
                 history: history, serverSettings: settings, registrationClient: new WorkerRegistrationClient(client));
             Assert.Null(await restarted.ClaimAssignedAsync(assignment, CancellationToken.None));
             Assert.Equal(1, h.Codex.ConflictResolutions);
+            var attempt = Assert.Single(await history.ReadAllAsync(), entry => entry.RetryOfExecutionId == source.ExecutionId);
+            Assert.Equal(source.OriginalIssueBodyFingerprint, attempt.OriginalIssueBodyFingerprint);
+            Assert.Equal(source.OriginalIssueBody, h.Codex.ConflictIssueBody);
         }
     }
 
@@ -3280,6 +3294,94 @@ public sealed class WorkerV011Tests
             Reports.Add(report ?? throw new InvalidOperationException("Empty report"));
             return new(System.Net.HttpStatusCode.OK);
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task ManagedConflictIntentAcceptsPersistedCrLfBodyAndParentWithOnlyConflictLabel(bool fingerprinted)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var body = "Original task\r\n\r\nKeep whitespace.  \r\n";
+        h.GitHub.Issue = h.GitHub.Issue with { Body = body, ParentIssueNumber = 32 };
+        h.GitHub.CompletionLabels = [h.Worker.Configuration.GitHub.IntegrationConflictLabel.ToUpperInvariant()];
+        var source = PreservedConflict() with { ServerExecutionId = Guid.NewGuid().ToString("N"),
+            AssignmentId = Guid.NewGuid().ToString("N"), OwnershipGeneration = 1, ParentIssueNumber = 32,
+            OriginalIssueBody = FailureDiagnosticRedactor.Redact(body),
+            OriginalIssueBodyFingerprint = fingerprinted ? ConflictIssueIntent.BodyFingerprint(body) : null };
+        await history.CreateAsync(source);
+        var candidate = Assert.Single(await h.Worker.DiscoverManagedIntegrationRecoveriesAsync("project", CancellationToken.None));
+        Assert.Null(candidate.RefusalReason);
+        Assert.Null(candidate.RefusalCode);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(source),
+            System.Text.Json.JsonSerializer.Serialize(await history.ReadExecutionAsync(source.ExecutionId)));
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Equal(0, h.Codex.ConflictResolutions);
+    }
+
+    [Theory]
+    [InlineData("missing", "issue-missing")]
+    [InlineData("closed", "issue-closed")]
+    [InlineData("title", "issue-title-changed")]
+    [InlineData("body", "issue-body-changed")]
+    [InlineData("parent", "issue-parent-changed")]
+    [InlineData("label", "issue-recovery-label-missing")]
+    [InlineData("conflicting-label", "issue-conflicting-lifecycle-label")]
+    [InlineData("redacted-history", "issue-original-metadata-missing")]
+    [InlineData("missing-history", "issue-original-metadata-missing")]
+    [InlineData("query", "issue-query-unavailable")]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task ConflictIntentRefusalsAreSpecificAndNeverExposeIssueContent(string scenario, string code)
+    {
+        using var h = new Harness();
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body };
+        if (scenario == "missing") source = source with { IssueNumber = source.IssueNumber + 1 };
+        if (scenario == "closed") h.GitHub.Closed = true;
+        if (scenario == "title") h.GitHub.Issue = h.GitHub.Issue with { Title = "private changed title" };
+        if (scenario == "body") h.GitHub.Issue = h.GitHub.Issue with { Body = "private changed body" };
+        if (scenario == "parent") h.GitHub.Issue = h.GitHub.Issue with { ParentIssueNumber = 32 };
+        if (scenario == "label") h.GitHub.CompletionLabels = ["unrelated"];
+        if (scenario == "conflicting-label") h.GitHub.CompletionLabels = ["working", "ready"];
+        if (scenario == "redacted-history") source = source with { OriginalIssueBody = "password: [redacted]" };
+        if (scenario == "missing-history") source = source with { OriginalIssueBody = null };
+        if (scenario == "query") h.GitHub.StateReadFailure = new WorkerInfrastructureException("private provider response");
+        var error = await Assert.ThrowsAsync<ConflictIntentException>(() =>
+            StandaloneConflictResolution.VerifyIntentAsync(h.Worker.Configuration, h.GitHub, source, CancellationToken.None));
+        Assert.Equal(code, error.ReasonCode);
+        Assert.DoesNotContain("private", error.Message, StringComparison.Ordinal);
+        Assert.Empty(h.GitHub.Labels);
+    }
+
+    [Fact]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task InitialCapturePersistsFingerprintBeforeLossyRedactionAndRejectsChangesBehindRedaction()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        // Synthetic prose triggers the sanitizer without containing authentication material.
+        const string body = "Task\r\npassword: example-placeholder\r\n";
+        h.GitHub.Issue = h.GitHub.Issue with { Body = body, ParentIssueNumber = 32 };
+        await h.ProcessOneAsync();
+        var source = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal(32, source.ParentIssueNumber);
+        Assert.Equal(FailureDiagnosticRedactor.Redact(body), source.OriginalIssueBody);
+        Assert.Equal(ConflictIssueIntent.BodyFingerprint(body), source.OriginalIssueBodyFingerprint);
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        source = Assert.IsType<ExecutionHistoryEntry>(await reopened.ReadExecutionAsync(source.ExecutionId));
+        h.GitHub.Closed = false;
+        h.GitHub.CompletionLabels = ["working"];
+        await StandaloneConflictResolution.VerifyIntentAsync(h.Worker.Configuration, h.GitHub, source, CancellationToken.None);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = body.Replace("example-placeholder", "changed-placeholder", StringComparison.Ordinal) };
+        var error = await Assert.ThrowsAsync<ConflictIntentException>(() =>
+            StandaloneConflictResolution.VerifyIntentAsync(h.Worker.Configuration, h.GitHub, source, CancellationToken.None));
+        Assert.Equal("issue-body-changed", error.ReasonCode);
     }
 
     private static ExecutionHistoryEntry PreservedConflict() => new(Guid.NewGuid(), "Test Project", "owner/repo", 17,
@@ -3834,10 +3936,12 @@ public sealed class WorkerV011Tests
         public int ConflictResolutions { get; private set; }
         public string? ConflictDirectory { get; private set; }
         public Func<CodexOutcome>? ConflictAction { get; set; }
+        public string? ConflictIssueBody { get; private set; }
         public Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
             GitHubIssue issue, string conflictDetails, CancellationToken ct)
         {
             ConflictResolutions++;
+            ConflictIssueBody = issue.Body;
             ConflictDirectory = projectDirectory;
             return Task.FromResult(ConflictAction?.Invoke() ?? Success("resolved"));
         }

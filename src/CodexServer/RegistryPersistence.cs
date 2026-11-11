@@ -1095,7 +1095,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             request.IntegrationRecoveries is { Count: > 128 } || request.IntegrationRecoveries?.Any(item => item is null ||
                 !Printable(item.ProjectId, 80) || !Guid.TryParse(item.ServerExecutionId, out _) ||
                 item.PreservedCommit is not null && !ValidRecoveryCommit(item.PreservedCommit) ||
-                item.RefusalReason is { Length: > 2000 } || item.Kind is not ("Integration" or "Codex") || !Guid.TryParse(item.WorkerExecutionId, out _) || !ValidRecoveryCommit(item.IntegrationBase)) == true)
+                item.RefusalReason is { Length: > 2000 } ||
+                item.RefusalCode is { } code && (item.RefusalReason is null || code.Length is < 1 or > 80 ||
+                    code.Any(character => character is not (>= 'a' and <= 'z') and not '-')) || item.Kind is not ("Integration" or "Codex") || !Guid.TryParse(item.WorkerExecutionId, out _) || !ValidRecoveryCommit(item.IntegrationBase)) == true)
             throw new InvalidDataException("Worker assignment request contract is invalid.");
         if (!request.WorkerEnabled) return NoAssignment("worker-disabled-or-no-capacity");
         if (request.AvailableCapacity == 0) return NoAssignment("worker-capacity");
@@ -1347,6 +1349,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         var rejections = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var recovery in request.IntegrationRecoveries ?? [])
         {
+            if (recovery.RefusalReason is not null || recovery.RefusalCode is not null) continue;
             if (explicitOperationId is null && recovery.AutomaticRetryExhausted) continue;
             if (!request.ProjectCapacities.TryGetValue(recovery.ProjectId, out var capacity) || capacity <= 0 ||
                 !projects.TryGetValue(recovery.ProjectId, out var project) || !project.Enabled) continue;

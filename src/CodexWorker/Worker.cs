@@ -177,7 +177,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 execution.CodexThreadId = source.CodexThreadId;
                 execution.CodexSessionOwner = source.CodexSessionOwner;
                 execution.CodexRecovery = snapshot with { ResumeCount = snapshot.ResumeCount + 1 };
-                if (!await history.TryClaimCodexRecoveryAsync(source, CreateInitialEntry(execution) with { RecoveryBaseCommit = source.RecoveryBaseCommit, RecoveryStatus = source.RecoveryStatus }, ct)) continue;
+                if (!await history.TryClaimCodexRecoveryAsync(source, CreateInitialEntry(execution) with { RecoveryBaseCommit = source.RecoveryBaseCommit, RecoveryStatus = source.RecoveryStatus,
+                    OriginalIssueBodyFingerprint = source.OriginalIssueBodyFingerprint }, ct)) continue;
                 await TransitionAsync(execution, ExecutionState.Claimed, ct);
                 _output.Warning($"Resuming execution {execution.ExecutionId} · interrupted execution {source.ExecutionId} · " +
                     (snapshot.SessionId is null ? "continuing preserved workspace with new Codex session" : $"attempting Codex session {snapshot.SessionId}"));
@@ -335,8 +336,10 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             // checks because an unsuccessful resolver may have left an intentionally
             // inspection-required recovery row in the preserved workspace.
             // New attempts still verify the selected workspace owner before any claim or mutation.
+            // Use the exact freshly verified Issue for resolver/completion fingerprints.
+            // A historical redacted/LF-only prompt is evidence, not the current GitHub payload.
             if (resolveIntegrationConflict)
-                await VerifyConflictResolutionAsync(source, allHistory, ct, managed: managedExplicit);
+                issue = await VerifyConflictResolutionAsync(source, allHistory, ct, managed: managedExplicit);
             if (managedExplicit && (assignment?.Metadata.GetValueOrDefault("preservedCommit") != source.RecoveryBaseCommit ||
                 assignment?.Metadata.GetValueOrDefault("integrationBase") != integrationBase))
                 throw new InvalidOperationException("Preserved commit or integration base changed since preview; inspect again.");
@@ -365,6 +368,9 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             if (history is null || !await history.TryClaimIntegrationRecoveryAsync(source,
                     CreateInitialEntry(execution) with
                     {
+                        // Recovery uses the stored (redacted) prompt. Retain its original proof;
+                        // hashing that prompt would invent evidence for different Issue content.
+                        OriginalIssueBodyFingerprint = source.OriginalIssueBodyFingerprint,
                         RecoveryStatus = resolveExecutionId is not null
                             ? $"Operator authorized conflict resolution for execution {source.ExecutionId}."
                             : resolveIntegrationConflict ? $"Automatic standalone conflict resolution for execution {source.ExecutionId}." : null
@@ -977,7 +983,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     private ExecutionHistoryEntry CreateInitialEntry(WorkerExecution execution) =>
         CreateEntry(execution, null, null, null) with
         {
-            OriginalIssueBody = FailureDiagnosticRedactor.Redact(execution.IssueBody, config.Environment.Variables.Values.ToArray())
+            OriginalIssueBody = FailureDiagnosticRedactor.Redact(execution.IssueBody, config.Environment.Variables.Values.ToArray()),
+            OriginalIssueBodyFingerprint = ConflictIssueIntent.BodyFingerprint(execution.IssueBody)
         };
 
     private Task<IssueProcessingResult> RunExecutionAsync(ExecutionContext context, CancellationToken ct)

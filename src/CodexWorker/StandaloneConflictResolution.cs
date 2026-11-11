@@ -10,7 +10,7 @@ internal static class StandaloneConflictResolution
         if (managed && (source.ServerExecutionId is null || source.AssignmentId is null || source.OwnershipGeneration is not > 0))
             return "Original managed assignment and lease identity are required.";
         if (source.CompletedAtUtc is null || source.State != "IntegrationConflict" || source.RecoveryState != "integration-conflict" ||
-            source.RecoveryBaseCommit is null || source.OriginalIssueBody is null || source.CompletionJson is not null ||
+            source.RecoveryBaseCommit is null || source.CompletionJson is not null ||
             source.ReportingFailure is not null || source.IntegrationRecoveryClaim is not null || source.AttemptNumber < 1)
             return "Exact completed conflict, original Issue intent and unclaimed preserved-workspace metadata are required.";
         bool IsSettledRecovery(ExecutionHistoryEntry other) => other.Project == source.Project &&
@@ -32,21 +32,52 @@ internal static class StandaloneConflictResolution
         return null;
     }
 
-    internal static async Task VerifyIntentAsync(WorkerConfiguration config, IGitHubClient github,
+    internal static async Task<GitHubIssue> VerifyIntentAsync(WorkerConfiguration config, IGitHubClient github,
         ExecutionHistoryEntry source, CancellationToken ct)
     {
-        var state = await github.ReadIssueStateAsync(source.IssueNumber, ct);
-        var issue = await github.GetIssueAsync(source.IssueNumber, ct);
-        if (!state.IsOpen || issue is null || issue.Number != source.IssueNumber || issue.Title != source.IssueTitle ||
-            source.OriginalIssueBody is null || issue.Body != source.OriginalIssueBody ||
-            await github.GetParentIssueNumberAsync(source.IssueNumber, ct) != source.ParentIssueNumber ||
-            state.Labels.Contains(config.GitHub.DoneLabel, StringComparer.OrdinalIgnoreCase) ||
-            state.Labels.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) ||
-            state.Labels.Contains(config.GitHub.BlockedLabel, StringComparer.OrdinalIgnoreCase) ||
-            state.Labels.Contains(config.GitHub.FailedLabel, StringComparer.OrdinalIgnoreCase) ||
-            !new[] { config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel }
-                .Any(label => state.Labels.Contains(label, StringComparer.OrdinalIgnoreCase)))
-            throw new WorkerInfrastructureException("Issue intent/state changed or recovery labels are absent; preserve and inspect the execution.");
+        if (source.OriginalIssueBody is null)
+            throw ConflictIssueIntent.Refuse("issue-original-metadata-missing");
+        GitHubIssueState state;
+        GitHubIssue? issue;
+        int? parent;
+        try
+        {
+            state = await github.ReadIssueStateAsync(source.IssueNumber, ct);
+            if (!state.IsOpen) throw ConflictIssueIntent.Refuse("issue-closed");
+            issue = await github.GetIssueAsync(source.IssueNumber, ct);
+            if (issue is null || issue.Number != source.IssueNumber)
+                throw ConflictIssueIntent.Refuse("issue-missing");
+            parent = await github.GetParentIssueNumberAsync(source.IssueNumber, ct);
+        }
+        catch (ConflictIntentException) { throw; }
+        catch (WorkerInfrastructureException) when (!ct.IsCancellationRequested)
+        {
+            // Never forward provider output (which can contain Issue content or credentials).
+            throw ConflictIssueIntent.Refuse("issue-query-unavailable");
+        }
+        if (issue.Title != source.IssueTitle) throw ConflictIssueIntent.Refuse("issue-title-changed");
+        if (source.OriginalIssueBodyFingerprint is { } fingerprint)
+        {
+            if (fingerprint.Length != 64 || fingerprint.Any(character => character is not (>= '0' and <= '9') and not (>= 'A' and <= 'F')))
+                throw ConflictIssueIntent.Refuse("issue-original-metadata-missing");
+            if (ConflictIssueIntent.BodyFingerprint(issue.Body) != fingerprint)
+                throw ConflictIssueIntent.Refuse("issue-body-changed");
+        }
+        else
+        {
+            // Historical redaction is lossy: never approve by redacting the fresh body.
+            if (source.OriginalIssueBody.Contains("[redacted]", StringComparison.OrdinalIgnoreCase))
+                throw ConflictIssueIntent.Refuse("issue-original-metadata-missing");
+            if (ConflictIssueIntent.NormalizeBody(issue.Body) != ConflictIssueIntent.NormalizeBody(source.OriginalIssueBody))
+                throw ConflictIssueIntent.Refuse("issue-body-changed");
+        }
+        if (parent != source.ParentIssueNumber) throw ConflictIssueIntent.Refuse("issue-parent-changed");
+        bool Has(string label) => state.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
+        if (new[] { config.GitHub.DoneLabel, config.GitHub.ReadyLabel, config.GitHub.BlockedLabel, config.GitHub.FailedLabel }.Any(Has))
+            throw ConflictIssueIntent.Refuse("issue-conflicting-lifecycle-label");
+        if (!new[] { config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel }.Any(Has))
+            throw ConflictIssueIntent.Refuse("issue-recovery-label-missing");
+        return issue;
     }
 }
 
@@ -55,7 +86,7 @@ public sealed partial class Worker
     private Task VerifyConflictIntentAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct);
 
-    private async Task VerifyConflictResolutionAsync(ExecutionHistoryEntry source,
+    private async Task<GitHubIssue> VerifyConflictResolutionAsync(ExecutionHistoryEntry source,
         IReadOnlyList<ExecutionHistoryEntry> entries, CancellationToken ct, bool managed = false)
     {
         if (!managed && serverSettings?.Enabled == true) throw new InvalidOperationException("Standalone conflict resolution only.");
@@ -66,7 +97,7 @@ public sealed partial class Worker
         if (config.Validation.MaxFixAttempts < 1) throw new InvalidOperationException("Conflict resolution requires a positive validation repair budget.");
         if (source.CodexRecovery is { } workspace && workspace.WorkspaceExecutionId != source.ExecutionId)
             throw new InvalidOperationException("Select the original workspace-owning execution; recovery-attempt aliases are refused.");
-        await VerifyConflictIntentAsync(source, ct);
+        var issue = await StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct);
         await _repositoryGate.WaitAsync(ct);
         try
         {
@@ -75,6 +106,7 @@ public sealed partial class Worker
             if (await git.GetIntegrationBaseAsync(ct) is null) throw new InvalidOperationException("Authoritative integration base is unavailable.");
         }
         finally { _repositoryGate.Release(); }
+        return issue;
     }
 
     /// <summary>Called only by the offline CLI while holding the exclusive checkout lock.</summary>

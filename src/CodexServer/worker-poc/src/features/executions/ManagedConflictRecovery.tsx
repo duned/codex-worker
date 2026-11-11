@@ -9,18 +9,20 @@ import { t, useLanguage } from '../../shared/i18n';
 import { execution, type Execution } from './model';
 
 type Candidate = { projectId: string; serverExecutionId: string; workerExecutionId: string; integrationBase: string;
-  kind: string; automaticRetryExhausted: boolean; preservedCommit?: string | null; refusalReason?: string | null };
-type Preview = { executionId: string; workerId?: string; candidate?: Candidate; eligible: boolean; reason: string };
+  kind: string; automaticRetryExhausted: boolean; preservedCommit?: string | null; refusalReason?: string | null; refusalCode?: string | null };
+type Preview = { executionId: string; workerId?: string; candidate?: Candidate; eligible: boolean; reason: string; reasonCode?: string | null };
 export const conflictPreview: Validator<Preview> = value => {
   if (!value || typeof value !== 'object') throw new Error('Invalid recovery preview.');
   const item = value as Preview, candidate = item.candidate;
   if (typeof item.executionId !== 'string' || typeof item.eligible !== 'boolean' || typeof item.reason !== 'string' ||
+      item.reasonCode != null && typeof item.reasonCode !== 'string' ||
       item.workerId != null && typeof item.workerId !== 'string' ||
       candidate != null && (typeof candidate.projectId !== 'string' || typeof candidate.serverExecutionId !== 'string' ||
         typeof candidate.workerExecutionId !== 'string' || typeof candidate.integrationBase !== 'string' ||
         typeof candidate.kind !== 'string' || typeof candidate.automaticRetryExhausted !== 'boolean' ||
         candidate.preservedCommit != null && typeof candidate.preservedCommit !== 'string' ||
-        candidate.refusalReason != null && typeof candidate.refusalReason !== 'string') ||
+        candidate.refusalReason != null && typeof candidate.refusalReason !== 'string' ||
+        candidate.refusalCode != null && typeof candidate.refusalCode !== 'string') ||
       item.eligible && (!item.workerId || !candidate || !candidate.preservedCommit || candidate.kind !== 'Integration'))
     throw new Error('Invalid recovery preview.');
   return item;

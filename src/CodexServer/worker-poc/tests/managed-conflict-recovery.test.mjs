@@ -28,3 +28,12 @@ test('refusals can report unavailable identity and commit without authorizing a 
   assert.deepEqual(conflictPreview(refusal), refusal);
   assert.equal(conflictPreview({ ...preview, eligible: false, candidate: { ...preview.candidate, preservedCommit: null } }).eligible, false);
 });
+
+test('specific intent diagnostic and operator step survive the dashboard preview contract', () => {
+  const reason = 'issue-parent-changed: Review the parent and retained history before recovery.';
+  const refused = { ...preview, eligible: false, reasonCode: 'issue-parent-changed', reason,
+    candidate: { ...preview.candidate, refusalCode: 'issue-parent-changed', refusalReason: reason } };
+  assert.deepEqual(conflictPreview(refused), refused);
+  assert.throws(() => conflictPreview({ ...refused, reasonCode: 42 }));
+  assert.throws(() => conflictPreview({ ...refused, candidate: { ...refused.candidate, refusalCode: 42 } }));
+});

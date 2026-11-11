@@ -18,7 +18,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     ImplementationEngineSelector? engines = null, IGitHubClient? github = null, CodexThreadCoordinator? threadCoordinator = null)
 {
     private ImplementationRequest Request(ExecutionContext context) => new(git.ExecutionDirectory, config.Codex.InstructionsFile,
-        context.Issue, context.RetryOf, context.Execution.Resumed, context.Execution.AttemptNumber,
+        // Completion compares the verified live payload; engine prompts retain the redacted original intent.
+        context.ResolveIntegrationConflict && context.RetryOf?.OriginalIssueBody is { } body
+            ? context.Issue with { Body = body } : context.Issue,
+        context.RetryOf, context.Execution.Resumed, context.Execution.AttemptNumber,
         context.Execution.CodexProfile?.EffectiveModel, context.Execution.CodexProfile?.Effort);
 
     private static bool IsInterruptedValidation(ExecutionContext context) => context.RetryOf is { } source &&
