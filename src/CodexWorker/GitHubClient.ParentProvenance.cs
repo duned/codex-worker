@@ -12,7 +12,24 @@ public sealed partial class GitHubClient
         if (issueNumber <= 0) throw new ArgumentOutOfRangeException(nameof(issueNumber));
         // Filter only native relationship events plus transfers (which invalidate repository continuity).
         const string query = """
-            query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){nameWithOwner issue(number:$number){id number createdAt parent{number repository{nameWithOwner}} timelineItems(first:100,after:$after,itemTypes:[PARENT_ISSUE_ADDED_EVENT,PARENT_ISSUE_REMOVED_EVENT,TRANSFERRED_EVENT]){totalCount pageInfo{hasNextPage endCursor} nodes{__typename ... on ParentIssueAddedEvent{id createdAt parent{number repository{nameWithOwner}}} ... on ParentIssueRemovedEvent{id createdAt parent{number repository{nameWithOwner}}}}}}}
+            query($owner:String!,$name:String!,$number:Int!,$after:String) {
+              repository(owner:$owner,name:$name) {
+                nameWithOwner
+                issue(number:$number) {
+                  id number createdAt
+                  parent { number repository { nameWithOwner } }
+                  timelineItems(first:100,after:$after,itemTypes:[PARENT_ISSUE_ADDED_EVENT,PARENT_ISSUE_REMOVED_EVENT,TRANSFERRED_EVENT]) {
+                    totalCount
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      __typename
+                      ... on ParentIssueAddedEvent { id createdAt parent { number repository { nameWithOwner } } }
+                      ... on ParentIssueRemovedEvent { id createdAt parent { number repository { nameWithOwner } } }
+                    }
+                  }
+                }
+              }
+            }
             """;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));

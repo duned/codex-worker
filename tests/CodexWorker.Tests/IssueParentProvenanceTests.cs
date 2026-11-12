@@ -208,6 +208,7 @@ public sealed class IssueParentProvenanceTests
                 test "$3" = -f && test "$5" = -f && test "$7" = -f && test "$9" = -F || exit 94
                 test -f "$GH_CONFIG_DIR/managed-by-codex" || exit 91
                 test -z "${GH_TOKEN}${GITHUB_TOKEN}${GH_ENTERPRISE_TOKEN}${GITHUB_ENTERPRISE_TOKEN}" || exit 92
+                printf '%s' "$4" > "$GH_CONFIG_DIR/query.txt"
                 case "$4" in query=*PARENT_ISSUE_ADDED_EVENT*PARENT_ISSUE_REMOVED_EVENT*TRANSFERRED_EVENT*) ;; *) exit 93;; esac
                 """ + "\n" + output + "\n";
             if (scenario == "start") script = "#!/missing-secret-sentinel-interpreter\n";
@@ -217,7 +218,27 @@ public sealed class IssueParentProvenanceTests
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             if (scenario == "environment") await File.WriteAllTextAsync(Path.Combine(directory.Path, "github", "managed-by-codex"), "invalid-secret-sentinel");
             var client = new GitHubClient(new ProcessRunner(), repository, 5, true, directory.Path);
-            return await client.GetParentProvenanceAsync(number, started, 32, CancellationToken.None);
+            var result = await client.GetParentProvenanceAsync(number, started, 32, CancellationToken.None);
+            // Inspect the actual argument received by the stub executable, after ProcessRunner
+            // argument handling. A canned provider response alone cannot detect a broken query.
+            var query = await File.ReadAllTextAsync(Path.Combine(directory.Path, "github", "query.txt"));
+            Assert.StartsWith("query=query(", query, StringComparison.Ordinal);
+            var delimiters = new Stack<char>();
+            foreach (var character in query)
+            {
+                if (character is '{' or '(' or '[') delimiters.Push(character);
+                else if (character is '}' or ')' or ']')
+                {
+                    Assert.NotEmpty(delimiters);
+                    Assert.Equal(character switch { '}' => '{', ')' => '(', _ => '[' }, delimiters.Pop());
+                }
+            }
+            Assert.Empty(delimiters);
+            Assert.Contains("parent { number repository { nameWithOwner } }", query, StringComparison.Ordinal);
+            Assert.Contains("... on ParentIssueAddedEvent", query, StringComparison.Ordinal);
+            Assert.Contains("... on ParentIssueRemovedEvent", query, StringComparison.Ordinal);
+            Assert.Contains("__typename", query, StringComparison.Ordinal);
+            return result;
         }
         finally
         {
