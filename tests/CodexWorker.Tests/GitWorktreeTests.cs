@@ -1325,7 +1325,7 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
             isAuthoritative: managed ? (_, _) => Task.FromResult(true) : null, github: github);
         var context = new CodexWorker.ExecutionContext(execution, fixture.Issue, source,
             IntegrationRecovery: true, ResolveIntegrationConflict: true);
-        if (outcome == "cancelled" || outcome == "changed-intent" && !managed)
+        if (outcome == "cancelled")
             await Assert.ThrowsAnyAsync<Exception>(() => runner.RunAsync(context, cancellation.Token));
         else Assert.Equal(outcome == "success" ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict,
             (await runner.RunAsync(context, cancellation.Token)).Kind);
@@ -1999,6 +1999,181 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(0, registry.Get("sample")!.ActiveExecutionCount);
     }
 
+    [Theory]
+    [InlineData(true, true, "success")]
+    [InlineData(false, true, "success")]
+    [InlineData(true, false, "success")]
+    [InlineData(false, false, "success")]
+    [InlineData(true, true, "standalone")]
+    [InlineData(false, true, "standalone")]
+    [InlineData(true, true, "failed")]
+    [InlineData(true, true, "budget")]
+    [InlineData(true, true, "changed-intent")]
+    [InlineData(true, true, "lease-loss")]
+    [InlineData(true, true, "validation")]
+    [InlineData(true, true, "uncertain-git")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task FirstAttemptsIntegrateFromSameBaseInEitherOrder(bool firstFinishesFirst, bool overlap, string scenario)
+    {
+        using var fixture = await seed.CreateAsync();
+        // Exercise a configured branch other than the fixture's default.
+        await fixture.Git("branch", "-m", "main", "integration");
+        await fixture.Git("push", "-u", "origin", "integration");
+        var config = new WorkerConfiguration
+        {
+            Project = new() { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
+            Git = new() { AutoMerge = true, BaseBranch = "integration" },
+            GitHub = new() { WorkingLabel = "working" },
+            Validation = new() { Commands = ["combined source"], MaxFixAttempts = scenario == "budget" ? 0 : 1 }
+        };
+        using var root = fixture.CreateRepository(config.Git);
+        await root.InitializeAsync(CancellationToken.None);
+        using var left = root.CreateExecutionRepository();
+        using var right = root.CreateExecutionRepository();
+        using var gate = new SemaphoreSlim(1, 1);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "parallel.db"));
+        using var writer = new StringWriter();
+        var console = new WorkerConsole(writer, false);
+        var issues = new[] { fixture.Issue with { ParentIssueCaptured = true },
+            fixture.Issue with { Number = 18, ParentIssueCaptured = true } };
+        var github = new ConcurrentGitHub(issues[0]);
+        foreach (var issue in issues) github.Labels.Add((issue.Number, "working"));
+        var engines = new[] { new ParallelIntegrationCodex(fixture, overlap, scenario, github),
+            new ParallelIntegrationCodex(fixture, overlap, scenario, github) };
+        var validation = new ParallelSourceValidation(overlap, scenario == "validation");
+        var executions = issues.Select(issue => WorkerExecution.Create(config.Project, config.Git, issue,
+            serverExecutionId: scenario == "standalone" ? null : $"server-{issue.Number}",
+            assignmentId: scenario == "standalone" ? null : $"assignment-{issue.Number}",
+            ownershipGeneration: scenario == "standalone" ? null : 1)).ToArray();
+        foreach (var execution in executions)
+        {
+            execution.TransitionTo(ExecutionState.Claimed);
+            await history.CreateAsync(new ExecutionHistoryEntry(execution.ExecutionId, execution.Project, execution.Repository,
+                execution.IssueNumber, execution.IssueTitle, execution.FeatureBranch, execution.BaseBranch, execution.StartedAtUtc,
+                null, "Claimed", null, null, null, 0, [], null, null, null, null,
+                ServerExecutionId: execution.ServerExecutionId, AssignmentId: execution.AssignmentId,
+                OwnershipGeneration: execution.OwnershipGeneration, OriginalIssueBody: execution.IssueBody,
+                ParentIssueCaptured: true));
+        }
+        var runners = new[] { left, right }.Select((repository, index) => new ExecutionRunner(config, repository,
+            engines[index], validation, console, history, gate,
+            isAuthoritative: scenario == "standalone" ? null : (_, _) => Task.FromResult(!engines[index].LeaseLost),
+            github: github)).ToArray();
+        var tasks = runners.Select((runner, index) => runner.RunAsync(
+            new CodexWorker.ExecutionContext(executions[index], issues[index]), deadline.Token)).ToArray();
+        try
+        {
+            await Task.WhenAll(engines.Select(engine => engine.Started.Task)).WaitAsync(deadline.Token);
+            Assert.NotEqual(left.ExecutionDirectory, right.ExecutionDirectory);
+            Assert.Equal(engines[0].StartingHead, engines[1].StartingHead);
+            Assert.NotEqual(engines[0].Branch, engines[1].Branch);
+            Assert.All(engines, engine => Assert.Equal("integration", engine.BaseBranch));
+            var winner = firstFinishesFirst ? 0 : 1;
+            var follower = 1 - winner;
+            engines[winner].Release.SetResult();
+            Assert.Equal(IssueOutcomeKind.Succeeded, (await tasks[winner]).Kind);
+            engines[follower].Release.SetResult();
+            if (scenario is "lease-loss" or "uncertain-git")
+            {
+                await Assert.ThrowsAsync<WorkerInfrastructureException>(() => tasks[follower]);
+                Assert.True(Directory.Exists(engines[follower].Workspace));
+                Assert.Equal("uncertain", (await history.ReadExecutionAsync(executions[follower].ExecutionId))?.RecoveryState);
+            }
+            else
+            {
+                var result = await tasks[follower];
+                var succeeds = scenario is "success" or "standalone";
+                Assert.Equal(succeeds ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict, result.Kind);
+                Assert.Equal(overlap && scenario != "budget" ? 1 : 0, engines[follower].ResolutionCalls);
+                if (succeeds)
+                {
+                    if (overlap) Assert.Equal("base + task 17 + task 18", await fixture.Git("show", "integration:base.txt"));
+                    else foreach (var issue in issues)
+                        Assert.Equal($"task {issue.Number}", await fixture.Git("show", $"integration:issue-{issue.Number}.txt"));
+                    Assert.Equal("3", await fixture.Git("rev-list", "--count", "integration"));
+                    Assert.Equal(1, validation.CombinedCalls);
+                    var remote = await fixture.Git("ls-remote", "origin", "refs/heads/integration");
+                    Assert.Equal(await fixture.Git("rev-parse", "integration"), remote.Split('\t')[0]);
+                }
+                else
+                {
+                    Assert.True(result.Report.WorkspacePreserved);
+                    Assert.True(Directory.Exists(engines[follower].Workspace));
+                    Assert.Equal("2", await fixture.Git("rev-list", "--count", "integration"));
+                    Assert.Null(executions[follower].RetryOfExecutionId);
+                }
+                Assert.DoesNotContain("infrastructure failure", writer.ToString(), StringComparison.OrdinalIgnoreCase);
+            }
+            Assert.Contains("Codex thread inheritance skipped", writer.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            foreach (var engine in engines) engine.Release.TrySetResult();
+            await Task.WhenAll(tasks.Select(async task => { try { await task; } catch (WorkerInfrastructureException) { } }));
+        }
+    }
+
+    private sealed class ParallelIntegrationCodex(RepositoryFixture fixture, bool overlap, string scenario, ConcurrentGitHub github) : ICodexExecutor
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string? StartingHead { get; private set; }
+        public string? Branch { get; private set; }
+        public string? BaseBranch { get; private set; }
+        public string Workspace { get; private set; } = "";
+        public bool LeaseLost { get; private set; }
+        public int ResolutionCalls { get; private set; }
+        public Task PreflightAsync(CancellationToken ct) => Task.CompletedTask;
+        public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct)
+        {
+            Workspace = projectDirectory;
+            StartingHead = await fixture.GitAt(projectDirectory, "rev-parse", "HEAD");
+            Branch = await fixture.GitAt(projectDirectory, "branch", "--show-current");
+            BaseBranch = await fixture.Git("branch", "--show-current");
+            await File.WriteAllTextAsync(Path.Combine(projectDirectory, overlap ? "base.txt" : $"issue-{issue.Number}.txt"),
+                overlap ? $"base + task {issue.Number}" : $"task {issue.Number}", ct);
+            Started.SetResult();
+            await Release.Task.WaitAsync(ct);
+            return new("success", "implemented current issue", [], false, null);
+        }
+        public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct) =>
+            throw new InvalidOperationException("Initial validation must pass.");
+        public async Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
+            GitHubIssue issue, string conflictDetails, CancellationToken ct)
+        {
+            ResolutionCalls++;
+            Assert.Equal(Workspace, projectDirectory);
+            Assert.Contains("Base branch: integration", conflictDetails, StringComparison.Ordinal);
+            Assert.Equal(fixture.Issue.Body, issue.Body);
+            var source = await File.ReadAllTextAsync(Path.Combine(projectDirectory, "base.txt"), ct);
+            Assert.Contains("task 17", source, StringComparison.Ordinal);
+            Assert.Contains("task 18", source, StringComparison.Ordinal);
+            await File.WriteAllTextAsync(Path.Combine(projectDirectory, "base.txt"), "base + task 17 + task 18", ct);
+            if (scenario == "changed-intent") github.ChangedBody = "changed task";
+            if (scenario == "lease-loss") LeaseLost = true;
+            if (scenario == "uncertain-git") await fixture.GitAt(projectDirectory, "update-ref", "HEAD", StartingHead ?? "invalid");
+            return new(scenario == "failed" ? "failed" : "success", "combined both tasks", [], false, null);
+        }
+    }
+
+    private sealed class ParallelSourceValidation(bool overlap, bool failCombined) : IValidationRunner
+    {
+        public int CombinedCalls { get; private set; }
+        public async Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
+        {
+            var combined = overlap
+                ? (await File.ReadAllTextAsync(Path.Combine(directory, "base.txt"), ct)) == "base + task 17 + task 18"
+                : File.Exists(Path.Combine(directory, "issue-17.txt")) && File.Exists(Path.Combine(directory, "issue-18.txt"));
+            if (!combined) return ValidationResult.Success;
+            CombinedCalls++;
+            return failCombined ? new(new ValidationFailure(1, "combined source", 1, "", "combined check failed", false))
+                : ValidationResult.Success;
+        }
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
@@ -2024,8 +2199,23 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
         var coordinator = new CodexThreadCoordinator();
         var sharedThread = Guid.NewGuid().ToString();
-        async Task RunImplementationAsync(IGitRepository repository, string change, string? thread)
+        using var sessionHistory = new ExecutionHistoryStore(Path.Combine(fixture._root, "inherited-parallel.db"));
+        await sessionHistory.CreateAsync(LegacyCodexSessionTests.Source() with
         {
+            Project = "sample", Repository = "owner/repo", IssueNumber = 16, ParentIssueNumber = 2,
+            State = "Completed", CodexThreadId = sharedThread, CodexSessionOwner = "local"
+        });
+        var sessionGitHub = new ConcurrentGitHub(firstIssue) { ParentNumber = 2, Blockers = inheritSession ? [16] : [] };
+        async Task RunImplementationAsync(IGitRepository repository, GitHubIssue issue, string change)
+        {
+            var request = new ImplementationRequest(repository.ExecutionDirectory, "unused",
+                issue with { ParentIssueNumber = 2, ParentIssueCaptured = true });
+            var selection = await BlockerCodexSession.SelectAsync(request, "sample", "owner/repo", "codex",
+                sessionHistory, sessionGitHub, "local", (_, _) => Task.FromResult(true), CancellationToken.None);
+            Assert.Equal(inheritSession ? sharedThread : null, selection.Thread);
+            Assert.Contains(inheritSession ? "all blockers" : "no native blockers", selection.Reason, StringComparison.Ordinal);
+            var thread = selection.Thread;
+            Assert.Equal(repository.ExecutionDirectory, request.ProjectDirectory);
             var result = await coordinator.RunAsync(thread, _ => Task.FromResult(true), async (resumed, token) =>
             {
                 Assert.Equal(thread, resumed);
@@ -2035,8 +2225,10 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
             Assert.Equal("success", result.Status);
         }
         await Task.WhenAll(
-            RunImplementationAsync(firstGit, "base + task A", inheritSession ? sharedThread : null),
-            RunImplementationAsync(secondGit, "base + task B", inheritSession ? sharedThread : null));
+            RunImplementationAsync(firstGit, firstIssue, "base + task A"),
+            RunImplementationAsync(secondGit, secondIssue, "base + task B"));
+        Assert.NotEqual(await fixture.GitAt(firstGit.ExecutionDirectory, "branch", "--show-current"),
+            await fixture.GitAt(secondGit.ExecutionDirectory, "branch", "--show-current"));
 
         var firstIntegration = await firstGit.CommitAndIntegrateAsync(firstIssue,
             _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
@@ -2591,6 +2783,9 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
     private sealed class ConcurrentGitHub(GitHubIssue template) : IGitHubClient
     {
+        public IReadOnlyList<int> Blockers { get; set; } = [];
+        public Task<IReadOnlyList<int>?> GetBlockerIssueNumbersAsync(int issueNumber, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<int>?>(Blockers);
         public int? ParentNumber { get; set; } = template.ParentIssueNumber;
         public string? ParentProvenance { get; set; }
         public Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct) => Task.FromResult(ParentNumber);

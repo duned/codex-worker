@@ -213,6 +213,22 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                         ct, token => EnsureIntegrationAuthorityAsync(execution, token)),
                         completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
                 }
+                catch (GitConflictResolutionIncompleteException ex)
+                {
+                    // The resolver may have useful partial edits in a detached rebase.
+                    // Do not require a clean branch or abort those edits to record a safe failure.
+                    var report = new IssueExecutionReport(implementationSummary, repairs,
+                        Failure: ex.Message, FailureCategory: "Integration conflict",
+                        RecoveryBranch: execution.FeatureBranch, WorkspacePreserved: true, RetryAvailable: false,
+                        RecoveryGuidance: "Inspect the retained rebase and original implementation branch before another recovery action.",
+                        SecretValues: config.Environment.Variables.Values.ToArray());
+                    await SaveHistoryAsync(CreateEntry(execution, report, null, ex.Message) with
+                    {
+                        RecoveryState = "conflict-resolution-incomplete",
+                        RecoveryStatus = "Conflict resolution retained; rebase may be in progress."
+                    }, ct);
+                    return new IssueProcessingResult(IssueOutcomeKind.IntegrationConflict, report);
+                }
                 catch (GitIntegrationConflictException ex)
                 {
                     if (ex is GitIntegrationArchiveException && history is not null &&
@@ -302,7 +318,14 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         var execution = context.Execution;
         var issue = context.Issue;
         var source = context.RetryOf ?? throw new WorkerInfrastructureException("Integration recovery has no source execution history.");
-        if (CanResolveIntegrationConflict(context)) await VerifyConflictIntentAsync(context, ct);
+        try
+        {
+            if (CanResolveIntegrationConflict(context)) await VerifyConflictIntentAsync(context, ct);
+        }
+        catch (GitConflictResolutionIncompleteException ex)
+        {
+            return await RefuseConflictPreparationAsync(context, source, ex, ct);
+        }
         if (isAuthoritative is not null && !await isAuthoritative(execution, ct))
             throw new WorkerInfrastructureException("Fresh Server authorization was unavailable for preserved validation recovery; the workspace remains preserved.");
         await _repositoryGate.WaitAsync(ct);
@@ -319,6 +342,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 if (context.InterruptedExecution) await git.StartInterruptedExecutionAsync(source, ct);
                 else if (source.RecoveryState == "codex-interrupted") await git.StartCodexRecoveryAsync(source, ct);
                 else await git.StartIntegrationRecoveryAsync(source, ct);
+            }
+            catch (GitConflictResolutionIncompleteException ex)
+            {
+                return await RefuseConflictPreparationAsync(context, source, ex, ct);
             }
             catch (IssuePreparationRejectedException ex) when (!ct.IsCancellationRequested)
             {
@@ -360,7 +387,17 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     (details, token) => ResolveConflictAsync(context, engine, details, token), (details, token) => RepairIntegrationAsync(context, engine, source.ImplementationSummary, repairs, details, token),
                     ct, async token =>
                     {
-                        if (CanResolveIntegrationConflict(context)) await VerifyConflictIntentAsync(context, token);
+                        try
+                        {
+                            if (CanResolveIntegrationConflict(context))
+                                await VerifyConflictIntentAsync(context, token, resolving: _conflictResolutionAttempts > 0);
+                        }
+                        catch (GitConflictResolutionIncompleteException ex)
+                        {
+                            // This callback also runs after local integration or a push.
+                            // At that boundary a refusal requires reconciliation, not a safe retry.
+                            throw new WorkerInfrastructureException("Integration authority could not be verified; preserve state for reconciliation.", ex);
+                        }
                         await EnsureIntegrationAuthorityAsync(execution, token);
                     }), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
             var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.\n\n{source.ImplementationSummary}", repairs, Integration: integration);
@@ -413,35 +450,66 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         finally { _repositoryGate.Release(); }
     }
 
-    private int _conflictResolutionAttempts;
-
-    private async Task VerifyConflictIntentAsync(ExecutionContext context, CancellationToken ct)
+    private async Task<IssueProcessingResult> RefuseConflictPreparationAsync(ExecutionContext context,
+        ExecutionHistoryEntry source, GitConflictResolutionIncompleteException refusal, CancellationToken ct)
     {
-        if (context.RetryOf is null)
-            throw new WorkerInfrastructureException("Conflict resolution requires authoritative Issue verification.");
-        if (context.Execution.ServerExecutionId is not null)
+        var report = new IssueExecutionReport(source.ImplementationSummary, [], Failure: refusal.Message,
+            FailureCategory: "Integration recovery conflict", RecoveryBranch: source.FeatureBranch,
+            WorkspacePreserved: true, RetryAvailable: false,
+            RecoveryGuidance: "Original workspace was not changed. Review Issue authority before another recovery action.",
+            SecretValues: config.Environment.Variables.Values.ToArray());
+        await SaveHistoryAsync(CreateEntry(context.Execution, report, null, refusal.Message) with
         {
-            if (context.RetryOf.ServerExecutionId is null || isAuthoritative is null)
-                throw new WorkerInfrastructureException("Managed conflict resolution requires an active Server execution lease.");
-            await EnsureIntegrationAuthorityAsync(context.Execution, ct);
-            if (context.ResolveIntegrationConflict)
-            {
-                if (github is null) throw new WorkerInfrastructureException("Issue verification is unavailable.");
-                var verified = await StandaloneConflictResolution.VerifyIntentAsync(config, github, context.RetryOf, ct);
-                if (verified.ParentProvenance != context.Execution.ParentProvenance)
-                    throw ConflictIssueIntent.Refuse("issue-parent-proof-changed");
-            }
-            return;
-        }
-        if (github is null || context.RetryOf.ServerExecutionId is not null ||
-            context.RetryOf.AssignmentId is not null || context.RetryOf.OwnershipGeneration is not null)
-            throw new WorkerInfrastructureException("Conflict resolution requires authoritative Issue verification.");
-        await StandaloneConflictResolution.VerifyIntentAsync(config, github, context.RetryOf, ct);
+            RecoveryState = "conflict-resolution-incomplete", RecoveryBaseCommit = source.RecoveryBaseCommit
+        }, ct);
+        return new IssueProcessingResult(IssueOutcomeKind.IntegrationConflict, report);
     }
 
-    private static bool CanResolveIntegrationConflict(ExecutionContext context) =>
+    private int _conflictResolutionAttempts;
+
+    private async Task VerifyConflictIntentAsync(ExecutionContext context, CancellationToken ct, bool resolving = false)
+    {
+        try
+        {
+            var execution = context.Execution;
+            // A first attempt has its own captured intent; a prior recovery attempt is
+            // required only when continuing a preserved conflict, not for parallel integration.
+            var source = context.IntegrationRecovery && context.RetryOf is { } previous
+                ? previous
+                : CreateEntry(execution, null, null, null) with
+                {
+                    OriginalIssueBody = execution.IssueBody,
+                    OriginalIssueBodyFingerprint = ConflictIssueIntent.BodyFingerprint(execution.IssueBody)
+                };
+            if (execution.ServerExecutionId is not null)
+            {
+                if (source.ServerExecutionId is null || isAuthoritative is null)
+                    throw new GitConflictResolutionIncompleteException("Managed conflict resolution requires an active Server execution lease.");
+                await EnsureIntegrationAuthorityAsync(execution, ct);
+                // A clean managed recovery integrates already-validated work under its
+                // lease. Live Issue proof is additionally required when editing conflicts.
+                if (context.IntegrationRecovery && !context.ResolveIntegrationConflict && !resolving) return;
+            }
+            else if (source.ServerExecutionId is not null || source.AssignmentId is not null || source.OwnershipGeneration is not null)
+                throw new GitConflictResolutionIncompleteException("Managed conflict resolution requires Server reconciliation.");
+            if (github is null)
+                throw new GitConflictResolutionIncompleteException("Conflict resolution requires authoritative Issue verification; workspace preserved.");
+            var verified = await StandaloneConflictResolution.VerifyIntentAsync(config, github, source, ct);
+            if (verified.ParentProvenance != execution.ParentProvenance)
+                throw ConflictIssueIntent.Refuse("issue-parent-proof-changed");
+        }
+        catch (ConflictIntentException ex)
+        {
+            // A known intent refusal is a contained conflict. Unknown Git, lease,
+            // engine and push failures retain their infrastructure/reconciliation semantics.
+            throw new GitConflictResolutionIncompleteException(ex.Message);
+        }
+    }
+
+    private bool CanResolveIntegrationConflict(ExecutionContext context) =>
         context.Execution.ServerExecutionId is not null ||
-        context.IntegrationRecovery && context.ResolveIntegrationConflict;
+        context.IntegrationRecovery && context.ResolveIntegrationConflict ||
+        !context.IntegrationRecovery && github is not null;
 
     private async Task<bool> ResolveConflictAsync(ExecutionContext context, IImplementationEngine engine,
         string details, CancellationToken ct)
@@ -449,10 +517,11 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         if (!CanResolveIntegrationConflict(context)) return false;
         if (++_conflictResolutionAttempts > config.Validation.MaxFixAttempts)
             throw new GitConflictResolutionIncompleteException("Verified conflict-resolution budget exhausted; workspace preserved.");
-        await VerifyConflictIntentAsync(context, ct);
+        await VerifyConflictIntentAsync(context, ct, resolving: true);
         await EnsureIntegrationAuthorityAsync(context.Execution, ct);
+        git.PreservePartialConflictResolution();
         var result = await engine.ResolveIntegrationConflictAsync(Request(context), details, ct);
-        await VerifyConflictIntentAsync(context, ct);
+        await VerifyConflictIntentAsync(context, ct, resolving: true);
         await EnsureIntegrationAuthorityAsync(context.Execution, ct);
         if (result.Status != "success")
         {
@@ -475,7 +544,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     {
         var attempt = repairs.Count(repair => repair.IntegrationRepair) + 1;
         if (attempt > config.Validation.MaxFixAttempts) return new IntegrationRepairResult(false, false);
-        if (CanResolveIntegrationConflict(context)) await VerifyConflictIntentAsync(context, ct);
+        if (CanResolveIntegrationConflict(context)) await VerifyConflictIntentAsync(context, ct, resolving: true);
         await EnsureIntegrationAuthorityAsync(context.Execution, ct);
         if (context.Execution.CodexRecovery is { } repairing)
             context.Execution.CodexRecovery = repairing with { ImplementationSucceeded = false };
@@ -486,7 +555,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             engine.RepairIntegrationAsync(Request(context),
                 details, implementationSummary, config.Validation.Commands, attempt, config.Validation.MaxFixAttempts, ct),
             x => x.Status, x => x.Status == "success", warning: x => x.Status == "blocked", ct: ct);
-        if (CanResolveIntegrationConflict(context)) await VerifyConflictIntentAsync(context, ct);
+        if (CanResolveIntegrationConflict(context)) await VerifyConflictIntentAsync(context, ct, resolving: true);
         if (context.Execution.CodexRecovery is { } repaired)
             context.Execution.CodexRecovery = repaired with { ImplementationSucceeded = outcome.Status == "success" };
         var summary = FailureDiagnosticRedactor.Redact(outcome.Summary +
@@ -600,6 +669,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         var result = await output.RunProgressAsync(TaskLabel(context.Issue, stage, context.Execution),
             () => RunValidationAsync(context, stage, integrationRepair?.Attempt ?? 0, ct),
             x => x.Succeeded ? (integrationRepair is null ? "passed" : "integration repair succeeded") : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: ct);
+        // Recheck intent after validation, before Git can fast-forward the shared base.
+        if (_conflictResolutionAttempts > 0) await VerifyConflictIntentAsync(context, ct, resolving: true);
         if (integrationRepair is not null)
             repairs[^1] = integrationRepair with { PassedAfterRepair = result.Succeeded,
                 ValidationAfterRepair = result.Failure?.ToSummary() };

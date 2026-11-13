@@ -1,5 +1,7 @@
 # Session sharing and parallel integration investigation
 
+> Historical investigation. The later VM2 first-attempt verification mismatch and its fix are documented in [Parallel integration and recovery verification](parallel-integration-recovery-verification.md). The no-defect conclusion below describes the evidence available during this earlier review.
+
 ## Finding
 
 The repository evidence does not establish that inherited Codex sessions can select the wrong workspace, branch, or integration base. Session inheritance is optional conversation context. Each Issue still creates its own execution worktree and feature branch, and Git integration remains serialized by a repository-scoped gate. The thread gate serializes only turns that advance the same Codex conversation. A shared thread can therefore reduce parallel implementation for dependent Issues, but it does not serialize unrelated sessions or merge their workspaces.

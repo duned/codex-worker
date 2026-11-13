@@ -688,27 +688,28 @@ public sealed class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
-    public async Task IntegrationConflictHasDedicatedStateAndSchedulerCanContinue()
+    public async Task IncompleteConflictResolutionHasDedicatedStateAndSchedulerCanContinue()
     {
         using var historyDatabase = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(historyDatabase.Path);
         using var h = new Harness(history: history);
         h.GitHub.ReadyIssueCount = 2;
-        h.Git.IntegrationFailure = new GitIntegrationConflictException("rebase conflict was safely aborted");
-        h.Git.CheckConflictPolicy = true;
+        h.Git.RequestConflictResolution = true;
+        h.Codex.ConflictAction = () => new CodexOutcome("failed", "Cannot safely preserve both tasks", [], false, null);
 
         var conflicted = await h.ProcessOneAsync();
         Assert.Equal(IssueOutcomeKind.IntegrationConflict, conflicted!.Kind);
-        Assert.Equal(1, h.Git.Integrations);
-        Assert.Equal(1, h.Git.ConflictPolicyChecks);
-        Assert.Equal(0, h.Codex.ConflictResolutions);
+        Assert.Equal(0, h.Git.Integrations);
+        Assert.Equal(1, h.Codex.ConflictResolutions);
+        Assert.True(conflicted.Report.WorkspacePreserved);
+        Assert.False(conflicted.Report.RetryAvailable);
         Assert.Single(h.Codex.Issues);
         Assert.Equal("IntegrationConflict", Assert.Single(await history.ReadAllAsync()).State);
 
-        h.Git.IntegrationFailure = null;
+        h.Git.RequestConflictResolution = false;
         var succeeded = await h.ProcessOneAsync();
         Assert.Equal(IssueOutcomeKind.Succeeded, succeeded!.Kind);
-        Assert.Equal(2, h.Git.Integrations);
+        Assert.Equal(1, h.Git.Integrations);
         Assert.Equal(2, (await history.ReadAllAsync()).Count);
     }
 
