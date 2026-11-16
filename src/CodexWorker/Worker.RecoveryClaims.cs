@@ -175,26 +175,9 @@ public sealed partial class Worker
             }
             var standaloneConflict = serverSettings?.Enabled != true && source.ServerExecutionId is null &&
                 source.AssignmentId is null && source.OwnershipGeneration is null;
-            var resolveIntegrationConflict = resolveExecutionId is not null ||
-                standaloneConflict && source.OriginalIssueBody is not null;
-            if (resolveExecutionId is null && resolveIntegrationConflict)
-            {
-                var engineAvailable = (engines ?? new ImplementationEngineSelector(settings: config.Codex))
-                    .IsAvailable(source.Engine);
-                var unavailableReason = !config.Git.AutoMerge
-                    ? "automatic conflict resolution requires git.autoMerge to be enabled"
-                    : config.Validation.MaxFixAttempts < 1
-                        ? "automatic conflict resolution requires a positive validation repair budget"
-                        : !engineAvailable
-                            ? "the original implementation engine is unavailable for conflict resolution"
-                            : null;
-                if (unavailableReason is not null)
-                {
-                    await IntegrationRecovery.ReportRejectedAsync(issue.Number, source.ExecutionId, unavailableReason, ct);
-                    _activeIssues.TryRemove(issueKey, out _);
-                    return null;
-                }
-            }
+            // The engine resolves a preserved conflict only on an explicit request for that execution.
+            // Automatic recovery retries integration of the preserved commit and never edits it.
+            var resolveIntegrationConflict = resolveExecutionId is not null;
             var lineage = new HashSet<Guid> { source.ExecutionId };
             while (resolveExecutionId is null && source.RetryOfExecutionId is { } parentId)
             {

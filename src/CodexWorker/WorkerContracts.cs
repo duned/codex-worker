@@ -27,8 +27,6 @@ public interface IGitHubClient
     Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct) => Task.FromResult<int?>(null);
     Task<string?> GetParentProvenanceAsync(int issueNumber, DateTimeOffset startedAt, int? currentParent, CancellationToken ct) =>
         Task.FromResult<string?>(null);
-    Task<IReadOnlyList<int>?> GetBlockerIssueNumbersAsync(int issueNumber, CancellationToken ct) =>
-        Task.FromResult<IReadOnlyList<int>?>(null);
     Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(true);
     Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct);
     Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct) => Task.CompletedTask;

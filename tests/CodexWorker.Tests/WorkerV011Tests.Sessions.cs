@@ -32,43 +32,6 @@ public sealed partial class WorkerV011Tests
         Assert.Equal(0, entry.CodexRecovery?.ResumeCount);
     }
 
-    [Theory]
-    [InlineData("independent")]
-    [InlineData("missing")]
-    [InlineData("failed")]
-    [InlineData("unavailable")]
-    [Trait("TestType", "Component")]
-    [Trait("Duration", "Fast")]
-    public async Task WorkerFallbackRecordsOnlyTheFreshObservedSession(string scenario)
-    {
-        using var database = new TempHistoryDatabase();
-        using var history = new ExecutionHistoryStore(database.Path);
-        using var h = new Harness(history: history);
-        var blockerThread = Guid.NewGuid().ToString();
-        if (scenario is "failed" or "unavailable")
-            await history.CreateAsync(PreservedConflict() with
-            {
-                IssueNumber = 16, State = scenario == "failed" ? "Failed" : "Completed",
-                ParentIssueNumber = 2, Engine = "codex", CodexThreadId = blockerThread,
-                CodexSessionOwner = CodexSessionOwnership.Current, RecoveryState = null
-            });
-        h.GitHub.Issue = h.GitHub.Issue with { ParentIssueNumber = 2 };
-        h.GitHub.Blockers = scenario == "independent" ? [] : [16];
-        h.Codex.ThreadId = Guid.NewGuid().ToString();
-        await h.ProcessOneAsync();
-        var request = Assert.Single(h.Codex.Requests);
-        Assert.Null(request.InheritedCodexThreadId);
-        Assert.Equal(h.GitHub.Issue.Number, request.Issue.Number);
-        Assert.Equal(h.GitHub.Issue.Body, request.Issue.Body);
-        Assert.Equal(h.Git.ExecutionDirectory, request.ProjectDirectory);
-        var child = Assert.Single(await history.ReadAllAsync(), e => e.IssueNumber == request.Issue.Number);
-        Assert.Equal("Completed", child.State);
-        Assert.Equal(h.Codex.ThreadId, child.CodexThreadId);
-        Assert.NotEqual(blockerThread, child.CodexThreadId);
-        Assert.Contains("Codex thread inheritance skipped:", h.Output.ToString(), StringComparison.Ordinal);
-        Assert.Contains(scenario == "independent" ? "no native blockers" : "lacks a successful", h.Output.ToString(), StringComparison.Ordinal);
-    }
-
     private static CodexOutcome Success(string summary) => new("success", summary, [], false, null);
 
     [Trait("TestType", "Integration")]

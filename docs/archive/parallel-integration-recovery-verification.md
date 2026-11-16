@@ -1,5 +1,7 @@
 # Parallel integration and recovery verification
 
+> Historical record of the #504 behaviour. First attempts no longer resolve conflicts with the engine and Codex session inheritance was removed; see [parallel integration](../parallel-integration.md).
+
 ## First-attempt integration
 
 `GitWorktreeTests.FirstAttemptsIntegrateFromSameBaseInEitherOrder` exercises two original executions through `ExecutionRunner`, isolated worktrees, the shared repository gate, validation, rebase, conflict resolution and push to a temporary local bare remote. Both implementations start at the same commit before either may integrate. Explicit signals select either completion order without sleeps. The configured base is `integration`, rather than the fixture's default `main`.
@@ -22,4 +24,4 @@ History inspection isolates the regression from the earlier inheritance changes:
 
 Session sharing does not choose a branch or base. `ExecutionRunner.Request` uses its execution repository, `CodexExecutor` explicitly sets the active child directory even on resume, and `GitRepository` creates and verifies worktree ownership independently. The repository gate serializes shared Git mutation; unrelated implementation and validation remain concurrent. The thread gate additionally serializes turns that advance the same inherited conversation.
 
-The historical investigation in [session-sharing-parallel-integration-investigation.md](archive/session-sharing-parallel-integration-investigation.md) predates this first-attempt regression fix. Its conclusion that no defect was reproduced applies to that earlier investigation, not to the confirmed verification mismatch above. No claim is made here about the incident's exact patch overlap or live model behavior. Inspecting the preserved incident workspace, reconciling uncertain Git/push state, and resolving incomplete or unverifiable conflicts remain separate recovery work requiring human review.
+The historical investigation in [session-sharing-parallel-integration-investigation.md](../archive/session-sharing-parallel-integration-investigation.md) predates this first-attempt regression fix. Its conclusion that no defect was reproduced applies to that earlier investigation, not to the confirmed verification mismatch above. No claim is made here about the incident's exact patch overlap or live model behavior. Inspecting the preserved incident workspace, reconciling uncertain Git/push state, and resolving incomplete or unverifiable conflicts remain separate recovery work requiring human review.

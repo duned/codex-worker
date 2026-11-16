@@ -1,29 +1,19 @@
 # Standalone integration conflict recovery
 
-The Worker can automatically resolve a rebase conflict while recovering a verified
-standalone integration conflict. It uses the original execution's registered
-workspace, branch and Issue intent, then continues through the existing validation,
-integration, reporting and cleanup lifecycle. It never reruns the original
-implementation. This path does not require Server enrollment.
+An operator can ask the Worker to resolve the rebase conflict of one preserved
+standalone execution with its original implementation engine. The Worker uses that
+execution's registered workspace, branch and Issue intent, then continues through
+the existing validation, integration, reporting and cleanup lifecycle. It never
+reruns the original implementation. This path does not require Server enrollment.
 
-Automatic resolution is eligible only for completed standalone conflicts with exact
-preserved-workspace metadata, the original open Issue intent, no competing execution
-or workspace process, an available original implementation engine, `git.autoMerge`
-enabled and a positive `validation.maxFixAttempts`. The Worker verifies these
-conditions before claiming recovery and rechecks Issue intent and integration
-authority around resolution and integration. Managed recovery never uses this
-resolver; it remains fenced by Server lease ownership.
-
-Each durable recovery claim consumes the current integration-base fingerprint and
-allows at most `validation.maxFixAttempts` resolver calls. A restart cannot repeat an
-interrupted claim on the same base. The Worker may re-arm automatically only after
-the authoritative integration base changes. An operator can also re-arm an eligible
-conflict by applying the configured integration-recovery label. Unresolved or
-structured incomplete results, failed validation, cancellation, changed intent and
-uncertain Git state retain the workspace and execution lineage for inspection. The
-Worker reports the reason and does not close the Issue. Use the local command below
-only when automatic recovery is exhausted or an operator must explicitly authorize
-another attempt:
+Resolution is never automatic. A first attempt that conflicts is preserved and
+reported as described in [parallel integration](parallel-integration.md); automatic
+recovery only retries integration of the unchanged preserved commit when the
+integration base changes or an operator applies the integration-recovery label.
+Unresolved or structured incomplete results, failed validation, cancellation,
+changed intent and uncertain Git state retain the workspace and execution lineage
+for inspection. The Worker reports the reason and does not close the Issue. Request
+a resolution for a specific execution with the local command below:
 
 ```sh
 codex-worker executions list --config /path/to/worker.yml

@@ -4,7 +4,7 @@ namespace CodexWorker;
 /// Engines never own Git mutations, reporting, or authoritative validation.</summary>
 public sealed record ImplementationRequest(string ProjectDirectory, string InstructionsFile, GitHubIssue Issue,
     ExecutionHistoryEntry? RetryOf = null, bool Resumed = false, int AttemptNumber = 1, string? Model = null, string? Effort = null,
-    string? InheritedCodexThreadId = null, Action<string>? CodexSessionDiagnostic = null);
+    Action<string>? CodexSessionDiagnostic = null);
 
 public sealed record ImplementationResult(string Status, string Summary, string[] TestsOrValidationPerformed,
     bool NeedsHumanInput, string? Question, string? BlockerType = null)

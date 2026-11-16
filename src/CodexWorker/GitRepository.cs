@@ -8,7 +8,11 @@ public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string St
 public sealed record IntegrationRepairContext(ValidationFailure Failure, string BaseBranch, string OriginalBaseCommit,
     string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
 public sealed record IntegrationRepairResult(bool Attempted, bool Completed);
-public class GitIntegrationConflictException(string message, Exception? inner = null) : Exception(message, inner);
+public class GitIntegrationConflictException(string message, Exception? inner = null) : Exception(message, inner)
+{
+    /// <summary>True when the feature commit could not be replayed on the current base: the rebase was aborted and nothing was integrated.</summary>
+    public bool RebaseAborted { get; init; }
+}
 internal sealed class GitConflictResolutionIncompleteException(string message) : GitIntegrationConflictException(message);
 
 public sealed class GitIntegrationArchiveException(string message, Exception inner) : GitIntegrationConflictException(message, inner);
@@ -962,7 +966,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
         {
             throw new WorkerInfrastructureException($"Could not safely abort the Issue #{issueNumber} rebase conflict: {ex.Message}", ex);
         }
-        throw new GitIntegrationConflictException($"Integration conflict for Issue #{issueNumber}; the rebase was aborted and its implementation worktree was preserved. {Tail(detail)}");
+        throw new GitIntegrationConflictException($"Integration conflict for Issue #{issueNumber}; the rebase was aborted and its implementation worktree was preserved. {Tail(detail)}") { RebaseAborted = true };
     }
 
     private async Task EnsureOriginAsync(CancellationToken ct)

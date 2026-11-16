@@ -174,12 +174,7 @@ public sealed partial class GitWorktreeTests
     [InlineData(false, false, "success")]
     [InlineData(true, true, "standalone")]
     [InlineData(false, true, "standalone")]
-    [InlineData(true, true, "failed")]
-    [InlineData(true, true, "budget")]
-    [InlineData(true, true, "changed-intent")]
-    [InlineData(true, true, "lease-loss")]
-    [InlineData(true, true, "validation")]
-    [InlineData(true, true, "uncertain-git")]
+    [InlineData(true, false, "standalone")]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     public async Task FirstAttemptsIntegrateFromSameBaseInEitherOrder(bool firstFinishesFirst, bool overlap, string scenario)
@@ -243,38 +238,30 @@ public sealed partial class GitWorktreeTests
             engines[winner].Release.SetResult();
             Assert.Equal(IssueOutcomeKind.Succeeded, (await tasks[winner]).Kind);
             engines[follower].Release.SetResult();
-            if (scenario is "lease-loss" or "uncertain-git")
+            var result = await tasks[follower];
+            // A first attempt never asks the engine to resolve a conflict: disjoint work integrates
+            // after the rebase, overlapping work is preserved and reported without stopping the Worker.
+            Assert.Equal(0, engines[follower].ResolutionCalls);
+            if (!overlap)
             {
-                await Assert.ThrowsAsync<WorkerInfrastructureException>(() => tasks[follower]);
-                Assert.True(Directory.Exists(engines[follower].Workspace));
-                Assert.Equal("uncertain", (await history.ReadExecutionAsync(executions[follower].ExecutionId))?.RecoveryState);
+                Assert.Equal(IssueOutcomeKind.Succeeded, result.Kind);
+                foreach (var issue in issues)
+                    Assert.Equal($"task {issue.Number}", await fixture.Git("show", $"integration:issue-{issue.Number}.txt"));
+                Assert.Equal("3", await fixture.Git("rev-list", "--count", "integration"));
+                Assert.Equal(1, validation.CombinedCalls);
+                var remote = await fixture.Git("ls-remote", "origin", "refs/heads/integration");
+                Assert.Equal(await fixture.Git("rev-parse", "integration"), remote.Split('\t')[0]);
             }
             else
             {
-                var result = await tasks[follower];
-                var succeeds = scenario is "success" or "standalone";
-                Assert.Equal(succeeds ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict, result.Kind);
-                Assert.Equal(overlap && scenario != "budget" ? 1 : 0, engines[follower].ResolutionCalls);
-                if (succeeds)
-                {
-                    if (overlap) Assert.Equal("base + task 17 + task 18", await fixture.Git("show", "integration:base.txt"));
-                    else foreach (var issue in issues)
-                        Assert.Equal($"task {issue.Number}", await fixture.Git("show", $"integration:issue-{issue.Number}.txt"));
-                    Assert.Equal("3", await fixture.Git("rev-list", "--count", "integration"));
-                    Assert.Equal(1, validation.CombinedCalls);
-                    var remote = await fixture.Git("ls-remote", "origin", "refs/heads/integration");
-                    Assert.Equal(await fixture.Git("rev-parse", "integration"), remote.Split('\t')[0]);
-                }
-                else
-                {
-                    Assert.True(result.Report.WorkspacePreserved);
-                    Assert.True(Directory.Exists(engines[follower].Workspace));
-                    Assert.Equal("2", await fixture.Git("rev-list", "--count", "integration"));
-                    Assert.Null(executions[follower].RetryOfExecutionId);
-                }
-                Assert.DoesNotContain("infrastructure failure", writer.ToString(), StringComparison.OrdinalIgnoreCase);
+                Assert.Equal(IssueOutcomeKind.IntegrationConflict, result.Kind);
+                Assert.True(result.Report.RebaseConflict);
+                Assert.True(result.Report.WorkspacePreserved);
+                Assert.True(Directory.Exists(engines[follower].Workspace));
+                Assert.Equal("2", await fixture.Git("rev-list", "--count", "integration"));
+                Assert.Equal("integration-conflict", (await history.ReadExecutionAsync(executions[follower].ExecutionId))?.RecoveryState);
             }
-            Assert.Contains("Codex thread inheritance skipped", writer.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("infrastructure failure", writer.ToString(), StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -340,100 +327,6 @@ public sealed partial class GitWorktreeTests
             return failCombined ? new(new ValidationFailure(1, "combined source", 1, "", "combined check failed", false))
                 : ValidationResult.Success;
         }
-    }
-
-    [Trait("TestType", "Integration")]
-    [Trait("Duration", "Medium")]
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ParallelOverlappingImplementationsPreserveBothChangesThroughConflictRetry(bool inheritSession)
-    {
-        using var fixture = await seed.CreateAsync();
-        var settings = new GitSettings { AutoMerge = true };
-        using var checkoutGit = fixture.CreateRepository(settings);
-        await checkoutGit.InitializeAsync(CancellationToken.None);
-        using var firstGit = checkoutGit.CreateExecutionRepository();
-        using var secondGit = checkoutGit.CreateExecutionRepository();
-        var firstIssue = fixture.Issue;
-        var secondIssue = fixture.Issue with { Number = 18, Title = "Parallel overlapping task" };
-        var firstId = Guid.NewGuid();
-        var secondId = Guid.NewGuid();
-        await firstGit.StartIssueAsync(firstId, firstIssue, CancellationToken.None);
-        await secondGit.StartIssueAsync(secondId, secondIssue, CancellationToken.None);
-        Assert.NotEqual(firstGit.ExecutionDirectory, secondGit.ExecutionDirectory);
-        Assert.Equal(await fixture.GitAt(firstGit.ExecutionDirectory, "rev-parse", "HEAD"),
-            await fixture.GitAt(secondGit.ExecutionDirectory, "rev-parse", "HEAD"));
-
-        var coordinator = new CodexThreadCoordinator();
-        var sharedThread = Guid.NewGuid().ToString();
-        using var sessionHistory = new ExecutionHistoryStore(Path.Combine(fixture._root, "inherited-parallel.db"));
-        await sessionHistory.CreateAsync(LegacyCodexSessionSamples.Source() with
-        {
-            Project = "sample", Repository = "owner/repo", IssueNumber = 16, ParentIssueNumber = 2,
-            State = "Completed", CodexThreadId = sharedThread, CodexSessionOwner = "local"
-        });
-        var sessionGitHub = new ConcurrentGitHub(firstIssue) { ParentNumber = 2, Blockers = inheritSession ? [16] : [] };
-        async Task RunImplementationAsync(IGitRepository repository, GitHubIssue issue, string change)
-        {
-            var request = new ImplementationRequest(repository.ExecutionDirectory, "unused",
-                issue with { ParentIssueNumber = 2, ParentIssueCaptured = true });
-            var selection = await BlockerCodexSession.SelectAsync(request, "sample", "owner/repo", "codex",
-                sessionHistory, sessionGitHub, "local", (_, _) => Task.FromResult(true), CancellationToken.None);
-            Assert.Equal(inheritSession ? sharedThread : null, selection.Thread);
-            Assert.Contains(inheritSession ? "all blockers" : "no native blockers", selection.Reason, StringComparison.Ordinal);
-            var thread = selection.Thread;
-            Assert.Equal(repository.ExecutionDirectory, request.ProjectDirectory);
-            var result = await coordinator.RunAsync(thread, _ => Task.FromResult(true), async (resumed, token) =>
-            {
-                Assert.Equal(thread, resumed);
-                await File.WriteAllTextAsync(Path.Combine(repository.ExecutionDirectory, "base.txt"), change, token);
-                return new ImplementationResult("success", "implemented", [], false, null);
-            }, CancellationToken.None);
-            Assert.Equal("success", result.Status);
-        }
-        await Task.WhenAll(
-            RunImplementationAsync(firstGit, firstIssue, "base + task A"),
-            RunImplementationAsync(secondGit, secondIssue, "base + task B"));
-        Assert.NotEqual(await fixture.GitAt(firstGit.ExecutionDirectory, "branch", "--show-current"),
-            await fixture.GitAt(secondGit.ExecutionDirectory, "branch", "--show-current"));
-
-        var firstIntegration = await firstGit.CommitAndIntegrateAsync(firstIssue,
-            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
-        Assert.True(firstIntegration.HasChanges);
-        var sourceRecovery = await Assert.ThrowsAsync<GitIntegrationConflictException>(async () =>
-        {
-            await secondGit.CommitAndIntegrateAsync(secondIssue, _ => Task.FromResult(ValidationResult.Success),
-                (_, _) => Task.FromResult(false), CancellationToken.None);
-        });
-        Assert.Contains("rebase was aborted", sourceRecovery.Message, StringComparison.OrdinalIgnoreCase);
-        var preserved = Assert.IsType<GitRecoveryInfo>(await secondGit.PreserveIntegrationConflictAsync(CancellationToken.None));
-        var recovery = new ExecutionHistoryEntry(secondId, "sample", "owner/repo", secondIssue.Number, secondIssue.Title,
-            preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
-            "task B implementation", "passed", 0, [], preserved.BaseCommit, "main", null, sourceRecovery.Message,
-            RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit,
-            OriginalIssueBody: secondIssue.Body);
-        await secondGit.StartIntegrationRecoveryAsync(recovery, CancellationToken.None);
-        var validationCalls = 0;
-        var secondIntegration = await secondGit.CommitAndIntegrateAsync(secondIssue,
-            async token =>
-            {
-                validationCalls++;
-                Assert.Equal("base + task A + task B", await File.ReadAllTextAsync(
-                    Path.Combine(secondGit.ExecutionDirectory, "base.txt"), token));
-                return ValidationResult.Success;
-            },
-            async (_, token) =>
-            {
-                await File.WriteAllTextAsync(Path.Combine(secondGit.ExecutionDirectory, "base.txt"),
-                    "base + task A + task B", token);
-                return true;
-            }, CancellationToken.None);
-
-        Assert.True(secondIntegration.HasChanges);
-        Assert.Equal(1, validationCalls);
-        Assert.Equal("base + task A + task B", await fixture.Git("show", "main:base.txt"));
-        Assert.Equal("3", await fixture.Git("rev-list", "--count", "main"));
     }
 
     [Trait("TestType", "Integration")]

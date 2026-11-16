@@ -95,14 +95,14 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
 
     public Task<CodexOutcome> RunAsync(ImplementationRequest request, CancellationToken ct) =>
         RunImplementationAsync(request.ProjectDirectory, request.InstructionsFile, request.Issue, request.RetryOf,
-            request.Resumed, request.AttemptNumber, request.InheritedCodexThreadId, ct, request.CodexSessionDiagnostic);
+            request.Resumed, request.AttemptNumber, ct, request.CodexSessionDiagnostic);
 
     public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
         ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) =>
-        RunImplementationAsync(projectDirectory, instructionsFile, issue, retryOf, resumed, attemptNumber, null, ct);
+        RunImplementationAsync(projectDirectory, instructionsFile, issue, retryOf, resumed, attemptNumber, ct);
 
     private async Task<CodexOutcome> RunImplementationAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
-        ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, string? inheritedThread, CancellationToken ct, Action<string>? sessionDiagnostic = null)
+        ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct, Action<string>? sessionDiagnostic = null)
     {
         var instructions = await ReadExecutionInstructionsAsync(instructionsFile, ct);
         var prompt = BuildPrompt(instructions, instructionsFile, issue);
@@ -119,7 +119,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 """;
         if (retryOf?.RecoveryState == "codex-interrupted")
             prompt += "\n# Infrastructure continuation\nThis is recovery of an interrupted Codex invocation on the SAME preserved worktree. Inspect existing changes and continue the original Issue. Do not recreate or discard existing implementation. Prior implementation and self-checks may already be complete; finish only what remains and return the structured outcome. The Worker will run authoritative validation and owns all Git lifecycle operations.\n";
-        var session = retryOf?.RecoveryState == "codex-interrupted" ? retryOf.CodexRecovery?.SessionId : inheritedThread;
+        var session = retryOf?.RecoveryState == "codex-interrupted" ? retryOf.CodexRecovery?.SessionId : null;
         if (retryOf?.RecoveryState == "codex-interrupted" && CodexFailure.RequiresFreshSession(retryOf))
         {
             session = null;

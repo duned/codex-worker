@@ -313,29 +313,46 @@ public sealed partial class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
-    public async Task IncompleteConflictResolutionHasDedicatedStateAndSchedulerCanContinue()
+    public async Task FirstAttemptConflictIsPreservedWithoutEngineResolutionAndSchedulerContinues()
     {
         using var historyDatabase = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(historyDatabase.Path);
         using var h = new Harness(history: history);
         h.GitHub.ReadyIssueCount = 2;
-        h.Git.RequestConflictResolution = true;
-        h.Codex.ConflictAction = () => new CodexOutcome("failed", "Cannot safely preserve both tasks", [], false, null);
+        h.Git.IntegrationFailure = new GitIntegrationConflictException("rebase conflict was safely aborted") { RebaseAborted = true };
+        h.Git.CheckConflictPolicy = true;
 
         var conflicted = await h.ProcessOneAsync();
         Assert.Equal(IssueOutcomeKind.IntegrationConflict, conflicted!.Kind);
-        Assert.Equal(0, h.Git.Integrations);
-        Assert.Equal(1, h.Codex.ConflictResolutions);
-        Assert.True(conflicted.Report.WorkspacePreserved);
-        Assert.False(conflicted.Report.RetryAvailable);
+        Assert.Equal(1, h.Git.ConflictPolicyChecks);
+        Assert.Equal(0, h.Codex.ConflictResolutions);
         Assert.Single(h.Codex.Issues);
         Assert.Equal("IntegrationConflict", Assert.Single(await history.ReadAllAsync()).State);
+        // A standalone first attempt that only lost the rebase returns to the ready queue once.
+        Assert.Contains("working->ready", h.GitHub.Labels);
+        Assert.DoesNotContain(h.GitHub.Labels, label => label.EndsWith("->codex-integration-conflict", StringComparison.Ordinal));
 
-        h.Git.RequestConflictResolution = false;
+        h.Git.IntegrationFailure = null;
         var succeeded = await h.ProcessOneAsync();
         Assert.Equal(IssueOutcomeKind.Succeeded, succeeded!.Kind);
-        Assert.Equal(1, h.Git.Integrations);
         Assert.Equal(2, (await history.ReadAllAsync()).Count);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task ConflictThatIsNotAnAbortedRebaseStaysLabelledForReview()
+    {
+        using var historyDatabase = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(historyDatabase.Path);
+        using var h = new Harness(history: history);
+        h.Git.IntegrationFailure = new GitIntegrationConflictException("the integration base kept advancing");
+
+        var conflicted = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.IntegrationConflict, conflicted!.Kind);
+        Assert.Contains("working->codex-integration-conflict", h.GitHub.Labels);
+        Assert.DoesNotContain("working->ready", h.GitHub.Labels);
     }
 
     [Trait("TestType", "Integration")]

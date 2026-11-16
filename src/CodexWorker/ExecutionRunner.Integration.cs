@@ -214,10 +214,11 @@ public sealed partial class ExecutionRunner
         }
     }
 
-    private bool CanResolveIntegrationConflict(ExecutionContext context) =>
-        context.Execution.ServerExecutionId is not null ||
-        context.IntegrationRecovery && context.ResolveIntegrationConflict ||
-        !context.IntegrationRecovery && github is not null;
+    // Engine conflict resolution belongs to integration recovery only: a managed recovery
+    // assignment or an explicitly requested standalone resolution. First attempts never use it.
+    private static bool CanResolveIntegrationConflict(ExecutionContext context) =>
+        context.IntegrationRecovery &&
+        (context.Execution.ServerExecutionId is not null || context.ResolveIntegrationConflict);
 
     private async Task<bool> ResolveConflictAsync(ExecutionContext context, IImplementationEngine engine,
         string details, CancellationToken ct)

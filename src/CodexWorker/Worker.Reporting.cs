@@ -202,8 +202,15 @@ public sealed partial class Worker
                 });
                 break;
             case IssueOutcomeKind.IntegrationConflict:
-                await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.IntegrationConflictLabel, ct);
-                await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
+                // A standalone first attempt that only lost a rebase against an advanced base is returned
+                // to the ready queue once: the next attempt implements again on the current base. Later
+                // conflicts, post-rebase validation failures and managed work stay labelled for review.
+                var requeueFresh = serverSettings?.Enabled != true && result.Report.RebaseConflict &&
+                    result.Report.AttemptNumber == 1 && result.Report.RetryOfExecutionId is null;
+                await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel,
+                    requeueFresh ? config.GitHub.ReadyLabel : config.GitHub.IntegrationConflictLabel, ct);
+                await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary +
+                    (requeueFresh ? "\n\n### Next step\n\nThe Issue returned to the ready queue for one fresh attempt on the current base. The conflicting implementation remains preserved." : ""), ct);
                 result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, FailureDiagnosticRedactor.Redact($"Integration recovery is required after {result.Report.ValidationRepairs.Count(repair => repair.IntegrationRepair)} integration repair attempt(s). " +
