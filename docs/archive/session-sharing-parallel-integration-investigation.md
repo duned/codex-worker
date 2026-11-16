@@ -1,6 +1,6 @@
 # Session sharing and parallel integration investigation
 
-> Historical investigation. The later VM2 first-attempt verification mismatch and its fix are documented in [Parallel integration and recovery verification](../parallel-integration-recovery-verification.md). The no-defect conclusion below describes the evidence available during this earlier review.
+> Historical investigation. The later VM2 first-attempt verification mismatch and its fix are documented in [Parallel integration and recovery verification](parallel-integration-recovery-verification.md). The no-defect conclusion below describes the evidence available during this earlier review.
 
 ## Finding
 
