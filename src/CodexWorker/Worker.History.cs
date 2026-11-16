@@ -18,7 +18,7 @@ public sealed partial class Worker
         await ReportServerAsync(entry, state, ct);
     }
 
-    private async Task ReportServerAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
+    private async Task ReportServerAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct, bool rebaseConflict = false)
     {
         if (entry.ServerExecutionId is null) return;
         var terminal = state is ExecutionState.Completed or ExecutionState.Failed or ExecutionState.Blocked or
@@ -41,7 +41,7 @@ public sealed partial class Worker
                 ExecutionState.Integrating => "Integration",
                 ExecutionState.Reporting => "Reporting",
                 _ => state.ToString()
-            }) : null, entry.OwnershipGeneration ?? 0, ct);
+            }) : null, entry.OwnershipGeneration ?? 0, ct, rebaseConflict: rebaseConflict && state == ExecutionState.IntegrationConflict);
         if (terminal && history is not null)
             await history.SaveServerReportDispositionAsync(entry.ExecutionId, "acknowledged", ct);
         if (terminal)

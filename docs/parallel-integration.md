@@ -16,7 +16,8 @@ Several Issues of one project can be implemented at once, each in its own worktr
 | Standalone Worker, first attempt of the Issue, aborted rebase | The Issue returns to the ready label once. The next attempt implements it again on the current base; the conflicting work stays preserved for the retention period. |
 | Any later conflict of the same Issue | The Issue keeps the integration-conflict label for review. |
 | Post-rebase validation failure or any other integration failure | The Issue keeps the integration-conflict label; nothing is requeued. |
-| Server-managed Worker | The Issue keeps the integration-conflict label and the Server execution is reported as a conflict. Queue it again, or request an explicit recovery, from the Server. |
+| Server-managed Worker, first Server attempt, aborted rebase | The Worker reports the conflict with integration result `rebase-conflict`. In the same transaction the Server marks the execution `RebaseConflictRequeued` and queues one fresh attempt (attempt 2, fresh workspace) on the current base, unless the Issue already has queued or running work. |
+| Server-managed Worker, any other conflict | The execution stays failed for review. Queue it again, or request an explicit recovery, from the Server. |
 
 Applying the ready label to a conflicted Issue always starts a fresh attempt on the current base. Applying the integration-recovery label retries integration of the preserved commit without changing it. Engine-assisted resolution of a preserved conflict is available only on explicit request; see [standalone conflict recovery](standalone-conflict-resolution.md) and [managed conflict retry](managed-conflict-retry.md).
 

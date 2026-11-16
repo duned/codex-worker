@@ -209,8 +209,10 @@ public sealed partial class Worker
                     result.Report.AttemptNumber == 1 && result.Report.RetryOfExecutionId is null;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel,
                     requeueFresh ? config.GitHub.ReadyLabel : config.GitHub.IntegrationConflictLabel, ct);
+                var managedRequeue = serverSettings?.Enabled == true && result.Report.RebaseConflict;
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary +
-                    (requeueFresh ? "\n\n### Next step\n\nThe Issue returned to the ready queue for one fresh attempt on the current base. The conflicting implementation remains preserved." : ""), ct);
+                    (requeueFresh ? "\n\n### Next step\n\nThe Issue returned to the ready queue for one fresh attempt on the current base. The conflicting implementation remains preserved." :
+                     managedRequeue ? "\n\n### Next step\n\nIf this was the Issue's first Server attempt, Codex Server queues one fresh attempt on the current base. The conflicting implementation remains preserved." : ""), ct);
                 result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, FailureDiagnosticRedactor.Redact($"Integration recovery is required after {result.Report.ValidationRepairs.Count(repair => repair.IntegrationRepair)} integration repair attempt(s). " +

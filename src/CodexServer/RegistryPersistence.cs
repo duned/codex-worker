@@ -2174,6 +2174,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             command.Parameters.AddWithValue("$worker", report.WorkerId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
+        if (updated == 1 && !reconciliation && report is { State: "Failed", FailureClassification: "IntegrationConflict", IntegrationResult: CodexProvisioning.ManagedIntegrationResults.RebaseConflict } &&
+            previous is { AttemptNumber: 1, RetryOfExecutionId: null })
+            await QueueFreshAttemptAfterRebaseConflictAsync(command, executionRequestId, cancellationToken);
         await using var read = connection.CreateCommand();
         read.Transaction = (SqliteTransaction)transaction;
         read.CommandText = ExecutionSelect + " WHERE id=$id;";
@@ -2187,6 +2190,34 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             report.State == "Running" ? "stage-" + report.Stage : "outcome-" + report.State.ToLowerInvariant(),
             result?.ProjectId, result?.WorkReference, executionRequestId, report.WorkerId, report.AssignmentId, report.Generation, report.WorkerExecutionId);
         return result;
+    }
+
+    /// <summary>A first attempt that only lost its rebase against an advanced base gets exactly one
+    /// fresh attempt on the current base. Later conflicts stay failed for operator review.</summary>
+    private async Task QueueFreshAttemptAfterRebaseConflictAsync(SqliteCommand command, string sourceId, CancellationToken cancellationToken)
+    {
+        command.Parameters.Clear();
+        command.CommandText = """
+            UPDATE execution_requests SET recovery_state='RebaseConflictRequeued',
+                recovery_reason='The implementation conflicted with newer work on the base branch; a fresh attempt was queued on the current base.'
+            WHERE id=$id AND state='Failed' AND recovery_state IS NULL
+              AND NOT EXISTS (SELECT 1 FROM execution_requests other JOIN execution_requests source ON source.id=$id
+                  WHERE other.id!=source.id AND other.project_id=source.project_id AND other.work_type=source.work_type
+                  AND other.work_id=source.work_id AND other.state IN ('Queued','Assigned','Running'));
+            """;
+        command.Parameters.AddWithValue("$id", sourceId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return;
+        command.Parameters.Clear();
+        command.CommandText = """
+            INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state, retry_of_execution_id, attempt_number, recovery_reason, workspace_recovery)
+            SELECT $retry, project_id, work_type, work_id, work_reference_json, $created, 'Queued', id, attempt_number + 1,
+                'Fresh attempt after a rebase conflict with newer work on the base branch.', 'FreshWorkspaceRequired'
+            FROM execution_requests WHERE id=$id;
+            """;
+        command.Parameters.AddWithValue("$retry", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("$created", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$id", sourceId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<ExecutionRequest?> TransitionExecutionAsync(string executionRequestId, ExecutionStateTransition transition, CancellationToken cancellationToken = default)

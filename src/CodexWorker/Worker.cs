@@ -349,7 +349,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             var finalEntry = history is null ? CreateEntry(execution, report, null, null) :
                 (await history.ReadAllAsync(CancellationToken.None)).FirstOrDefault(entry => entry.ExecutionId == execution.ExecutionId)
                 ?? CreateEntry(execution, report, null, null);
-            await ReportServerAsync(finalEntry, execution.State, CancellationToken.None);
+            await ReportServerAsync(finalEntry, execution.State, CancellationToken.None, report.RebaseConflict);
             if (integrationRecovery && history is not null && retryOf is not null &&
                 finalEntry.CompletedAtUtc is not null && finalEntry.State == execution.State.ToString())
             {

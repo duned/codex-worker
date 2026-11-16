@@ -287,6 +287,55 @@ public sealed partial class CodexServerTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData(CodexProvisioning.ManagedIntegrationResults.RebaseConflict, true)]
+    [InlineData(null, false)]
+    public async Task FirstAttemptRebaseConflictQueuesExactlyOneFreshAttempt(string? integrationResult, bool requeued)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-03-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "rebase-conflict.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Conflict", "team/conflict", "main", "", []));
+        var worker = Guid.NewGuid().ToString("N");
+        WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "7")));
+        var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+
+        async Task<ExecutionRequest> FailWithConflictAsync(string executionId)
+        {
+            var assignment = (await store.RequestAssignmentAsync(request)).Assignment!;
+            Assert.Equal(executionId, assignment.ServerExecutionId);
+            return (await store.ReportExecutionAsync(executionId, new WorkerExecutionReport(worker, assignment.AssignmentId,
+                Guid.NewGuid().ToString(), "Failed", CompletedAtUtc: clock.GetUtcNow(), IntegrationResult: integrationResult,
+                FailureClassification: "IntegrationConflict", Recoverable: true, Generation: assignment.Lease!.Generation)))!;
+        }
+
+        var failed = await FailWithConflictAsync(first.Id);
+        var queued = (await store.GetExecutionsAsync()).Where(item => item.State == "Queued").ToArray();
+        if (!requeued)
+        {
+            Assert.Null(failed.RecoveryState);
+            Assert.Empty(queued);
+            return;
+        }
+        Assert.Equal("RebaseConflictRequeued", failed.RecoveryState);
+        var retry = Assert.Single(queued);
+        Assert.Equal(first.Id, retry.RetryOfExecutionId);
+        Assert.Equal(2, retry.AttemptNumber);
+        Assert.Equal(first.WorkReference, retry.WorkReference);
+        Assert.Equal("FreshWorkspaceRequired", retry.WorkspaceRecovery);
+
+        // The second attempt conflicts too: it stays failed for review and nothing else is queued.
+        var second = await FailWithConflictAsync(retry.Id);
+        Assert.Null(second.RecoveryState);
+        Assert.DoesNotContain(await store.GetExecutionsAsync(), item => item.State == "Queued");
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LeaseRenewalIsGenerationAndOwnerBoundAndExpiryCreatesSafeRetry()
     {

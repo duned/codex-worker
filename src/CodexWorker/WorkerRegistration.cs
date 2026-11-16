@@ -725,7 +725,8 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
     }
 
     public async Task ReportExecutionAsync(WorkerServerSettings settings, ExecutionHistoryEntry entry, string state,
-        string? stage, long generation, CancellationToken cancellationToken, string? completionReconciliationOperationId = null)
+        string? stage, long generation, CancellationToken cancellationToken, string? completionReconciliationOperationId = null,
+        bool rebaseConflict = false)
     {
         if (!settings.Enabled || entry.ServerExecutionId is null || entry.AssignmentId is null) return;
         var connection = WorkerAuthentication.GetConnection(settings);
@@ -736,7 +737,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
         var report = new WorkerExecutionReportContract(workerId, entry.AssignmentId, entry.ExecutionId.ToString(), state,
             stage, entry.StartedAtUtc, final ? entry.CompletedAtUtc ?? DateTimeOffset.UtcNow : null,
             entry.DurationMilliseconds, Bound(entry.ValidationOutcome, 1000),
-            state == "Completed" ? "passed" : null,
+            state == "Completed" ? "passed" : state == "Failed" && rebaseConflict ? ManagedIntegrationResults.RebaseConflict : null,
             state == "Failed" ? entry.RecoveryState == "codex-interrupted" ? "CodexInterruption" : Bound(entry.State, 100) : null, entry.RecoveryState is "recoverable" or "integration-conflict" or "codex-interrupted",
             Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation, completionReconciliationOperationId);
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"),

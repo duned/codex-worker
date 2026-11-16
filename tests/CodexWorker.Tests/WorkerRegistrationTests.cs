@@ -667,6 +667,31 @@ public sealed class WorkerRegistrationTests
         Assert.Equal(1, final.RootElement.GetProperty("maximumCapacity").GetInt32());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(true, "rebase-conflict")]
+    [InlineData(false, null)]
+    public async Task FailedReportMarksOnlyAbortedRebaseConflicts(bool rebaseConflict, string? expected)
+    {
+        using var temporary = new TemporaryDirectory();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile, CancellationToken.None);
+        var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+        using var client = new HttpClient(handler);
+        var entry = LegacyCodexSessionSamples.Source() with { State = "IntegrationConflict", RecoveryState = "integration-conflict",
+            ServerExecutionId = "server-1", AssignmentId = "assignment-1", OwnershipGeneration = 1 };
+
+        await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).ReportExecutionAsync(settings, entry, "Failed", null, 1,
+            CancellationToken.None, rebaseConflict: rebaseConflict);
+
+        using var body = JsonDocument.Parse(handler.Body!);
+        Assert.Equal("IntegrationConflict", body.RootElement.GetProperty("failureClassification").GetString());
+        var integration = body.RootElement.GetProperty("integrationResult");
+        Assert.Equal(expected, integration.ValueKind == JsonValueKind.Null ? null : integration.GetString());
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _statusCode;

@@ -160,7 +160,7 @@ El límite actual lo marca `CodexWorker.GitTests` (≈2 min con Git real). Bajar
 - Un primer intento ya no pide al motor que resuelva un conflicto de rebase ni verifica la «intención» de la issue contra GitHub: el conflicto se aborta, se conserva el trabajo, se informa y el Worker sigue.
 - La recuperación automática standalone vuelve a reintentar solo la integración del commit conservado; la resolución con el motor queda como acción explícita.
 - Nuevo: en un Worker standalone, la primera vez que una issue pierde el rebase vuelve sola a la etiqueta de lista y se reimplementa sobre la base actual. Solo una vez; si vuelve a chocar queda etiquetada para revisión.
-- En modo gestionado el conflicto queda etiquetado y hay que volver a encolar la issue desde el Server: el reintento automático en ese modo requiere cambios en la cola del Server y no está hecho.
+- En modo gestionado el Worker informa `rebase-conflict` y el Server encola en la misma transacción un único intento nuevo sobre la base actual. Un segundo conflicto queda para revisión.
 - Comportamiento documentado en [parallel-integration.md](parallel-integration.md).
 
 **Pendiente conocido, no introducido aquí**
@@ -174,7 +174,7 @@ El límite actual lo marca `CodexWorker.GitTests` (≈2 min con Git real). Bajar
 | --- | --- | --- |
 | 1 | Hecho: ensamblado Git separado, heartbeat sin espera, validación completa en paralelo | Suite de 290 s a 126 s |
 | 2 | Hecho: traducciones, tests gigantes, `ExecutionRunner` y `Worker` troceados | Menos conflictos entre Issues paralelas |
-| 3 | Hecho en standalone: sin sesiones heredadas ni resolución automática; conflicto = reintento único. Pendiente: reintento automático en modo gestionado | Elimina la clase de fallos 491–504 |
+| 3 | Hecho en standalone: sin sesiones heredadas ni resolución automática; conflicto = reintento único. También en modo gestionado | Elimina la clase de fallos 491–504 |
 | 4 | Maqueta y rediseño del dashboard por contenido | Dashboard útil y un solo estilo |
 | 5 | Inyectar entorno; reducir `GitWorktreeTests`; sustituir tests de dashboard | Suite < 60 s |
 | 6 | Revisar funcionalidades poco usadas (observadores, herencia de sesiones, MCP/OAuth, segundo motor) y retirar o congelar las que no uses | Menos estados que mantener |
