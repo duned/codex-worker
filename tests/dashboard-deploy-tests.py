@@ -139,8 +139,8 @@ class DeploymentTests(unittest.TestCase):
             repo, target = base / 'repo', base / 'target'
             repo.mkdir()
             target.mkdir()
-            assets(repo / 'src/CodexServer/obj/worker-poc/preview')
-            metadata = repo / 'src/CodexServer/obj/worker-poc/preview/.vite'
+            assets(repo / 'src/CodexServer/obj/dashboard/preview')
+            metadata = repo / 'src/CodexServer/obj/dashboard/preview/.vite'
             metadata.mkdir()
             (metadata / 'manifest.json').write_text('{"index.html":{"file":"assets/app.js","isEntry":true,"css":["assets/app.css"]}}')
             assets(target / 'current', 'old')

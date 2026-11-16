@@ -1,0 +1,11 @@
+import type { executions as source } from '../en/executions';
+export const executions = {
+  "executions.title": "Ejecuciones", "executions.description": "Cada intento de implementar una issue, de la más reciente a la más antigua (últimas 100).",
+  "executions.search": "Buscar por issue, proyecto o Worker", "executions.issue": "Issue", "executions.project": "Proyecto", "executions.worker": "Worker",
+  "executions.started": "Inicio", "executions.detail": "Ejecución", "executions.attempt": "Intento {n}", "executions.attemptOn": "Intento {n} en {worker}",
+  "executions.startedAgo": "empezó", "executions.integratedInto": "Integrada en {branch}", "executions.notIntegratedConflict": "No integrada: conflicto con la rama base",
+  "executions.integrating": "Integrando", "executions.pending": "Pendiente", "executions.technicalDetail": "Detalle técnico", "executions.result": "Resultado",
+  "executions.implementation": "Implementación", "executions.done": "Completada", "executions.inProgress": "En curso", "executions.validation": "Validación",
+  "executions.integration": "Integración", "executions.duration": "Duración", "executions.summary": "Resumen", "executions.engine": "Motor",
+  "executions.created": "Encolada", "executions.finished": "Terminada", "executions.id": "Identificador", "executions.retryOf": "Reintento de"
+} satisfies Record<keyof typeof source, string>;

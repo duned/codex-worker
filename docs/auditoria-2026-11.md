@@ -163,6 +163,13 @@ El límite actual lo marca `CodexWorker.GitTests` (≈2 min con Git real). Bajar
 - En modo gestionado el Worker informa `rebase-conflict` y el Server encola en la misma transacción un único intento nuevo sobre la base actual. Un segundo conflicto queda para revisión.
 - Comportamiento documentado en [parallel-integration.md](parallel-integration.md).
 
+**Dashboard nuevo (punto 4 del plan)**
+
+- `src/CodexServer/dashboard` sustituye al anterior, construido a partir de la maqueta aprobada (`docs/mockups/dashboard-v2.html`): Inicio, Proyectos, Proyecto, Issue, Ejecuciones, Ejecución, Workers, Worker y Ajustes, con paneles laterales de edición, filtros, y animación en lo que está en curso.
+- Un único sistema de estilo (Untitled UI + utilidades Tailwind); sin CSS propio de componentes. Reutiliza la capa de sesión/CSRF/API que ya funcionaba.
+- Las reglas de estado (ejecución, pasos, atención, planificación del Worker) viven en un solo módulo con tests de comportamiento; los textos están en español e inglés.
+- El dashboard anterior queda en `src/CodexServer/dashboard-legacy` como copia de referencia: no se compila, no se embebe, no se prueba ni se despliega. Sus 30 scripts de `tests/dashboard` se movieron con él.
+
 **Pendiente conocido, no introducido aquí**
 
 - `tests/dashboard/home-overview` tiene un caso que ya fallaba en `main` («share the same status label and tone»).
@@ -175,7 +182,7 @@ El límite actual lo marca `CodexWorker.GitTests` (≈2 min con Git real). Bajar
 | 1 | Hecho: ensamblado Git separado, heartbeat sin espera, validación completa en paralelo | Suite de 290 s a 126 s |
 | 2 | Hecho: traducciones, tests gigantes, `ExecutionRunner` y `Worker` troceados | Menos conflictos entre Issues paralelas |
 | 3 | Hecho en standalone: sin sesiones heredadas ni resolución automática; conflicto = reintento único. También en modo gestionado | Elimina la clase de fallos 491–504 |
-| 4 | Maqueta y rediseño del dashboard por contenido | Dashboard útil y un solo estilo |
+| 4 | Hecho: maqueta aprobada y dashboard nuevo; el anterior queda como copia sin build | Dashboard útil y un solo estilo |
 | 5 | Inyectar entorno; reducir `GitWorktreeTests`; sustituir tests de dashboard | Suite < 60 s |
 | 6 | Revisar funcionalidades poco usadas (observadores, herencia de sesiones, MCP/OAuth, segundo motor) y retirar o congelar las que no uses | Menos estados que mantener |
 

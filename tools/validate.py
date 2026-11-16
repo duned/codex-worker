@@ -46,7 +46,9 @@ COVERAGE = {
         "WorkExecutionToolbox.Tests.ToolboxCommandTests.",
     ),
 }
-DASHBOARD = "src/CodexServer/worker-poc/"
+DASHBOARD = "src/CodexServer/dashboard/"
+# Reference backup only: never built, tested or deployed.
+LEGACY_DASHBOARD = "src/CodexServer/dashboard-legacy/"
 NON_DOTNET_COVERAGE = {
     "tools/dashboard-deploy.py": ("tests/dashboard-deploy-tests.py",),
     "packaging/linux/nginx/reload-codex-proxy.sh": ("tests/remote-https-proxy-tests.py",),
@@ -99,7 +101,12 @@ def select(paths, full=False, metadata=True):
         return "full", "empty or unavailable changed scope", ()
     if all(documentation(p) for p in paths):
         return "documentation", "documentation-only scope", ()
-    if all(p.startswith(DASHBOARD) or p.startswith("tests/dashboard/") or documentation(p) for p in paths):
+    paths = [p for p in paths if not p.startswith(LEGACY_DASHBOARD)]
+    if not paths:
+        return "documentation", "legacy dashboard backup only", ()
+    if all(documentation(p) for p in paths):
+        return "documentation", "documentation-only scope", ()
+    if all(p.startswith(DASHBOARD) or documentation(p) for p in paths):
         return "dashboard", "dashboard-only scope", ()
     code = [p for p in paths if not documentation(p)]
     if all(p in NON_DOTNET_COVERAGE for p in code):
@@ -172,7 +179,6 @@ def validate(base, full=False, root=ROOT, run=subprocess.run):
         if mode == "dashboard":
             command("dashboard", ["npm", "ci", "--prefix", DASHBOARD, "--no-audit", "--no-fund"])
             command("dashboard", ["npm", "run", "check", "--prefix", DASHBOARD])
-            command("dashboard", ["node", "--test", *sorted(str(p.relative_to(root)) for p in (root / "tests/dashboard").glob("*.test.cjs"))])
             return report
 
         if mode == "non-dotnet":

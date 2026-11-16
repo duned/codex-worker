@@ -1,0 +1,125 @@
+// Narrow projections of existing Server read contracts. Unused fields are deliberately omitted.
+export interface WorkerObservation {
+  authenticationCredentialStatus?: string; capabilities?: { type: string; name: string; scope?: string; version?: string; checkedAtUtc?: string }[]; workerVersion?: string;
+  workerId: string; displayName?: string; availability: string; lifecycleState?: string;
+  capacity?: number; maximumCapacity?: number; activeExecutions?: number; availableCapacity?: number;
+  activeAssignments?: number; schedulingPolicy?: string; schedulingBlocker?: string; lastHeartbeatAtUtc?: string;
+  telegram?: { enabled: boolean; chatId?: string | null; credentialId?: string | null; tokenConfigured: boolean };
+  configuredMaximumCapacity?: number; workerExecutionSlots?: number; configurationRevision?: number;
+  hostResources?: { measuredAtUtc: string; logicalCpuCount?: number; totalMemoryBytes?: number; usedMemoryBytes?: number; diskTotalBytes?: number; diskAvailableBytes?: number; cpuUsagePercent?: number; memoryUsagePercent?: number; sampleSeconds?: number };
+  platform?: string; firstRegisteredAtUtc?: string; activeProjects?: string[];
+}
+export interface ProjectSummary {
+  id: string; name: string; repository: string; revision?: number; enabled?: boolean; requirements?: { type: string; name: string; version?: string }[];
+  defaultBranch?: string; description?: string; issueReadyLabel?: string | null; issueBlockedLabel?: string | null;
+  automaticDiscovery?: { enabled: boolean; intervalSeconds: number; pageSize: number; deadlineSeconds: number } | null;
+  maxParallelTasks?: number | null; validationCommands?: string[] | null; createdAtUtc?: string; updatedAtUtc?: string;
+}
+export interface GitHubIssue {
+  number: number; title: string; body: string; state: string; createdAtUtc: string; updatedAtUtc: string; url: string;
+  labels: string[]; blockedBy: { number: number; state?: string; title?: string }[]; isEligible: boolean; eligibilityReasons: string[];
+  author?: string | null; assignees?: string[]; selection?: { engine?: string; model?: string | null; effort?: string | null; retryMode?: string | null } | null;
+}
+export interface Credential { id: string; provider: string; type: string; status: string; createdAtUtc: string; updatedAtUtc: string; assignedWorkerId?: string | null; revokedAtUtc?: string | null; version: number }
+export interface ExecutionSummary {
+  id: string; projectId: string; assignedWorkerId?: string; state: string; createdAtUtc: string;
+  currentStage?: string; startedAtUtc?: string; assignedAtUtc?: string; completedAtUtc?: string;
+  stageStartedAtUtc?: Record<string, string>;
+  durationMilliseconds?: number; recoveryState?: string; recoveryReason?: string; pendingReason?: string;
+  managedEligibilityState?: string; managedEligibilityReasons?: string[]; managedEligibilityCheckedAtUtc?: string;
+  completionSummary?: string; validationResult?: string; integrationResult?: string; failureClassification?: string;
+  recoverable?: boolean; attemptNumber?: number; retryOfExecutionId?: string; workerExecutionId?: string; workspaceRecovery?: string;
+  workReference?: { type: string; id: string; url?: string; title?: string; selection?: { engine: 'codex' | 'ccc'; model?: string | null; effort?: string | null } };
+}
+export interface ExecutionMaintenanceRequest {
+  operationId: string; workerId: string; serverExecutionId?: string | null; workerExecutionId?: string | null;
+  assignmentId?: string | null; generation?: number | null; action: 'inventory' | 'inspect' | 'cleanup' | 'archive' | 'retry-report' | 'reconcile-completion';
+  expectedProof?: string; apply: boolean; timeoutSeconds: number; limit: number; offset: number;
+}
+export interface ExecutionMaintenanceObservation {
+  executionId: string; serverExecutionId?: string; assignmentId?: string; generation?: number;
+  state: string; recoveryState: string; reportingStatus: string; project: string; issueNumber: number; archived: boolean;
+}
+export interface CompletionReconciliationProof {
+  token: string; commit: string; baseBranch: string; validationResult: string; issueOpen: boolean; labels: string[];
+  issueContentChanged: boolean; validatedIssueFingerprint: string; currentIssueFingerprint: string; verifiedAtUtc: string;
+}
+export interface ExecutionMaintenanceReport { outcome: string; reason: string; observations: ExecutionMaintenanceObservation[]; completionProof?: CompletionReconciliationProof }
+export interface ExecutionMaintenanceCommand {
+  request: ExecutionMaintenanceRequest; status: string; createdAtUtc: string; authorizedBy: string;
+  deadlineUtc?: string; report?: ExecutionMaintenanceReport; completedAtUtc?: string;
+}
+export interface ExecutionMaintenanceDetail {
+  operation: ExecutionMaintenanceCommand; execution?: ExecutionSummary | null; workerStatus: string;
+  observations: { observation: ExecutionMaintenanceObservation; execution?: ExecutionSummary | null; status: string }[];
+  status: string;
+}
+export interface Capability {
+  definition: { id: string; displayName: string; requiresAuthentication: boolean; requiresConfiguration: boolean };
+  state: { installation: string; health: string; authentication?: string; configuration?: string; update?: string;
+    detectedVersion?: string; detectedAtUtc?: string; diagnosticCode?: string; operation?: { state: string; action?: string; diagnosticCode?: string } };
+  availableActions: string[];
+}
+export interface NodeSummary {
+  id: string; kind: string; displayName?: string; health?: string; connectivity: string; executionReadiness: string;
+  provisioningReadiness?: string; observationsStale: boolean; capabilities: Capability[];
+}
+export interface WorkerDiagnostics {
+  aiAgentReady: boolean; gitHubReady: boolean; gitReady: boolean;
+  configurationRevision?: number; configurationSynchronization: string; provisioningState: string; workerVersion?: string; capabilityObservationsCurrent?: boolean; projects?: WorkerProjectReadiness[]; reasons?: string[];
+  recentOperationalError?: string;
+  workerReportedManagedDiagnostics?: {
+    retrieval: string; synchronization: string; source: string; failureStage?: string | null; diagnosticCode?: string | null;
+  } | null;
+}
+export interface WorkerAdministration extends WorkerObservation {
+  authenticationCredentialRevokedAtUtc?: string;
+}
+export interface WorkerReadiness extends WorkerDiagnostics {
+  canActivate?: boolean; activationBlockingReasons?: string[];
+}
+export interface NodeCommandSummary {
+  id: string; createdAtUtc: string; status: string; diagnostic?: string;
+  startedAtUtc?: string; deadlineUtc?: string; completedAtUtc?: string;
+  publicIdentity?: { publicKey: string; fingerprint: string };
+  failureDetail?: { code?: string; description: string };
+  loginInstructions?: { verificationUri: string; userCode: string };
+  claudeLogin?: { provider: string; state: string; instructionsUri: string; requiresBrowserAction: boolean; requiresLocalCliCodeInput: boolean };
+  request: { nodeId: string; capabilityId: string; action: string };
+}
+
+export interface ServerGitHubConnection { commands: NodeCommandSummary[]; provisioningEnabled: boolean; elevationAllowed: boolean }
+export interface ServerStatus { state: string; version?: string; startedAtUtc: string; persistenceAvailable?: boolean; freshness?: { projects: number; workers: number; executions: number } | null }
+
+export interface WorkerProjectReadiness {
+  projectId: string; projectName: string; isEligible: boolean; missingRequirements: string[];
+  workerReportedRevision?: number; materializationState?: string; diagnosticCode?: string; observationStatus: string;
+}
+export interface DeliveryAuthorization { status: string; revokedAtUtc?: string }
+export interface PairingRequest { contractVersion: 1; workerId: string; operation: 'enroll' | 'associate'; server: string }
+export interface PairingAuthorization { authorization: string; lifetimeSeconds: number }
+export interface ProvisioningPlanSummary {
+  id: string; workerId: string; createdAtUtc: string; state: string; currentActionId?: string;
+  actions: { type: string; name: string; version?: string }[];
+}
+
+// Standalone observations are separate from managed Workers and executions.
+export interface ObserverSummary {
+  observerId: string; mode: 'standalone-observer'; registrationState: string; pairingExpiresAtUtc?: string | null;
+  name: string | null; version: string | null; lastReceivedAtUtc: string | null;
+  snapshotReceivedAtUtc: string | null; observedAtUtc: string | null;
+  freshness: 'unknown' | 'fresh' | 'stale'; freshnessMeaning: string; staleAfterSeconds: number;
+  reportedLifecycle: string | null; reportedReadiness: string | null;
+  maximumCapacity: number | null; activeExecutions: number | null;
+}
+export interface ObserverExecutionObservation {
+  observedAtUtc: string; receivedAtUtc: string;
+  execution: {
+    localExecutionId: string; project: string; repository: string; issueNumber: number; issueTitle: string;
+    stage: string; outcome: string | null; validationResult: string | null;
+    startedAtUtc: string; completedAtUtc: string | null; durationMilliseconds: number | null;
+  };
+}
+export interface ObserverDetail { observer: ObserverSummary; currentExecutions: ObserverExecutionObservation[] }
+export interface ObserverInventoryExecution { observerId: string; observation: ObserverExecutionObservation }
+export interface ObserverInventory { total: number; active: number; totalCapacity: number | null; observers: ObserverSummary[]; executions: ObserverInventoryExecution[] }

@@ -1,145 +1,62 @@
 # Administration dashboard design guide
 
-This is the approved direction for future Server administration-dashboard changes,
-not a claim that all requirements below are already implemented. It is self-contained;
-no external conversation or screenshot is required. The standalone Worker dashboard
-retains its existing scope. See [navigation](server-dashboard-navigation.md) for
-routes and [React architecture and build](server-dashboard-react.md) for implementation seams.
+The Server dashboard lives in `src/CodexServer/dashboard` (React + Untitled UI). The
+approved visual and content reference is the navigable mockup
+[`mockups/dashboard-v2.html`](mockups/dashboard-v2.html); open it in a browser and
+compare rendered screens against it. Earlier SVG references and notes are archived in
+[`archive/dashboard-v1`](archive/dashboard-v1) and are no longer implementation targets.
 
-## Approved visual references
+## What every screen must answer
 
-These owner-approved repository files are the current visual targets. Match their hierarchy, density, proportions, alignment, component treatment and overall look while preserving real API contracts and data states.
+1. Is everything working?
+2. What is happening right now?
+3. What do I have to do?
 
-### Worker detail
+Show those answers first. Identifiers, capability evidence and raw diagnostics go in a
+secondary *Diagnostics* tab or a collapsed *Technical detail* block, never on the main path.
 
-![Approved Worker detail reference](mockups/worker-detail-approved.svg)
+## Screens
 
-The following owner-approved follow-up references refine the controls and lower information blocks of the same page. They replace those areas of the main reference when implementing the Worker detail page.
+| Screen | Route | Content |
+| --- | --- | --- |
+| Home | `/home` | One status line, **Needs your attention** (failed latest attempts and Workers that cannot take work, each with its cause in one sentence and an action), **Running now** with lifecycle steps, recently finished executions with filters. |
+| Projects | `/projects` | List with search and status filter; side panel to add a project. |
+| Project | `/projects/{id}` | Issues (open/all, search, status filter) with their derived status, configuration card, pause/resume, add an Issue to the queue, edit panel. |
+| Issue | `/projects/{id}/issues/{n}` | Status, *what happened / what you can do* when it failed, description (Markdown), attempts with steps, status card and actions card. |
+| Executions | `/executions` | Every attempt with search and state filter. |
+| Execution | `/executions/{id}` | Five lifecycle steps with durations, explanation and actions, result and details. |
+| Workers | `/workers` | Aligned table: Worker, connection (online/offline + last signal), activity, slots, scheduling. Standalone Workers appear read-only. Side panel to connect a Worker. |
+| Worker | `/workers/{id}` | Tiles for connection, **scheduling (accepting / pausing / paused / not accepting)** and slots; pause/resume scheduling; *Work* and *Diagnostics* tabs; edit panel. |
+| Settings | `/settings` | Server, Server tools and credentials (side panel to add, replace, assign or revoke). |
 
-#### Worker controls and status refresh
+Edits always happen in a right-hand side panel. Secrets are write-only.
 
-![Worker controls and status refresh](mockups/worker-detail-controls-refinement.svg)
+## Status language
 
-#### Lower information layout
+Use the shared mapping in `src/shared/model.ts`; do not invent per-screen rules.
 
-![Worker detail lower information layout](mockups/worker-detail-lower-refinement.svg)
+- Execution: queued, starting, preparing, implementing, validating, integrating, reporting,
+  integrated, conflict, conflict · retried (automatically requeued), Worker lost · retried,
+  interrupted, failed, cancelled.
+- Lifecycle steps: prepare, implement, validate, integrate, report. The step in progress
+  animates; a failed step is red.
+- Worker: connection and scheduling are separate facts and are always shown separately.
+- Running states move: pulsing status dot, a light sweep on the current step and on
+  occupied slots. All motion is disabled under `prefers-reduced-motion`.
 
-### Home
+Only the latest attempt of an Issue can need attention; an automatically requeued
+failure does not.
 
-![Approved Home reference](mockups/home-summary.svg)
+## Foundation
 
-### Workers list
-
-![Approved Workers list reference](mockups/workers-list-dark-reference.svg)
-
-## Draft mockups for review
-
-The following references are prepared for owner review. They become implementation targets only after approval.
-
-### Worker detail · dark
-
-![Worker detail dark reference](mockups/worker-detail-dark.svg)
-
-### Project list
-
-![Project list reference](mockups/project-list.svg)
-
-### Project detail
-
-![Project detail reference](mockups/project-detail.svg)
-
-### Execution list
-
-![Execution list reference](mockups/execution-list.svg)
-
-### Execution detail
-
-![Execution detail reference](mockups/execution-detail.svg)
-
-### Settings
-
-![Settings reference](mockups/settings.svg)
-
-These screens are static design references, not implemented behavior. Sample
-names, statuses and timestamps are illustrative. The supporting field mappings
-remain in [Workers](dashboard-design/workers-list-reference.md),
-[Projects](dashboard-design/projects-reference.md),
-[Executions](dashboard-design/executions-reference.md), and
-[Settings](dashboard-design/settings-server-preparation-reference.md) notes.
-
-## Foundation and hierarchy
-
-Use the established React + Untitled UI application in
-`src/CodexServer/worker-poc` (the directory name is historical). Reuse its shared
-shell, components, tokens, icons, dialogs, theme preferences and API/session hooks.
-The existing Worker detail screen at `/workers/{id}` is the visual foundation:
-clear page and section headings, concise operational summaries, prominent current
-work, and advanced diagnostics on demand. Keep IDs, capability evidence and detailed
-technical fields in secondary details. Preserve existing operational actions and safeguards.
-
-Keep connection, execution readiness, scheduling policy, execution state and data
-freshness distinct. A connected Worker can be not ready; an idle Worker can be ready;
-a stale observation cannot establish current availability. Present the existing
-contracts rather than inventing lifecycle rules. Raw API payloads and repetitive
-diagnostics must not dominate normal screens.
-
-## Home
-
-On wide screens, place **Workers** and **Projects** side by side at the top:
-
-- **Workers:** compact cards showing name, textual status and occupied/total execution
-  slots, with links to Worker detail. Reuse the existing capacity projection; do not
-  conflate occupied slots with Server assignments or unknown capacity with zero.
-- **Projects:** the five most recently active Projects, ordered by latest recorded
-  execution activity. Each entry shows name, external GitHub repository link, textual
-  status, and latest execution with Issue name, date and outcome. Link to project and
-  execution details and provide access to all Projects. Explicitly identify Projects
-  with no recorded execution activity rather than inventing a latest execution.
-
-Below these panels, show **Current executions** with a count and list, followed by
-**Recent completed executions** with a status filter. Entries identify the project,
-Issue, current state or terminal outcome, and relevant time. Reuse existing execution
-state/filter contracts and preserve distinct terminal outcomes. Label counts/lists
-limited to a bounded API result; a partial window is not a global total or complete history.
-
-Use Issue names when supplied by an authorized API. If titles, dates, outcomes or
-other requested fields are unavailable, show an explicit unavailable value or known
-Issue number/link. Never fabricate titles, progress, completion or timestamps. Reuse
-existing API contracts and projections; any needed contract extension belongs at its
-owning boundary, not in a separate frontend registry or request flow.
-
-## Shared interactions and shell
-
-- Use recognizable sun/moon icons for theme selection, trash for deletion and
-  external-link icons for external destinations. Give icon-only controls accessible
-  names; use the existing deletion confirmation flow.
-- Make status chips comfortably readable with adequate text size, contrast, padding
-  and spacing. Pair color with status text; never rely on color alone.
-- Keep Server **live/offline** state and **last-updated time** visible in the sidebar.
-  Distinguish connection from readiness and individual observation freshness. Show
-  unknown time explicitly; failed refreshes must not advance the last successful update.
-- Prefer dark mode initially; let users choose a persistent light/dark theme through
-  the existing preference store. Use shared tokens consistently in both themes.
-- Reuse navigable resource links and existing pending/action/error components and patterns.
-
-## Responsive, data and accessibility states
-
-On narrow screens, stack Workers then Projects, followed by the execution sections.
-Allow cards and rows to wrap without hiding essential status, capacity or actions.
-Use existing mobile navigation and keep Server connection/update information
-discoverable there. Adapt tables to lists or contained horizontal scrolling without
-page-wide overflow.
-
-Provide distinct section-level loading, empty, stale and error states. Loading is
-not zero Workers or no executions. Empty states explain missing records and offer
-relevant existing actions where available; no filter matches differs from no history.
-Failed reads show an actionable error/retry state. Retained observations remain
-visibly stale with their timestamp. Absent values stay unknown rather than becoming
-healthy, zero or successful.
-
-Use semantic headings, lists/tables, labelled inputs and real buttons/links. Support
-keyboard operation, visible focus, readable contrast in both themes, usable targets,
-narrow widths and zoom. Preserve shared dialog focus containment, Escape dismissal
-and focus restoration. Make loading/errors and meaningful status changes accessible
-without moving focus or announcing every live refresh. Give external links descriptive
-names and indicate their destination behavior.
+- Untitled UI components and tokens (`src/untitled`) plus Tailwind utilities. No
+  separate component CSS; `src/styles.css` holds only composition and animations.
+- Semantic colours: green ok, red problem, yellow warning/paused, blue running, grey idle.
+  Always pair colour with text.
+- Dark theme by default; light theme from the sidebar. Spanish by default; English available.
+  Both languages are required for every text (`src/shared/locales/{en,es}/*.ts`).
+- Lists use the shared `Filters` (search + status select). Tables keep fixed status
+  columns so header and rows align; on narrow screens rows stack.
+- Loading, empty, failed (with retry) and "no matches" are distinct states.
+- Keyboard operation, visible focus, labelled inputs, real links and buttons; side panels
+  trap focus and close with Escape.

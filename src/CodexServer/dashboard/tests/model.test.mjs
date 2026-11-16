@@ -1,0 +1,53 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+
+// Bundle the pure model (no React) so these tests exercise the real status rules.
+const { outputFiles } = await build({ entryPoints: [new URL('../src/shared/model.ts', import.meta.url).pathname], bundle: true, write: false, format: 'esm', platform: 'node' });
+const model = await import('data:text/javascript;base64,' + Buffer.from(outputFiles[0].text).toString('base64'));
+const at = minutes => new Date(Date.parse('2026-11-16T10:00:00Z') + minutes * 60000).toISOString();
+const execution = values => ({ id: 'e', projectId: 'p', state: 'Running', createdAtUtc: at(0), workReference: { type: 'github-issue', id: '7' }, ...values });
+
+test('running stages map to the step being worked on', () => {
+  assert.equal(model.executionStatus(execution({ currentStage: 'Codex' })).label, 'status.implementing');
+  assert.equal(model.executionStatus(execution({ currentStage: 'Validation' })).tone, 'run');
+  const steps = model.stepProgress(execution({ currentStage: 'Validation' })).map(step => step.state);
+  assert.deepEqual(steps, ['done', 'done', 'now', 'todo', 'todo']);
+});
+
+test('a failed execution marks the step it failed at, using timings when the stage is missing', () => {
+  const failed = execution({ state: 'Failed', failureClassification: 'IntegrationConflict', integrationResult: 'rebase-conflict', completedAtUtc: at(50),
+    stageStartedAtUtc: { claimed: at(1), codex: at(2), validation: at(40), integration: at(48) } });
+  assert.deepEqual(model.stepProgress(failed).map(step => step.state), ['done', 'done', 'done', 'fail', 'todo']);
+  assert.equal(model.stepProgress(failed)[1].durationMs, 38 * 60000);
+  assert.equal(model.executionStatus(failed).label, 'status.conflict');
+  assert.equal(model.explain(failed).todo, 'explain.conflict.todo');
+});
+
+test('automatically requeued failures do not need attention, and newer attempts supersede older failures', () => {
+  const requeued = execution({ id: 'a', state: 'Failed', failureClassification: 'IntegrationConflict', recoveryState: 'RebaseConflictRequeued', createdAtUtc: at(0) });
+  assert.equal(model.executionStatus(requeued).tone, 'warn');
+  assert.deepEqual(model.attention([requeued]), []);
+  const failed = execution({ id: 'b', state: 'Failed', createdAtUtc: at(1) });
+  const retried = execution({ id: 'c', state: 'Queued', createdAtUtc: at(2) });
+  assert.deepEqual(model.attention([failed]).map(item => item.id), ['b']);
+  assert.deepEqual(model.attention([failed, retried]), []);
+});
+
+test('worker scheduling separates paused, pausing, blocked and accepting', () => {
+  const base = { workerId: 'w', availability: 'online', lifecycleState: 'running', schedulingPolicy: 'Enabled' };
+  assert.equal(model.scheduling(base), 'accepting');
+  assert.equal(model.scheduling({ ...base, schedulingPolicy: 'Draining' }), 'pausing');
+  assert.equal(model.scheduling({ ...base, schedulingPolicy: 'Disabled', availability: 'offline' }), 'paused');
+  assert.equal(model.scheduling({ ...base, availability: 'offline' }), 'blocked');
+  assert.equal(model.scheduling({ ...base, schedulingBlocker: 'Codex sign-in expired' }), 'blocked');
+});
+
+test('issue status prefers its latest execution, then dependencies and labels', () => {
+  const issue = { number: 7, labels: ['codex-ready'], blockedBy: [], state: 'open' };
+  assert.equal(model.issueStatus(issue, undefined).label, 'status.ready');
+  assert.equal(model.issueStatus({ ...issue, blockedBy: [{ number: 3, state: 'open' }] }, undefined).label, 'status.waiting');
+  assert.equal(model.issueStatus(issue, execution({ state: 'Queued' })).label, 'status.queued');
+  const latest = model.latestByIssue([execution({ id: 'old', createdAtUtc: at(0), state: 'Failed' }), execution({ id: 'new', createdAtUtc: at(5), state: 'Completed' })]);
+  assert.equal(latest.get(7).id, 'new');
+});
