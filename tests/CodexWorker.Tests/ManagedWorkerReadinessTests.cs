@@ -33,7 +33,8 @@ public sealed class ManagedWorkerReadinessTests
         Assert.Empty(projects);
         var host = new WorkerHost(configuration, projects, new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(provisioningDiscovery: discovery, capabilityDiscovery: capabilities),
-            agentAuthentication: provider, executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
+            agentAuthentication: provider, executionHistoryPath: Path.Combine(temporary.Path, "history.db"),
+            timeProvider: new AcceleratedTimers());
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
 
@@ -71,7 +72,8 @@ public sealed class ManagedWorkerReadinessTests
         };
         var host = new WorkerHost(configuration, [("project.yml", project)], new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(provisioningDiscovery: discovery, capabilityDiscovery: capabilities),
-            agentAuthentication: provider, executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
+            agentAuthentication: provider, executionHistoryPath: Path.Combine(temporary.Path, "history.db"),
+            timeProvider: new AcceleratedTimers());
 
         // This checkout cannot complete its safety checks yet. Missing node authentication
         // must leave the control loop available for provisioning rather than fail startup.
@@ -167,7 +169,8 @@ public sealed class ManagedWorkerReadinessTests
         };
         var host = new WorkerHost(configuration, [], new WorkerConsole(new StringWriter(), interactive: false),
             registrationClient: new WorkerRegistrationClient(client, discovery, capabilities), agentAuthentication: provider,
-            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"),
+            timeProvider: new AcceleratedTimers());
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
 
@@ -226,7 +229,8 @@ public sealed class ManagedWorkerReadinessTests
             new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(client, discovery, capabilities),
             agentAuthentication: new TestProvider { Available = true },
-            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"),
+            timeProvider: new AcceleratedTimers());
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
 
@@ -311,7 +315,8 @@ public sealed class ManagedWorkerReadinessTests
                 new WorkerConsole(output, interactive: false),
                 registrationClient: new WorkerRegistrationClient(client, discovery, capabilities),
                 agentAuthentication: new TestProvider { Available = true },
-                executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
+                executionHistoryPath: Path.Combine(temporary.Path, "history.db"),
+            timeProvider: new AcceleratedTimers());
             var run = host.RunAsync(stop.Token);
             try
             {
@@ -501,7 +506,7 @@ public sealed class ManagedWorkerReadinessTests
             {
                 messages.Enqueue(message);
                 if (message.Contains("Server report completed", StringComparison.Ordinal)) terminalLogged.TrySetResult();
-            });
+            }, timeProvider: new AcceleratedTimers());
         var run = host.RunAsync(stop.Token);
         try
         {
@@ -558,6 +563,16 @@ public sealed class ManagedWorkerReadinessTests
         }
     }
 
+    /// <summary>Real clock whose timers fire sooner, so polling and heartbeat loops need no wall-clock seconds.</summary>
+    private sealed class AcceleratedTimers : TimeProvider
+    {
+        private const int Factor = 50;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+            base.CreateTimer(callback, state, Scale(dueTime), Scale(period));
+        private static TimeSpan Scale(TimeSpan value) =>
+            value == Timeout.InfiniteTimeSpan || value <= TimeSpan.Zero ? value : TimeSpan.FromTicks(Math.Max(1, value.Ticks / Factor));
+    }
+
     private sealed class AdvancingClock : TimeProvider
     {
         private long _ticks = DateTimeOffset.UnixEpoch.Ticks;
@@ -597,7 +612,8 @@ public sealed class ManagedWorkerReadinessTests
                 new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
                 new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))),
             agentAuthentication: new TestProvider { Available = true },
-            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"),
+            timeProvider: new AcceleratedTimers());
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
         // Snapshot validation precedes Telegram resolution and uses the safe retrieval diagnostic.

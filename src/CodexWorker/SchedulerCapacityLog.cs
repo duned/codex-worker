@@ -3,10 +3,11 @@ namespace CodexWorker;
 internal static class SchedulerPollWait
 {
     public static Task<Task> WaitForNextEventAsync(Task activeFinished, Task runtimeChanged,
-        TimeSpan pollingInterval, bool hasAvailableCapacity, CancellationToken cancellationToken)
+        TimeSpan pollingInterval, bool hasAvailableCapacity, CancellationToken cancellationToken,
+        TimeProvider? timeProvider = null)
     {
         if (!hasAvailableCapacity) return Task.WhenAny(activeFinished, runtimeChanged);
-        var pollInterval = Task.Delay(pollingInterval, cancellationToken);
+        var pollInterval = Task.Delay(pollingInterval, timeProvider ?? TimeProvider.System, cancellationToken);
         return Task.WhenAny(activeFinished, runtimeChanged, pollInterval);
     }
 }

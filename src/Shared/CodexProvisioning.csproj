@@ -10,5 +10,6 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="CodexWorker.Tests" />
+    <InternalsVisibleTo Include="CodexWorker.GitTests" />
   </ItemGroup>
 </Project>

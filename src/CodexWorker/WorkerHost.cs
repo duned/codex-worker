@@ -179,7 +179,7 @@ public sealed class WorkerHost
             {
                 heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, CurrentHeartbeatStatus,
                     message => _output.Warning(message), () => Volatile.Read(ref heartbeatCapabilities),
-                    () => managedConfiguration?.Status, _registration, () => _global.Worker.MaxParallelTasks);
+                    () => managedConfiguration?.Status, _registration, () => _global.Worker.MaxParallelTasks, _timeProvider);
                 heartbeat.Start();
             }
             history = new ExecutionHistoryStore(_executionHistoryPath);
@@ -874,7 +874,7 @@ public sealed class WorkerHost
                     var runtimeChanged = runtimeReadModel.Registry.WaitForChangeAsync(runtimeVersion, changeWait.Token);
                     await SchedulerPollWait.WaitForNextEventAsync(activeFinished, runtimeChanged,
                         TimeSpan.FromSeconds(_global.Worker.PollingSeconds),
-                        active.Count < _global.Worker.MaxParallelTasks, ct);
+                        active.Count < _global.Worker.MaxParallelTasks, ct, _timeProvider);
                     changeWait.Cancel();
                     // Observe on the next pass so all task exceptions follow the common infrastructure path.
                     continue;
@@ -892,7 +892,7 @@ public sealed class WorkerHost
                 idleHeartbeat.EmitIfDue(_timeProvider.GetUtcNow(), _operationalLog);
                 if (!foundWork)
                 {
-                    try { await Task.Delay(TimeSpan.FromSeconds(_global.Worker.PollingSeconds), ct); }
+                    try { await Task.Delay(TimeSpan.FromSeconds(_global.Worker.PollingSeconds), _timeProvider, ct); }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 }
             }

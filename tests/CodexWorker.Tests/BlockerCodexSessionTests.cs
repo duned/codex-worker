@@ -35,7 +35,7 @@ public sealed class BlockerCodexSessionTests
         {
             using var history = new ExecutionHistoryStore(Path.Combine(directory, "history.db"));
             var thread = Guid.NewGuid().ToString().ToUpperInvariant();
-            var entry = LegacyCodexSessionTests.Source() with
+            var entry = LegacyCodexSessionSamples.Source() with
             {
                 State = scenario == "failed" ? "Failed" : "Completed", Engine = scenario == "blocker-claude" ? "ccc" : "codex",
                 CodexThreadId = thread, CodexSessionOwner = scenario == "other-store" ? "remote" : "local",
@@ -52,9 +52,9 @@ public sealed class BlockerCodexSessionTests
             var sessions = Path.Combine(directory, "sessions", "2026", "01", "02");
             Directory.CreateDirectory(sessions);
             if (scenario != "unavailable") await File.WriteAllTextAsync(Path.Combine(sessions, $"rollout-test-{thread}.jsonl"),
-                LegacyCodexSessionTests.Header(Guid.Parse(thread), "old-worktree", entry.FeatureBranch, new string('a', 40), entry.StartedAtUtc));
+                LegacyCodexSessionSamples.Header(Guid.Parse(thread), "old-worktree", entry.FeatureBranch, new string('a', 40), entry.StartedAtUtc));
             if (scenario == "different") await File.WriteAllTextAsync(Path.Combine(sessions, $"rollout-test-{secondThread}.jsonl"),
-                LegacyCodexSessionTests.Header(Guid.Parse(secondThread), "old-worktree", entry.FeatureBranch, new string('a', 40), entry.StartedAtUtc));
+                LegacyCodexSessionSamples.Header(Guid.Parse(secondThread), "old-worktree", entry.FeatureBranch, new string('a', 40), entry.StartedAtUtc));
             var github = new GitHubClient("owner/repo", (args, _) =>
             {
                 var arguments = args.ToArray();
@@ -136,9 +136,9 @@ public sealed class BlockerCodexSessionTests
                     var actual = thread ?? Guid.NewGuid().ToString();
                     threads.Add(number, actual);
                     await File.WriteAllTextAsync(Path.Combine(sessionDirectory, $"rollout-test-{actual}.jsonl"),
-                        LegacyCodexSessionTests.Header(Guid.Parse(actual), request.ProjectDirectory, $"feature/{number}",
+                        LegacyCodexSessionSamples.Header(Guid.Parse(actual), request.ProjectDirectory, $"feature/{number}",
                             new string('a', 40), DateTimeOffset.UnixEpoch) + "\nprivate-transcript-sentinel", ct);
-                    await history.CreateAsync(LegacyCodexSessionTests.Source() with
+                    await history.CreateAsync(LegacyCodexSessionSamples.Source() with
                     {
                         ExecutionId = Guid.NewGuid(), IssueNumber = number, State = "Completed",
                         ParentIssueNumber = request.Issue.ParentIssueNumber, CodexThreadId = actual, CodexSessionOwner = "local",

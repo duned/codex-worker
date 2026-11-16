@@ -7,6 +7,9 @@ using System.Globalization;
 /// <summary>Linux host counters, never process/container limits. Unsupported counters remain absent.</summary>
 internal static class WorkerHostResourceCollector
 {
+    private static readonly Lock CpuGate = new();
+    private static ((long Total, long Idle, int Count) Sample, long Timestamp)? _previousCpu;
+
     public static async Task<WorkerHostResources> CollectAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -17,16 +20,26 @@ internal static class WorkerHostResourceCollector
         {
             try
             {
-                var first = await ReadCpuAsync(cancellationToken);
-                var started = Stopwatch.GetTimestamp();
-                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                // CPU usage covers the interval since the previous collection (normally one heartbeat),
+                // so a collection never waits for a sample. The first collection reports no CPU value.
                 var second = await ReadCpuAsync(cancellationToken);
-                seconds = Stopwatch.GetElapsedTime(started).TotalSeconds;
+                var now = Stopwatch.GetTimestamp();
+                ((long Total, long Idle, int Count) Sample, long Timestamp)? previous;
+                lock (CpuGate)
+                {
+                    previous = _previousCpu;
+                    _previousCpu = (second, now);
+                }
                 cpus = second.Count is > 0 and <= 1048576 ? second.Count : null;
-                var elapsed = second.Total - first.Total;
-                var idle = second.Idle - first.Idle;
-                if (first.Count == second.Count && second.Count > 0 && elapsed > 0 && idle >= 0 && idle <= elapsed && seconds is >= 1 and <= 3600)
-                    cpu = 100d * (elapsed - idle) / elapsed;
+                if (previous is { } baseline)
+                {
+                    var first = baseline.Sample;
+                    seconds = Stopwatch.GetElapsedTime(baseline.Timestamp, now).TotalSeconds;
+                    var elapsed = second.Total - first.Total;
+                    var idle = second.Idle - first.Idle;
+                    if (first.Count == second.Count && second.Count > 0 && elapsed > 0 && idle >= 0 && idle <= elapsed && seconds is >= 1 and <= 3600)
+                        cpu = 100d * (elapsed - idle) / elapsed;
+                }
                 var memory = (await File.ReadAllLinesAsync("/proc/meminfo", cancellationToken))
                     .Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
                     .Where(parts => parts.Length >= 3 && parts[2] == "kB")

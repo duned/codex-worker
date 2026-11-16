@@ -378,7 +378,7 @@ public sealed class ExecutionHistoryStoreTests
     public async Task InterruptionReconstructionIsAtomicSurvivesRestartAndRejectsNewerOwnership(bool competing, bool parkedContext)
     {
         using var database = new TemporaryDatabase();
-        var source = LegacyCodexSessionTests.Source();
+        var source = LegacyCodexSessionSamples.Source();
         if (parkedContext) source = source with
         {
             FailureReason = "Codex context limit: Model context window exhausted",

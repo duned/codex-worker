@@ -78,7 +78,7 @@ class RiskValidationTests(unittest.TestCase):
         calls, report = self.execute(["src/CodexWorker/IssueFormatting.cs"])
         self.assertEqual(1, sum(c[:2] == ["dotnet", "build"] for c in calls))
         tests = [c for c in calls if c[:2] == ["dotnet", "test"]]
-        self.assertEqual(6, len(tests))
+        self.assertEqual(7, len(tests))
         for argv in tests:
             self.assertIn("--no-build", argv)
             self.assertIn("--no-restore", argv)
@@ -115,7 +115,7 @@ class RiskValidationTests(unittest.TestCase):
         calls, report = self.execute([], full=True)
         self.assertEqual("full", report["mode"])
         tests = [c for c in calls if c[:2] == ["dotnet", "test"]]
-        self.assertEqual(2, len(tests))
+        self.assertEqual(3, len(tests))
         self.assertTrue(all("--filter" not in c for c in tests))
 
     def test_reviewed_non_dotnet_tool_uses_its_contract_tests(self):

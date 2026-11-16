@@ -2,6 +2,7 @@
 """Repository-owned, conservative validation policy, invoked by project YAML."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 from pathlib import Path
@@ -18,8 +19,11 @@ guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 ROOT = Path(__file__).resolve().parents[1]
 SOLUTION = "CodexWorker.sln"
+# Area filters select PROJECTS[0] (CodexWorker.*) or PROJECTS[1]; the real-Git suites in
+# PROJECTS[2] run in their own process so full validation can execute projects concurrently.
 PROJECTS = ("tests/CodexWorker.Tests/CodexWorker.Tests.csproj",
-            "tests/WorkExecutionToolbox.Tests/WorkExecutionToolbox.Tests.csproj")
+            "tests/WorkExecutionToolbox.Tests/WorkExecutionToolbox.Tests.csproj",
+            "tests/CodexWorker.GitTests/CodexWorker.GitTests.csproj")
 # Reviewed coverage, not a filename heuristic. All other C# files fall back to full.
 # Area filters include every relevant boundary type, including Integration.
 COVERAGE = {
@@ -127,9 +131,12 @@ def validate(base, full=False, root=ROOT, run=subprocess.run):
             mode, reason, areas = select(paths, full, metadata)
         report.update(mode=mode, reason=reason)
 
-        def command(kind, argv, project="", test_filter=""):
+        def begin(kind, project="", test_filter=""):
             entry = {"kind": kind, "project": project, "filter": test_filter, "cases": 0, "durationSeconds": 0, "succeeded": False}
             report["runs"].append(entry)
+            return entry
+
+        def execute(entry, argv):
             started = time.perf_counter()
             try:
                 run(argv, cwd=root, check=True, timeout=900)
@@ -137,6 +144,27 @@ def validate(base, full=False, root=ROOT, run=subprocess.run):
             finally:
                 entry["durationSeconds"] = round(time.perf_counter() - started, 3)
             return entry
+
+        def command(kind, argv, project="", test_filter=""):
+            return execute(begin(kind, project, test_filter), argv)
+
+        def test(entry):
+            with tempfile.TemporaryDirectory(prefix="codex-validation-") as directory:
+                argv = ["dotnet", "test", entry["project"], "--no-build", "--no-restore", "-m:1",
+                        "--logger", "trx", "--results-directory", directory,
+                        "--blame-hang-timeout", "60s", "--blame-hang-dump-type", "none"]
+                if entry["filter"]:
+                    argv += ["--filter", entry["filter"]]
+                try:
+                    execute(entry, argv)
+                finally:
+                    # Count actual cases even when dotnet exits nonzero.
+                    entry["cases"] = len(guard.read_results(directory))
+                entry["succeeded"] = False
+                # Require positive, passing results for EACH selection; a large
+                # baseline cannot conceal an empty area filter or missing project.
+                entry["cases"] = guard.check_results(directory, None)
+                entry["succeeded"] = True
 
         command("scope-check", ["git", "diff", "--check"])
         if mode == "documentation":
@@ -160,23 +188,16 @@ def validate(base, full=False, root=ROOT, run=subprocess.run):
             (p, "TestType=Unit|TestType=Component") for p in PROJECTS]
         selections += [(PROJECTS[0] if area.startswith("CodexWorker.") else PROJECTS[1],
                         "FullyQualifiedName~" + area) for area in areas]
-        for project, test_filter in selections:
-            with tempfile.TemporaryDirectory(prefix="codex-validation-") as directory:
-                argv = ["dotnet", "test", project, "--no-build", "--no-restore", "-m:1",
-                        "--logger", "trx", "--results-directory", directory,
-                        "--blame-hang-timeout", "60s", "--blame-hang-dump-type", "none"]
-                if test_filter:
-                    argv += ["--filter", test_filter]
-                try:
-                    entry = command("test", argv, project, test_filter)
-                finally:
-                    # Count actual cases even when dotnet exits nonzero.
-                    report["runs"][-1]["cases"] = len(guard.read_results(directory))
-                entry["succeeded"] = False
-                # Require positive, passing results for EACH selection; a large
-                # baseline cannot conceal an empty area filter or missing project.
-                entry["cases"] = guard.check_results(directory, None)
-                entry["succeeded"] = True
+        if mode == "full":
+            # Test projects are separate processes with separate environments; run them
+            # concurrently. Entries are created first so report order stays deterministic.
+            entries = [begin("test", project, test_filter) for project, test_filter in selections]
+            with ThreadPoolExecutor(max_workers=len(entries)) as pool:
+                for outcome in [pool.submit(test, entry) for entry in entries]:
+                    outcome.result()
+        else:
+            for project, test_filter in selections:
+                test(begin("test", project, test_filter))
         if mode == "full":
             for source in sorted((root / "tests").glob("test-*.py")):
                 command("policy-tests", ["python3", str(source.relative_to(root))])

@@ -777,7 +777,8 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
 public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capacity,
     Func<WorkerHeartbeatStatus> snapshot, Action<string>? report = null,
     Func<IReadOnlyList<WorkerCapabilityContract>>? capabilities = null,
-    Func<WorkerConfigurationSyncStatus?>? configurationSync = null, WorkerRegistrationClient? client = null, Func<int>? currentCapacity = null)
+    Func<WorkerConfigurationSyncStatus?>? configurationSync = null, WorkerRegistrationClient? client = null, Func<int>? currentCapacity = null,
+    TimeProvider? timeProvider = null)
 {
     private readonly CancellationTokenSource _stop = new();
     private Task? _run;
@@ -788,7 +789,7 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
 
     private async Task RunAsync()
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(settings.HeartbeatIntervalSeconds));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(settings.HeartbeatIntervalSeconds), timeProvider ?? TimeProvider.System);
         do
         {
             try

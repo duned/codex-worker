@@ -132,7 +132,7 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings());
         await git.InitializeAsync(CancellationToken.None);
-        var source = LegacyCodexSessionTests.Source() with { IssueTitle = fixture.Issue.Title };
+        var source = LegacyCodexSessionSamples.Source() with { IssueTitle = fixture.Issue.Title };
         await git.StartIssueAsync(source.ExecutionId, fixture.Issue, CancellationToken.None);
         var workspace = git.ExecutionDirectory;
         await File.WriteAllTextAsync(Path.Combine(workspace, "valuable.txt"), "retain this work");
@@ -221,9 +221,9 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         };
         using var git = fixture.CreateRepository(config.Git);
         await git.InitializeAsync(CancellationToken.None);
-        var missingIntent = LegacyCodexSessionTests.Source() with { OriginalIssueBody = null };
-        var progressed = LegacyCodexSessionTests.Source() with { ImplementationSummary = "Retained implementation", IssueNumber = 18 };
-        var missingWorkspace = LegacyCodexSessionTests.Source() with { IssueNumber = 19 };
+        var missingIntent = LegacyCodexSessionSamples.Source() with { OriginalIssueBody = null };
+        var progressed = LegacyCodexSessionSamples.Source() with { ImplementationSummary = "Retained implementation", IssueNumber = 18 };
+        var missingWorkspace = LegacyCodexSessionSamples.Source() with { IssueNumber = 19 };
         using var gate = new SemaphoreSlim(1, 1);
         using (var history = new ExecutionHistoryStore(database))
         {
@@ -273,7 +273,7 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         };
         using var git = fixture.CreateRepository(config.Git);
         await git.InitializeAsync(CancellationToken.None);
-        var source = LegacyCodexSessionTests.Source() with
+        var source = LegacyCodexSessionSamples.Source() with
         {
             IssueNumber = fixture.Issue.Number, IssueTitle = fixture.Issue.Title, OriginalIssueBody = fixture.Issue.Body,
             State = "Cancelled", FailureReason = "Execution interrupted by Worker shutdown"
@@ -292,7 +292,7 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Directory.CreateDirectory(sessionDirectory);
         var session = Guid.NewGuid();
         await File.WriteAllTextAsync(Path.Combine(sessionDirectory, "rollout-root.jsonl"),
-            LegacyCodexSessionTests.Header(session, workspace, source.FeatureBranch, info.BaseCommit, source.StartedAtUtc.AddMinutes(1)));
+            LegacyCodexSessionSamples.Header(session, workspace, source.FeatureBranch, info.BaseCommit, source.StartedAtUtc.AddMinutes(1)));
         using var gate = new SemaphoreSlim(1, 1);
         using var logs = new StringWriter();
         var console = new WorkerConsole(logs, false);
@@ -2200,7 +2200,7 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         var coordinator = new CodexThreadCoordinator();
         var sharedThread = Guid.NewGuid().ToString();
         using var sessionHistory = new ExecutionHistoryStore(Path.Combine(fixture._root, "inherited-parallel.db"));
-        await sessionHistory.CreateAsync(LegacyCodexSessionTests.Source() with
+        await sessionHistory.CreateAsync(LegacyCodexSessionSamples.Source() with
         {
             Project = "sample", Repository = "owner/repo", IssueNumber = 16, ParentIssueNumber = 2,
             State = "Completed", CodexThreadId = sharedThread, CodexSessionOwner = "local"
