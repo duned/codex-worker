@@ -153,6 +153,44 @@ public sealed partial class WorkerV011Tests
     }
 
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task ManagedValidatedExecutionWithoutIntegrationCommitDoesNotFenceProjectOrIssueRetry()
+    {
+        // Regression: validation passed, then the execution stopped before integration recorded
+        // a commit. Startup/assignment recovery must not pause the project or reject a retry.
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var now = DateTimeOffset.UtcNow;
+        var stopped = new ExecutionHistoryEntry(Guid.NewGuid(), "Test Project", "owner/repo", 17, "Example task",
+            "feature/17-example-task", "main", now.AddMinutes(-10), now.AddMinutes(-5),
+            "InfrastructureFailure", 1000, "Implemented", "passed", 0, [], null, null, null, "Conflict resolution requires authoritative Issue verification.")
+            with { RecoveryState = "uncertain", ServerExecutionId = "server-old", AssignmentId = "assignment-old", OwnershipGeneration = 1 };
+        await history.CreateAsync(stopped);
+        Assert.True(WorkerHost.NeedsCompletionReconciliation(stopped));
+        var config = h.Worker.Configuration;
+        var global = new GlobalWorkerConfiguration();
+        var runtime = new WorkerRuntimeReadModel(global, [("project.yml", config)], history);
+        await new WorkerHost(global, [("project.yml", config)]).ReconcileCompletionAsync(h.Worker, stopped, runtime, CancellationToken.None);
+
+        var retained = Assert.IsType<ExecutionHistoryEntry>(await history.ReadExecutionAsync(stopped.ExecutionId));
+        Assert.Equal(ExecutionHistoryStore.ManagedNotIntegratedState, retained.RecoveryState);
+        Assert.False(WorkerHost.NeedsCompletionReconciliation(retained));
+        Assert.Equal(ProjectLifecycleState.Enabled, runtime.Registry.Get(config.Project.Name)?.State);
+        Assert.Empty(h.GitHub.Comments);
+
+        var assignment = new WorkerAssignmentContract("assignment-retry", "server-retry",
+            new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+            new ServerExecutionLeaseContract("server-retry", "worker-id", 1, now, now.AddMinutes(5), "Active"));
+        var execution = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
+        Assert.NotNull(execution);
+        Assert.NotNull(await execution);
+        Assert.Equal("Completed", (await history.ReadAllAsync()).Single(entry => entry.ServerExecutionId == "server-retry").State);
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
     public async Task AssignedUnrecoverableResumeReturnsCompletedRejectionTaskInsteadOfFailingClaim()

@@ -193,7 +193,6 @@ public sealed partial class WorkerV011Tests
     [InlineData("blocked")]
     [InlineData("closed")]
     [InlineData("new-attempt")]
-    [InlineData("managed")]
     [InlineData("corrupt")]
     [InlineData("corrupt-terminal")]
     [InlineData("inconsistent-terminal")]
@@ -217,7 +216,6 @@ public sealed partial class WorkerV011Tests
             case "blocked": h.GitHub.CompletionLabels = ["blocked"]; break;
             case "closed": h.GitHub.Closed = true; break;
             case "new-attempt": await history.CreateAsync(pending with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2 }); break;
-            case "managed": pending = pending with { ServerExecutionId = "original-managed-execution" }; h.Git.RemoteContainsIntegration = false; break;
             case "corrupt": pending = pending with { CompletionJson = "{" }; break;
             case "corrupt-terminal":
                 pending = pending with { CompletionJson = "{" };
@@ -241,11 +239,12 @@ public sealed partial class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, false)]
-    [InlineData(true, true)]
-    [InlineData(false, true)]
-    public async Task ManagedHistoricalCompletionOnlyQuarantinesProvenIntegration(bool remoteContainsCommit, bool legacy)
+    [InlineData(true, false, false)]
+    [InlineData(false, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    public async Task ManagedHistoricalCompletionQuarantinesWithoutReplayingEffects(bool remoteContainsCommit, bool legacy, bool withoutCommit)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
@@ -280,6 +279,17 @@ public sealed partial class WorkerV011Tests
             command.Parameters.AddWithValue("$id", pending.ExecutionId.ToString());
             await command.ExecuteNonQueryAsync();
         }
+        if (withoutCommit)
+        {
+            // Validation passed but the execution stopped before integration recorded a commit.
+            pending = pending with { CommitSha = null, IntegrationBranch = null };
+            await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database.Path}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE executions SET commit_sha=NULL, integration_branch=NULL WHERE execution_id=$id";
+            command.Parameters.AddWithValue("$id", pending.ExecutionId.ToString());
+            await command.ExecuteNonQueryAsync();
+        }
         h.Git.RemoteContainsIntegration = remoteContainsCommit;
         var config = h.Worker.Configuration;
         var global = new GlobalWorkerConfiguration();
@@ -293,24 +303,18 @@ public sealed partial class WorkerV011Tests
         Assert.Equal(pending.AssignmentId, retained.AssignmentId);
         Assert.Equal(pending.OwnershipGeneration, retained.OwnershipGeneration);
         Assert.Equal(pending.CommitSha, retained.CommitSha);
-        if (remoteContainsCommit)
-        {
-            Assert.Equal("managed-completion-quarantined", retained.RecoveryState);
-            Assert.False(WorkerHost.NeedsCompletionReconciliation(retained));
-            Assert.Equal(ProjectLifecycleState.Enabled, runtime.Registry.Get(config.Project.Name)?.State);
-            Assert.True(runtime.Registry.TryReserve(config.Project.Name, config));
-            runtime.Registry.Release(config.Project.Name);
-        }
-        else
-        {
-            Assert.True(WorkerHost.NeedsCompletionReconciliation(retained));
-            Assert.Equal(ProjectLifecycleState.Unavailable, runtime.Registry.Get(config.Project.Name)?.State);
-        }
+        // Proven integration is quarantined; a commit absent from the remote base or never
+        // recorded is not integrated. Neither fences the project or replays completion effects.
+        var expectedState = remoteContainsCommit && !withoutCommit ? "managed-completion-quarantined" : "managed-not-integrated";
+        Assert.Equal(expectedState, retained.RecoveryState);
+        Assert.False(WorkerHost.NeedsCompletionReconciliation(retained));
+        Assert.Equal(ProjectLifecycleState.Enabled, runtime.Registry.Get(config.Project.Name)?.State);
+        Assert.True(runtime.Registry.TryReserve(config.Project.Name, config));
+        runtime.Registry.Release(config.Project.Name);
         Assert.Empty(h.GitHub.Comments);
         Assert.DoesNotContain("working->done", h.GitHub.Labels);
         Assert.Equal(0, h.GitHub.CloseCalls);
         Assert.Single(h.Codex.Issues);
-        if (remoteContainsCommit)
         {
             using var reopened = new ExecutionHistoryStore(database.Path);
             var restartedEntry = await reopened.ReadExecutionAsync(pending.ExecutionId);
@@ -323,7 +327,7 @@ public sealed partial class WorkerV011Tests
             h.GitHub.ReturnDistinctIssues = true;
             Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
             Assert.Equal(2, h.Codex.Issues.Count);
-            Assert.Equal("managed-completion-quarantined", (await reopened.ReadExecutionAsync(pending.ExecutionId))?.RecoveryState);
+            Assert.Equal(expectedState, (await reopened.ReadExecutionAsync(pending.ExecutionId))?.RecoveryState);
         }
     }
 

@@ -53,6 +53,7 @@ public static class ExecutionMaintenanceClassifier
                 "preparation-failed" => "preparation-resource-proof-missing",
                 "missing" => "workspace-missing",
                 "managed-completion-quarantined" => "managed-completion-quarantined",
+                ExecutionHistoryStore.ManagedNotIntegratedState => "managed-not-integrated",
                 "uncertain" or "integration-conflict" or "integration-conflict-unavailable" or
                     "integration-recovery-interrupted" or "standalone-retiring" or "standalone-continuing" => "recovery-ambiguous",
                 "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or

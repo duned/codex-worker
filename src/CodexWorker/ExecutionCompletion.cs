@@ -163,10 +163,17 @@ public sealed partial class Worker
     {
         // Caller holds the repository gate. No GitHub effects or resource cleanup.
         if (history is null) throw new WorkerInfrastructureException("Completion history is unavailable.");
-        if (!await git.VerifyRemoteIntegrationAsync(entry, ct))
-            throw new WorkerInfrastructureException("Authoritative remote base is missing the exact validated integration commit; managed completion cannot be quarantined safely.");
-        var reason = "Managed completion quarantined: current Server ownership of the original execution is unavailable; manual reconciliation required. Exact validated integration commit verified on authoritative remote base; no completion effects replayed.";
-        await history.QuarantineCompletionAsync(entry.ExecutionId, reason, ct);
+        // The Server owns the managed lifecycle; local history only decides whether this old
+        // execution may still fence the project. The integration commit is recorded before
+        // any base push, so a missing commit or one verifiably absent from the fetched
+        // authoritative base proves nothing was integrated. Resources stay preserved.
+        var integrated = entry.CommitSha is not null && await git.VerifyRemoteIntegrationAsync(entry, ct);
+        var reason = integrated
+            ? "Managed completion quarantined: current Server ownership of the original execution is unavailable; manual reconciliation required. Exact validated integration commit verified on authoritative remote base; no completion effects replayed."
+            : entry.CommitSha is null
+                ? "Managed execution not integrated: it stopped before recording an integration commit, so nothing reached the base branch. The Server owns retry; no completion effects replayed and resources are preserved."
+                : "Managed execution not integrated: the fetched authoritative base does not contain the recorded integration commit. The Server owns retry; no completion effects replayed and resources are preserved.";
+        await history.QuarantineCompletionAsync(entry.ExecutionId, integrated, reason, ct);
         _operationalLog(ManagedExecutionLog.Execution(entry, reason, config.Environment.Variables.Values.ToArray()));
     }
 

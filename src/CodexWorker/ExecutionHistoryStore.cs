@@ -269,11 +269,15 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         catch (SqliteException ex) { throw PersistenceFailure("update execution recovery metadata", ex); }
     }
 
-    public async Task QuarantineCompletionAsync(Guid executionId, string reason, CancellationToken ct = default)
+    /// <summary>Stops a historical managed completion from fencing scheduling. Integrated work is
+    /// quarantined until Server reconciliation; work that never reached the base is recorded as
+    /// not integrated so the Server may assign the Issue again.</summary>
+    public async Task QuarantineCompletionAsync(Guid executionId, bool integrated, string reason, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE executions SET recovery_state='managed-completion-quarantined', reporting_failure=CASE WHEN recovery_state='managed-completion-quarantined' THEN reporting_failure WHEN reporting_failure IS NULL THEN $reason ELSE reporting_failure || char(10) || $reason END WHERE execution_id=$id";
+        command.CommandText = "UPDATE executions SET recovery_state=$state, reporting_failure=CASE WHEN recovery_state=$state THEN reporting_failure WHEN reporting_failure IS NULL THEN $reason ELSE reporting_failure || char(10) || $reason END WHERE execution_id=$id";
+        command.Parameters.AddWithValue("$state", integrated ? ManagedCompletionQuarantinedState : ManagedNotIntegratedState);
         command.Parameters.AddWithValue("$id", executionId.ToString());
         command.Parameters.AddWithValue("$reason", reason);
         try
@@ -283,6 +287,9 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         }
         catch (SqliteException ex) { throw PersistenceFailure("quarantine managed completion", ex); }
     }
+
+    public const string ManagedCompletionQuarantinedState = "managed-completion-quarantined";
+    public const string ManagedNotIntegratedState = "managed-not-integrated";
 
     public async Task<string?> ReadServerReportDispositionAsync(Guid executionId, CancellationToken ct = default)
     {

@@ -128,6 +128,8 @@ public sealed partial class GitRepository
             return Result("review", "preparation-resource-proof-missing", "Preparation failed; verify retained resources before cleanup.");
         if (entry.RecoveryState == "managed-completion-quarantined")
             return Result("review", "managed-completion-quarantined", "Managed completion requires Server reconciliation.");
+        if (entry.RecoveryState == ExecutionHistoryStore.ManagedNotIntegratedState)
+            return Result("review", "managed-not-integrated", "Validated work never reached the base branch; resources are retained for review.");
         if (entry.RecoveryState == "standalone-retired")
             return Result("keep", "retired-commits-retained", "Standalone attempt was safely retired; its feature commits remain retained in the original branch.");
         if (!acknowledged && entry.RecoveryState == "operator-acknowledged")

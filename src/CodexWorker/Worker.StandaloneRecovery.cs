@@ -31,7 +31,7 @@ public sealed partial class Worker
 
     private static bool OwnsStandaloneHistory(ExecutionHistoryEntry entry) =>
         entry.ServerExecutionId is null && entry.AssignmentId is null && entry.OwnershipGeneration is null &&
-        entry.RecoveryState is not ("operator-acknowledged" or "standalone-success-reconciled" or "managed-completion-quarantined");
+        entry.RecoveryState is not ("operator-acknowledged" or "standalone-success-reconciled" or "managed-completion-quarantined" or ExecutionHistoryStore.ManagedNotIntegratedState);
 
     internal bool HandlesStandaloneRecovery(ExecutionHistoryEntry entry) => serverSettings?.Enabled != true && IsStandaloneRecoveryHistory(entry);
 

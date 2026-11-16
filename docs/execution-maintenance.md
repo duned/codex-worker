@@ -38,7 +38,7 @@ Recovery and reporting take precedence over terminal outcomes and age. The mappi
 | Integration recovery claim | `retained-review` / `recovery-claimed` |
 | `recoverable`, `cleanup-pending` | `recoverable` / `workspace-recoverable`, `cleanup-pending`, regardless of expiry or age |
 | `uncertain`, integration conflict/unavailable/interrupted | `retained-review` / `recovery-ambiguous` |
-| `missing`, `preparation-failed`, `managed-completion-quarantined` | `retained-review` / `workspace-missing`, `preparation-resource-proof-missing`, `managed-completion-quarantined` |
+| `missing`, `preparation-failed`, `managed-completion-quarantined`, `managed-not-integrated` | `retained-review` / `workspace-missing`, `preparation-resource-proof-missing`, `managed-completion-quarantined`, `managed-not-integrated` |
 | Codex interrupted/resuming/exhausted/inspection-required | `retained-review` / `codex-recovery-pending` |
 | Codex recovered/recovery-finished, integration-recovered, superseded | `retained-review` / `recovery-transfer-unverified`: consumption does not prove source cleanup or successful descendant lineage |
 | `github-reconciled` | `retained-review` / `github-resource-proof-missing`: verifies Issue eligibility, not completion delivery or local resources |

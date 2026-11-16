@@ -17,7 +17,13 @@ compatible exact remote commit/base provenance, and also cannot authorize replay
 Independent managed assignments may proceed; assigning the quarantined Issue again
 is rejected before claiming or implementation. Subsequent startup and assignment
 preparation skip this quarantined completion. No GitHub effect is performed.
-Missing, corrupt or incompatible provenance and an unverified integration still
+A historical managed execution that passed validation but never integrated is not a
+completion. The integration commit is recorded before any base push, so when no commit
+was recorded, or the fetched authoritative base does not contain the recorded commit,
+the Worker records `managed-not-integrated` instead. It neither fences the project nor
+blocks a new Server assignment for the Issue (for example **Retry from scratch**); its
+resources stay preserved for review and no GitHub effect is performed.
+Corrupt or incompatible completion provenance and a failed remote fetch still
 pause the project. Repository gates and execution worktree ownership checks remain
 in force.
 
