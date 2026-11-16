@@ -1,0 +1,364 @@
+<title>Codex Server · maqueta</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: fixed sidebar + one content column (max 1080px); every page opens with a single status line, then lists. Side panels slide over from the right. */
+:root {
+  color-scheme: dark;
+  --bg: #0c0e12; --surface: #13161b; --raised: #1a1d24; --border: #22262f; --border-strong: #373a41;
+  --fg: #f7f7f7; --fg-2: #cecfd2; --fg-3: #94979c;
+  --brand: #9e77ed; --brand-solid: #7f56d9; --brand-soft: rgba(158,119,237,.14); --on-brand: #fff;
+  --ok: #47cd89; --ok-soft: rgba(71,205,137,.13); --warn: #fdb022; --warn-soft: rgba(253,176,34,.13);
+  --bad: #f97066; --bad-soft: rgba(249,112,102,.13); --info: #53b1fd; --info-soft: rgba(83,177,253,.13);
+  --shade: rgba(0,0,0,.6);
+  --font: "Inter", -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --mono: ui-monospace, "Roboto Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 12px;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  color-scheme: light;
+  --bg: #fafafa; --surface: #ffffff; --raised: #f5f5f6; --border: #e9eaeb; --border-strong: #d5d7da;
+  --fg: #181d27; --fg-2: #414651; --fg-3: #717680;
+  --brand: #6941c6; --brand-solid: #7f56d9; --brand-soft: rgba(127,86,217,.1); --on-brand: #fff;
+  --ok: #067647; --ok-soft: rgba(7,148,85,.1); --warn: #b54708; --warn-soft: rgba(220,104,3,.1);
+  --bad: #b42318; --bad-soft: rgba(217,45,32,.09); --info: #175cd3; --info-soft: rgba(21,112,239,.1);
+  --shade: rgba(10,13,18,.45);
+} }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #fafafa; --surface: #ffffff; --raised: #f5f5f6; --border: #e9eaeb; --border-strong: #d5d7da;
+  --fg: #181d27; --fg-2: #414651; --fg-3: #717680;
+  --brand: #6941c6; --brand-solid: #7f56d9; --brand-soft: rgba(127,86,217,.1); --on-brand: #fff;
+  --ok: #067647; --ok-soft: rgba(7,148,85,.1); --warn: #b54708; --warn-soft: rgba(220,104,3,.1);
+  --bad: #b42318; --bad-soft: rgba(217,45,32,.09); --info: #175cd3; --info-soft: rgba(21,112,239,.1);
+  --shade: rgba(10,13,18,.45);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font); }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 6px; }
+.app { display: grid; grid-template-columns: 272px minmax(0,1fr); min-height: 100%; }
+.side { border-right: 1px solid var(--border); padding: 20px 12px; display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; height: 100vh; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16px; padding: 4px 10px 18px; }
+.logo svg { color: var(--brand); }
+.nav a { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 8px; color: var(--fg-2); font-weight: 500; }
+.nav a:hover { background: var(--raised); }
+.nav a[aria-current="page"] { background: var(--raised); color: var(--fg); }
+.count { font-size: 12px; font-weight: 600; background: var(--bad-soft); color: var(--bad); border-radius: 99px; padding: 0 7px; }
+.side .foot { margin-top: auto; display: flex; flex-direction: column; gap: 12px; padding: 0 4px; }
+.eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3); }
+.srv { border: 1px solid var(--border); background: var(--surface); border-radius: 10px; padding: 10px 12px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 2px 8px; align-items: center; }
+.srv .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.srv strong { font-weight: 600; white-space: nowrap; } .srv .ver { font: 600 11px var(--mono); border: 1px solid var(--border-strong); border-radius: 6px; padding: 1px 6px; }
+.srv small { grid-column: 2 / -1; font-size: 11px; color: var(--fg-3); }
+.side .tools { display: flex; gap: 6px; align-items: center; } .side .tools select { flex: 1; min-width: 96px; padding: 6px 8px; font-size: 13px; }
+.icon-btn { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--surface); display: grid; place-items: center; color: var(--warn); flex: none; }
+.link-btn { background: none; border: 0; color: var(--fg-2); font-weight: 600; font-size: 13px; padding: 6px 4px; white-space: nowrap; }
+.side .about { border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--fg-3); }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 18px; border-bottom: 1px solid var(--border); }
+.filters input { flex: 1 1 220px; } .filters select { flex: 0 1 190px; width: auto; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.tile { border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius); padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; }
+.tile .v { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.tile .v::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); }
+.tile.ok .v::before { background: var(--ok); } .tile.bad .v::before { background: var(--bad); } .tile.warn .v::before { background: var(--warn); } .tile.run .v::before { background: var(--info); }
+.cols-w { grid-template-columns: minmax(0,1.5fr) minmax(0,1.1fr) minmax(0,1.6fr) 90px minmax(0,1.1fr); }
+.conn { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; } .conn::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.conn.off::before { background: var(--fg-3); } .conn.off { color: var(--fg-3); }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; } .tag { font-size: 12px; border: 1px solid var(--border-strong); border-radius: 6px; padding: 1px 7px; color: var(--fg-2); }
+.stack { display: flex; flex-direction: column; gap: 24px; min-width: 0; } .acts { display: flex; flex-direction: column; gap: 8px; } .acts .btn { text-align: left; }
+.prose { color: var(--fg-2); max-width: 65ch; } .prose p { margin: 0 0 10px; } .prose ul { margin: 0; padding-left: 18px; }
+main { padding-block: 28px 64px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.page { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; padding-inline: 12px; }
+.crumbs { font-size: 13px; color: var(--fg-3); display: flex; gap: 6px; flex-wrap: wrap; }
+.crumbs a:hover { color: var(--fg); }
+.head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+h1 { font-size: 24px; line-height: 1.25; font-weight: 600; margin: 0; text-wrap: balance; }
+h2 { font-size: 16px; font-weight: 600; margin: 0; }
+.sub { color: var(--fg-3); margin: 4px 0 0; max-width: 65ch; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.btn { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 8px; padding: 7px 13px; font-weight: 600; font-size: 13px; }
+.btn:hover { background: var(--raised); }
+.btn.primary { background: var(--brand-solid); border-color: var(--brand-solid); color: var(--on-brand); }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.danger { color: var(--bad); }
+.btn.sm { padding: 4px 10px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.card > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.card > .body { padding: 16px 18px; }
+.list > * { display: grid; gap: 4px 16px; padding: 13px 18px; border-bottom: 1px solid var(--border); align-items: center; }
+.list > *:last-child { border-bottom: 0; }
+a.item:hover { background: var(--raised); }
+.cols-4 { grid-template-columns: minmax(0,2.2fr) minmax(0,1.2fr) minmax(0,1.2fr) auto; }
+.cols-5 { grid-template-columns: minmax(0,2fr) minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr) auto; }
+.thead { font-size: 12px; font-weight: 600; color: var(--fg-3); background: var(--raised); padding-block: 9px; }
+.t { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.m { color: var(--fg-3); font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 99px; white-space: nowrap; border: 1px solid transparent; }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.ok { color: var(--ok); background: var(--ok-soft); } .pill.bad { color: var(--bad); background: var(--bad-soft); }
+.pill.warn { color: var(--warn); background: var(--warn-soft); } .pill.run { color: var(--info); background: var(--info-soft); }
+.pill.idle { color: var(--fg-3); background: var(--raised); border-color: var(--border); }
+.status { display: flex; gap: 12px; align-items: center; padding: 14px 18px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); }
+.status .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.status.bad .dot { background: var(--bad); } .status.ok .dot { background: var(--ok); }
+.status strong { font-weight: 600; }
+.attn { display: grid; grid-template-columns: minmax(0,1fr) auto; }
+.attn .why { color: var(--fg-2); max-width: 70ch; }
+.steps { display: flex; gap: 4px; }
+.steps span { flex: 1; min-width: 0; font-size: 12px; color: var(--fg-3); padding-top: 8px; border-top: 3px solid var(--border-strong); }
+.steps .done { border-color: var(--ok); color: var(--fg-2); }
+.steps .now { border-color: var(--info); color: var(--fg); font-weight: 600; }
+.steps .fail { border-color: var(--bad); color: var(--bad); font-weight: 600; }
+.steps small { display: block; font-weight: 400; color: var(--fg-3); }
+.grid2 { display: grid; grid-template-columns: minmax(0,2fr) minmax(0,1fr); gap: 24px; align-items: start; }
+dl { margin: 0; display: grid; grid-template-columns: auto minmax(0,1fr); gap: 9px 18px; }
+dt { color: var(--fg-3); } dd { margin: 0; overflow-wrap: anywhere; }
+.what { border-left: 3px solid var(--bad); padding: 2px 0 2px 14px; display: flex; flex-direction: column; gap: 10px; }
+.what b { display: block; font-size: 12px; color: var(--fg-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--border); }
+.tabs button { background: none; border: 0; padding: 0 0 10px; font-weight: 600; color: var(--fg-3); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button[aria-selected="true"] { color: var(--fg); border-color: var(--brand); }
+details { border-top: 1px solid var(--border); padding: 12px 18px; }
+summary { cursor: pointer; color: var(--fg-2); font-weight: 500; }
+pre { margin: 10px 0 0; font: 12px/1.6 var(--mono); color: var(--fg-2); background: var(--raised); border-radius: 8px; padding: 12px; overflow-x: auto; }
+.slots { display: flex; gap: 4px; } .slots i { width: 22px; height: 8px; border-radius: 3px; background: var(--border-strong); } .slots i.on { background: var(--brand); }
+/* side panel */
+.shade { position: fixed; inset: 0; background: var(--shade); z-index: 20; }
+.panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100%); background: var(--surface); border-left: 1px solid var(--border); z-index: 21; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.panel > header, .panel > footer { padding: 18px 22px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.panel > header { border-bottom: 1px solid var(--border); } .panel > footer { border-top: 1px solid var(--border); justify-content: flex-end; }
+.panel form { padding: 20px 22px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 18px; }
+label { display: flex; flex-direction: column; gap: 6px; font-weight: 500; color: var(--fg-2); font-size: 13px; }
+label small { font-weight: 400; color: var(--fg-3); }
+input[type=text], input[type=number], select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 11px; width: 100%; }
+label.check { flex-direction: row; align-items: flex-start; gap: 10px; } label.check input { margin-top: 3px; accent-color: var(--brand-solid); }
+.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 9px 16px; border-radius: 8px; font-weight: 500; z-index: 30; }
+.note { font-size: 12px; color: var(--fg-3); }
+@media (max-width: 860px) {
+  .app { grid-template-columns: minmax(0,1fr); }
+  .side { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 12px max(16px, env(safe-area-inset-left, 0px)); }
+  .logo { padding-bottom: 8px; } .nav { display: flex; flex-wrap: wrap; gap: 4px; } .side .foot { margin-top: 8px; } .side .foot .eyebrow, .side .about { display: none; }
+  .page { padding-inline: 0; } .grid2 { grid-template-columns: minmax(0,1fr); }
+  .cols-4, .cols-5, .cols-w, .attn { grid-template-columns: minmax(0,1fr); } .thead { display: none; }
+  .steps { flex-direction: column; } .steps span { border-top: 0; border-left: 3px solid var(--border-strong); padding: 2px 0 2px 10px; }
+  .steps .done { border-color: var(--ok); } .steps .now { border-color: var(--info); } .steps .fail { border-color: var(--bad); }
+}
+.steps span { position: relative; } .steps .now::before { content: ""; position: absolute; top: -3px; left: 0; height: 3px; width: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent); background-size: 40% 100%; background-repeat: no-repeat; }
+@media (max-width: 860px) { .steps .now::before { top: 0; left: -3px; width: 3px; height: 100%; background-size: 100% 40%; } }
+@media (prefers-reduced-motion: no-preference) {
+  .panel { animation: in .18s ease-out; } @keyframes in { from { transform: translateX(24px); opacity: .6; } }
+  .pill.run::before, .conn.live::before, .tile.run .v::before { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; } 50% { box-shadow: 0 0 0 4px transparent; opacity: .45; } }
+  .tile.run .v::before { color: var(--info); }
+  .steps .now::before { animation: sweep 1.6s linear infinite; } @keyframes sweep { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+  @media (max-width: 860px) { .steps .now::before { animation-name: sweepv; } @keyframes sweepv { from { background-position: 0 -40%; } to { background-position: 0 140%; } } }
+  .slots i.on { background-image: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent); background-size: 200% 100%; animation: slot 2s linear infinite; } @keyframes slot { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+}
+</style>
+
+<div class="app">
+  <aside class="side">
+    <div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>Codex Server</div>
+    <nav class="nav" id="nav"></nav>
+    <div class="foot">
+      <span class="eyebrow">Administración del servidor</span>
+      <div class="srv"><span class="dot"></span><strong>Servidor listo</strong><span class="ver">v0.34.11</span><small>Actualizado 16/11/2026, 16:21:37</small></div>
+      <div class="tools"><select id="lang" aria-label="Idioma"><option>Español</option><option>English</option></select><button class="icon-btn" id="theme" aria-label="Cambiar entre tema claro y oscuro"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.500 17.500 19 19M5 19l1.500-1.500M17.500 6.500 19 5"/></svg></button><button class="link-btn" data-toast="Cerrar sesión: acción de ejemplo">Cerrar sesión</button></div>
+      <div class="about"><span class="eyebrow">Codex Server</span><span>Plano de control · maqueta con datos de ejemplo</span></div>
+    </div>
+  </aside>
+  <main id="main"></main>
+</div>
+<div id="overlay"></div>
+
+<script>
+// ---- Datos de ejemplo ----
+const projects = [
+  { id: 'dotnet-rewrite', name: 'dotnet-rewrite', repo: 'duned/dotnet-rewrite', base: 'main', parallel: 2, validation: 'dotnet test', engine: 'Codex', auto: true },
+  { id: 'finance', name: 'Finance', repo: 'duned/finance', base: 'dev', parallel: 1, validation: 'dotnet test', engine: 'Codex', auto: true },
+  { id: 'codex-worker', name: 'Codex Worker', repo: 'duned/codex-worker', base: 'main', parallel: 2, validation: 'python3 tools/validate.py --base main', engine: 'Codex', auto: false },
+];
+const workers = [
+  { id: 'vm1', name: 'VM1', state: 'run', label: 'Trabajando', online: true, sched: 'ok', slots: 2, used: 2, seen: 'hace 12 s', version: '0.34.11', mode: 'Gestionado', engine: 'Codex', paused: false },
+  { id: 'vm2', name: 'VM2', state: 'bad', label: 'Necesita atención', online: true, sched: 'blocked', slots: 2, used: 0, seen: 'hace 8 s', version: '0.34.11', mode: 'Gestionado', engine: 'Codex', paused: false, problem: 'La sesión de Codex ha caducado. No puede aceptar trabajo hasta volver a iniciar sesión.' },
+  { id: 'local', name: 'Portátil (standalone)', state: 'run', label: 'Trabajando', online: true, sched: 'ok', slots: 1, used: 1, seen: 'hace 40 s', version: '0.34.10', mode: 'Standalone', engine: 'Codex', paused: false },
+  { id: 'vm3', name: 'VM3', state: 'idle', label: 'Sin conexión', online: false, sched: 'paused', slots: 2, used: 0, seen: 'hace 2 h', version: '0.34.9', mode: 'Gestionado', engine: 'Codex', paused: true },
+];
+const STAGES = ['Preparar', 'Implementar', 'Validar', 'Integrar', 'Informar'];
+const issues = [
+  { n: 45, p: 'dotnet-rewrite', title: 'Migrar el módulo de facturación a minimal APIs', state: 'run', label: 'En curso', blockedBy: [] },
+  { n: 46, p: 'dotnet-rewrite', title: 'Añadir paginación al listado de clientes', state: 'run', label: 'En curso', blockedBy: [] },
+  { n: 44, p: 'dotnet-rewrite', title: 'Sustituir AutoMapper por mapeos explícitos', state: 'bad', label: 'Conflicto al integrar', blockedBy: [] },
+  { n: 47, p: 'dotnet-rewrite', title: 'Tests de contrato para la API de pedidos', state: 'idle', label: 'En cola', blockedBy: [45] },
+  { n: 43, p: 'dotnet-rewrite', title: 'Extraer la configuración a opciones tipadas', state: 'ok', label: 'Integrada', blockedBy: [] },
+  { n: 212, p: 'finance', title: 'Exportar el libro mayor a CSV', state: 'run', label: 'En curso', blockedBy: [] },
+  { n: 211, p: 'finance', title: 'Corregir el redondeo del IVA en facturas rectificativas', state: 'ok', label: 'Integrada', blockedBy: [] },
+  { n: 505, p: 'codex-worker', title: 'Separar los tests de Git en su propio ensamblado', state: 'ok', label: 'Integrada', blockedBy: [] },
+];
+const executions = [
+  { id: 'e-7f3a21c', issue: 45, p: 'dotnet-rewrite', w: 'vm1', state: 'run', label: 'Implementando', stage: 1, started: 'hace 14 min', dur: ['0:22', '13:40'], attempt: 1 },
+  { id: 'e-2b90d4e', issue: 46, p: 'dotnet-rewrite', w: 'vm1', state: 'run', label: 'Validando', stage: 2, started: 'hace 31 min', dur: ['0:19', '27:05', '3:12'], attempt: 1 },
+  { id: 'e-c41e880', issue: 212, p: 'finance', w: 'local', state: 'run', label: 'Integrando', stage: 3, started: 'hace 48 min', dur: ['0:31', '38:10', '8:02', '0:40'], attempt: 2 },
+  { id: 'e-91ad0f2', issue: 44, p: 'dotnet-rewrite', w: 'vm2', state: 'bad', label: 'Conflicto al integrar', stage: 3, failed: true, started: 'hoy 10:12', dur: ['0:24', '41:17', '4:48', '0:09'], attempt: 1,
+    what: 'Los cambios de esta issue tocan las mismas líneas de OrderMapper.cs que la issue #43, que se integró antes.',
+    todo: 'Reintentar desde la rama base actual. El trabajo hecho se conserva en la rama feature/44 por si quieres revisarlo.',
+    tech: 'git rebase main\nCONFLICT (content): Merge conflict in src/Orders/OrderMapper.cs\nrama conservada: feature/sustituir-automapper-44\ncommit: 25e200a · base: 4daede9' },
+  { id: 'e-5d02b77', issue: 43, p: 'dotnet-rewrite', w: 'vm1', state: 'ok', label: 'Integrada', stage: 5, started: 'hoy 09:20', dur: ['0:21', '33:02', '4:51', '0:38', '0:04'], attempt: 1, commit: '4daede9' },
+  { id: 'e-a8813c0', issue: 211, p: 'finance', w: 'local', state: 'ok', label: 'Integrada', stage: 5, started: 'ayer 18:02', dur: ['0:28', '22:45', '7:58', '0:35', '0:05'], attempt: 1, commit: 'b71c3e0' },
+  { id: 'e-33f19aa', issue: 505, p: 'codex-worker', w: 'vm1', state: 'ok', label: 'Integrada', stage: 5, started: 'ayer 16:40', dur: ['0:30', '51:12', '2:06', '0:41', '0:05'], attempt: 1, commit: '55f1294' },
+];
+const attention = [
+  { title: '#44 no se pudo integrar en dotnet-rewrite', why: 'Sus cambios chocan con la issue #43, integrada antes. El trabajo está guardado.', href: '#ejecucion-e-91ad0f2', actions: ['Reintentar desde cero', 'Ver detalle'] },
+  { title: 'VM2 no puede trabajar', why: 'La sesión de Codex ha caducado en ese Worker.', href: '#worker-vm2', actions: ['Iniciar sesión en Codex', 'Ver Worker'] },
+];
+const P = id => projects.find(p => p.id === id), W = id => workers.find(w => w.id === id), I = n => issues.find(i => i.n === n);
+const SCHED = { ok: ['ok', 'Acepta trabajo', 'Recoge issues nuevas en cuanto tiene un hueco libre.'], paused: ['warn', 'Pausado', 'Termina lo que tiene y no recoge issues nuevas hasta que lo reanudes.'], blocked: ['bad', 'No acepta trabajo', 'No puede recoger issues hasta resolver el problema indicado.'] };
+const filters = (list, placeholder, options) => `<div class="filters" data-filter="${list}"><input type="text" id="${list}-q" placeholder="${placeholder}" aria-label="${placeholder}"><select id="${list}-s" aria-label="Filtrar por estado"><option value="">Todos los estados</option>${options.map(o => `<option value="${o[0]}">${o[1]}</option>`).join('')}</select></div>`;
+const ISSUE_STATES = [['idle', 'En cola'], ['run', 'En curso'], ['ok', 'Integrada'], ['bad', 'Necesita atención']];
+const pill = (s, l) => `<span class="pill ${s}">${l}</span>`;
+const steps = e => `<div class="steps">${STAGES.map((s, i) => { const c = e.failed && i === e.stage ? 'fail' : i < e.stage ? 'done' : i === e.stage ? 'now' : ''; return `<span class="${c}">${s}<small class="num">${e.dur[i] ?? '—'}</small></span>`; }).join('')}</div>`;
+const execRow = e => `<a class="item cols-5" data-s="${e.state}" href="#ejecucion-${e.id}"><span class="t">#${e.issue} · ${I(e.issue).title}</span><span class="m">${P(e.p).name}</span><span class="m">${W(e.w).name}</span><span class="m num">${e.started}</span>${pill(e.state, e.label)}</a>`;
+const act = (label, cls = '') => `<button class="btn sm ${cls}" data-toast="${label}: acción de ejemplo">${label}</button>`;
+
+// ---- Pantallas ----
+const views = {
+  inicio() {
+    const running = executions.filter(e => e.state === 'run'), done = executions.filter(e => e.state !== 'run');
+    return `<div class="head"><div><h1>Inicio</h1><p class="sub">${workers.length} Workers, ${running.length} issues en curso, ${issues.filter(i => i.state === 'idle').length} en cola.</p></div></div>
+    <div class="status bad"><span class="dot"></span><span><strong>${attention.length} cosas requieren tu atención.</strong> El resto funciona con normalidad.</span></div>
+    <section class="card"><header><h2>Requiere tu atención</h2></header><div class="list">${attention.map(a => `<div class="attn"><div><div class="t">${a.title}</div><div class="why">${a.why}</div></div><div class="row"><button class="btn sm primary" data-toast="${a.actions[0]}: acción de ejemplo">${a.actions[0]}</button><a class="btn sm" href="${a.href}">${a.actions[1]}</a></div></div>`).join('')}</div></section>
+    <section class="card"><header><h2>En curso</h2><a class="m" href="#proyectos">Ver proyectos</a></header><div class="list">${running.map(e => `<a class="item" href="#ejecucion-${e.id}" style="grid-template-columns:minmax(0,1fr)"><div class="row" style="justify-content:space-between"><span class="t">#${e.issue} · ${I(e.issue).title}</span><span class="m">${P(e.p).name} · ${W(e.w).name} · ${e.started}</span></div>${steps(e)}</a>`).join('')}</div></section>
+    <section class="card"><header><h2>Últimas ejecuciones terminadas</h2></header>${filters('le', 'Buscar por issue, proyecto o Worker', [['ok', 'Integrada'], ['bad', 'Con problemas']])}<div class="list" id="le">${done.map(execRow).join('')}</div></section>`;
+  },
+  proyectos() {
+    return `<div class="head"><div><h1>Proyectos</h1><p class="sub">Repositorios cuyas issues reparte el servidor entre los Workers.</p></div><button class="btn primary" data-panel="proyecto-nuevo">Añadir proyecto</button></div>
+    <section class="card">${filters('lp', 'Buscar por nombre o repositorio', [['ok', 'Activo'], ['bad', 'Necesita atención']])}<div class="list" id="lp"><div class="cols-5 thead"><span>Proyecto</span><span>Repositorio</span><span>En curso</span><span>En cola</span><span>Estado</span></div>
+    ${projects.map(p => { const li = issues.filter(i => i.p === p.id), bad = li.some(i => i.state === 'bad'); return `<a class="item cols-5" data-s="${bad ? 'bad' : 'ok'}" href="#proyecto-${p.id}"><span class="t">${p.name}</span><span class="m">${p.repo} · ${p.base}</span><span class="m num">${li.filter(i => i.state === 'run').length}</span><span class="m num">${li.filter(i => i.state === 'idle').length}</span>${bad ? pill('bad', 'Necesita atención') : pill('ok', 'Activo')}</a>`; }).join('')}</div></section>`;
+  },
+  proyecto(id) {
+    const p = P(id), li = issues.filter(i => i.p === id);
+    return `<div class="crumbs"><a href="#proyectos">Proyectos</a><span>/</span><span>${p.name}</span></div>
+    <div class="head"><div><h1>${p.name}</h1><p class="sub">${p.repo} · se integra en <span class="mono">${p.base}</span></p></div><div class="row"><button class="btn" data-panel="issue-nueva-${id}">Añadir issue a la cola</button><button class="btn primary" data-panel="proyecto-${id}">Editar proyecto</button></div></div>
+    <div class="grid2"><section class="card"><header><h2>Issues</h2><span class="m">${li.length} en total</span></header>${filters('li', 'Buscar por número o título', ISSUE_STATES)}<div class="list" id="li">${li.map(i => `<a class="item" data-s="${i.state}" href="#issue-${i.n}" style="grid-template-columns:minmax(0,1fr) auto"><span><span class="t">#${i.n} · ${i.title}</span>${i.blockedBy.length ? `<div class="m">Espera a #${i.blockedBy.join(', #')}</div>` : ''}</span>${pill(i.state, i.label)}</a>`).join('')}</div></section>
+    <section class="card"><header><h2>Configuración</h2></header><div class="body"><dl><dt>Rama base</dt><dd class="mono">${p.base}</dd><dt>En paralelo</dt><dd>hasta ${p.parallel} issues</dd><dt>Validación</dt><dd class="mono">${p.validation}</dd><dt>Motor</dt><dd>${p.engine}</dd><dt>Recogida</dt><dd>${p.auto ? 'Automática: issues con la etiqueta codex-ready' : 'Manual: solo las que añadas a la cola'}</dd><dt>Workers</dt><dd>${workers.filter(w => w.mode === 'Gestionado').map(w => `<a href="#worker-${w.id}">${w.name}</a>`).join(', ')}</dd></dl></div></section></div>`;
+  },
+  workers() {
+    return `<div class="head"><div><h1>Workers</h1><p class="sub">Máquinas que recogen issues y las implementan.</p></div><button class="btn primary" data-panel="worker-nuevo">Conectar un Worker</button></div>
+    <section class="card">${filters('lw', 'Buscar por nombre', [['on', 'En línea'], ['off', 'Sin conexión'], ['ok', 'Acepta trabajo'], ['paused', 'Pausado'], ['blocked', 'No acepta trabajo']])}<div class="list" id="lw"><div class="cols-w thead"><span>Worker</span><span>Conexión</span><span>Actividad</span><span>Huecos</span><span>Planificación</span></div>
+    ${workers.map(w => { const e = executions.filter(x => x.w === w.id && x.state === 'run'), s = SCHED[w.sched]; return `<a class="item cols-w" data-s="${w.online ? 'on' : 'off'} ${w.sched}" href="#worker-${w.id}"><span><span class="t">${w.name}</span><div class="m">${w.mode} · v${w.version}</div></span><span><span class="conn ${w.online ? '' : 'off'}">${w.online ? 'En línea' : 'Sin conexión'}</span><div class="m num">última señal ${w.seen}</div></span><span class="m">${!w.online ? 'No disponible' : w.problem ? 'Parado: sesión de Codex caducada' : e.length ? 'Trabajando en ' + e.map(x => '#' + x.issue).join(', ') : 'Libre, esperando issues'}</span><span><span class="t num">${w.used} / ${w.slots}</span><div class="slots">${Array.from({ length: w.slots }, (_, i) => `<i class="${i < w.used ? 'on' : ''}"></i>`).join('')}</div></span><span>${pill(s[0], s[1])}</span></a>`; }).join('')}</div></section>`;
+  },
+  worker(id) {
+    const w = W(id), run = executions.filter(e => e.w === id && e.state === 'run'), past = executions.filter(e => e.w === id && e.state !== 'run');
+    const tab = state.tab === 'diag' ? 'diag' : 'trabajo', s = SCHED[w.sched];
+    return `<div class="crumbs"><a href="#workers">Workers</a><span>/</span><span>${w.name}</span></div>
+    <div class="head"><div><h1>${w.name}</h1><p class="sub">${w.mode} · v${w.version}</p></div><div class="row"><button class="btn" data-toast="${w.paused ? 'Planificación reanudada' : 'Planificación pausada'}: acción de ejemplo">${w.paused ? 'Reanudar planificación' : 'Pausar planificación'}</button><button class="btn primary" data-panel="worker-${id}">Editar Worker</button></div></div>
+    ${w.problem ? `<div class="status bad"><span class="dot"></span><span style="flex:1"><strong>${w.problem}</strong></span><button class="btn sm primary" data-toast="Iniciar sesión en Codex: acción de ejemplo">Iniciar sesión en Codex</button></div>` : ''}
+    <div class="tiles"><div class="tile ${w.online ? 'ok' : ''}"><span class="eyebrow">Conexión</span><span class="v">${w.online ? 'En línea' : 'Sin conexión'}</span><span class="m num">Última señal ${w.seen}</span></div><div class="tile ${s[0]}"><span class="eyebrow">Planificación</span><span class="v">${s[1]}</span><span class="m">${s[2]}</span></div><div class="tile ${w.used ? 'run' : ''}"><span class="eyebrow">Huecos de trabajo</span><span class="v num">${w.used} de ${w.slots} ocupados</span><span class="m">${w.slots - w.used} libres para issues nuevas</span></div></div>
+    <div class="tabs" role="tablist"><button role="tab" aria-selected="${tab === 'trabajo'}" data-tab="trabajo">Trabajo</button><button role="tab" aria-selected="${tab === 'diag'}" data-tab="diag">Diagnóstico</button></div>
+    ${tab === 'trabajo' ? `<section class="card"><header><h2>Ahora mismo</h2><span class="m num">${w.used} de ${w.slots} huecos ocupados</span></header><div class="list">${run.length ? run.map(e => `<a class="item" href="#ejecucion-${e.id}" style="grid-template-columns:minmax(0,1fr)"><div class="row" style="justify-content:space-between"><span class="t">#${e.issue} · ${I(e.issue).title}</span><span class="m">${P(e.p).name} · ${e.started}</span></div>${steps(e)}</a>`).join('') : `<div class="m">Sin trabajo asignado. Recogerá la siguiente issue lista de sus proyectos.</div>`}</div></section>
+    <section class="card"><header><h2>Trabajo reciente</h2></header><div class="list">${past.length ? past.map(execRow).join('') : '<div class="m">Todavía no ha terminado ninguna ejecución.</div>'}</div></section>`
+    : `<div class="grid2"><section class="card"><header><h2>Herramientas</h2>${act('Comprobar de nuevo')}</header><div class="list">${[['Git', '2.43', 'ok', 'Listo'], ['GitHub CLI', '2.62', 'ok', 'Sesión iniciada'], ['Codex CLI', '0.123', w.problem ? 'bad' : 'ok', w.problem ? 'Sesión caducada' : 'Sesión iniciada'], ['.NET SDK', '10.0.115', 'ok', 'Listo'], ['Claude Code', '—', 'idle', 'No instalado (opcional)']].map(c => `<div style="grid-template-columns:minmax(0,1fr) auto auto"><span class="t">${c[0]}</span><span class="m num">${c[1]}</span>${pill(c[2], c[3])}</div>`).join('')}</div></section>
+    <section class="card"><header><h2>Máquina</h2></header><div class="body"><dl><dt>Sistema</dt><dd>Ubuntu 24.04 · 4 CPU</dd><dt>CPU</dt><dd class="num">${w.used ? '63 %' : '4 %'}</dd><dt>Memoria</dt><dd class="num">5,1 de 16 GB</dd><dt>Disco libre</dt><dd class="num">41 GB</dd><dt>Identificador</dt><dd class="mono">${id}-8c1f02a</dd></dl></div>
+    <details><summary>Registro del servicio (últimas líneas)</summary><pre>10:12:04 heartbeat ok\n10:12:09 ${w.problem ? 'codex login status: sesión caducada' : 'asignación recibida'}\n10:12:24 heartbeat ok</pre></details></section></div>`}`;
+  },
+  issue(n) {
+    const i = I(+n), p = P(i.p), runs = executions.filter(e => e.issue === i.n), blocks = issues.filter(x => x.blockedBy.includes(i.n)), last = runs[0];
+    const ghLabel = { run: 'codex-working', ok: 'codex-done', bad: 'codex-integration-conflict', idle: 'codex-ready' }[i.state];
+    const actions = i.state === 'bad' ? ['Reintentar desde cero', 'Reintentar solo la integración', 'Descartar el trabajo guardado'] : i.state === 'run' ? ['Cancelar la ejecución'] : i.state === 'idle' ? ['Subir en la cola', 'Quitar de la cola'] : ['Volver a ejecutar'];
+    return `<div class="crumbs"><a href="#proyectos">Proyectos</a><span>/</span><a href="#proyecto-${p.id}">${p.name}</a><span>/</span><span>#${i.n}</span></div>
+    <div class="head"><div><h1>#${i.n} · ${i.title}</h1><p class="sub">${pill(i.state, i.label)} &nbsp;${p.repo} · abierta por duned · actualizada ${last ? last.started : 'hoy 08:55'}</p></div><div class="row"><a class="btn" href="https://github.com/${p.repo}/issues/${i.n}">Abrir en GitHub</a><button class="btn primary" data-toast="${actions[0]}: acción de ejemplo">${actions[0]}</button></div></div>
+    ${i.state === 'bad' && last ? `<section class="card"><div class="body"><div class="what"><div><b>Qué ha pasado</b>${last.what}</div><div><b>Qué puedes hacer</b>${last.todo}</div></div></div></section>` : ''}
+    <div class="grid2"><div class="stack">
+      <section class="card"><header><h2>Descripción</h2><div class="tags"><span class="tag">${ghLabel}</span><span class="tag">backend</span></div></header><div class="body prose"><p><strong>Objetivo.</strong> ${i.title}, manteniendo el comportamiento actual y sin cambiar los contratos públicos.</p><p><strong>Criterios de aceptación</strong></p><ul><li>La validación del proyecto pasa (<span class="mono">${p.validation}</span>).</li><li>Los cambios quedan cubiertos por tests.</li><li>No se modifican ficheros fuera del módulo afectado.</li></ul></div></section>
+      <section class="card"><header><h2>Intentos</h2><span class="m">${runs.length || 'Ninguno'}</span></header><div class="list">${runs.length ? runs.map(e => `<a class="item" href="#ejecucion-${e.id}" style="grid-template-columns:minmax(0,1fr)"><div class="row" style="justify-content:space-between"><span class="t">Intento ${e.attempt} en ${W(e.w).name}</span><span class="row"><span class="m num">${e.started}</span>${pill(e.state, e.label)}</span></div>${steps(e)}</a>`).join('') : `<div class="m">${i.blockedBy.length ? `Empezará cuando se integre #${i.blockedBy.join(', #')}.` : 'En cola: la recogerá el primer Worker libre.'}</div>`}</div></section>
+    </div><div class="stack">
+      <section class="card"><header><h2>Estado</h2>${pill(i.state, i.label)}</header><div class="body"><dl><dt>Proyecto</dt><dd><a href="#proyecto-${p.id}">${p.name}</a></dd><dt>Etiqueta en GitHub</dt><dd class="mono">${ghLabel}</dd><dt>Worker</dt><dd>${last ? `<a href="#worker-${last.w}">${W(last.w).name}</a>` : 'Sin asignar'}</dd><dt>Depende de</dt><dd>${i.blockedBy.length ? i.blockedBy.map(b => `<a href="#issue-${b}">#${b}</a>`).join(', ') : 'Nada'}</dd><dt>Bloquea a</dt><dd>${blocks.length ? blocks.map(b => `<a href="#issue-${b.n}">#${b.n}</a>`).join(', ') : 'Nada'}</dd><dt>Motor</dt><dd>${p.engine} · esfuerzo medio</dd><dt>Rama</dt><dd class="mono">feature/${i.n}</dd>${last?.commit ? `<dt>Commit</dt><dd class="mono">${last.commit}</dd>` : ''}</dl></div></section>
+      <section class="card"><header><h2>Acciones</h2></header><div class="body acts">${actions.map((a, k) => `<button class="btn ${k === 0 ? 'primary' : /Descartar|Quitar|Cancelar/.test(a) ? 'danger' : ''}" data-toast="${a}: acción de ejemplo">${a}</button>`).join('')}<button class="btn" data-panel="issue-editar-${i.n}">Cambiar motor o esfuerzo</button></div></section>
+    </div></div>`;
+  },
+  ejecucion(id) {
+    const e = executions.find(x => x.id === id), i = I(e.issue), p = P(e.p), w = W(e.w);
+    return `<div class="crumbs"><a href="#proyecto-${p.id}">${p.name}</a><span>/</span><a href="#issue-${i.n}">#${i.n}</a><span>/</span><span>Intento ${e.attempt}</span></div>
+    <div class="head"><div><div class="row"><h1>#${i.n} · ${i.title}</h1></div><p class="sub">${pill(e.state, e.label)} &nbsp;Intento ${e.attempt} en <a href="#worker-${w.id}">${w.name}</a> · empezó ${e.started}</p></div>${e.failed ? `<div class="row"><button class="btn primary" data-toast="Reintentar desde cero: acción de ejemplo">Reintentar desde cero</button>${act('Reintentar solo la integración')}${act('Descartar', 'danger')}</div>` : e.state === 'run' ? `<div class="row">${act('Cancelar', 'danger')}</div>` : ''}</div>
+    <section class="card"><div class="body">${steps(e)}</div></section>
+    ${e.failed ? `<section class="card"><div class="body"><div class="what"><div><b>Qué ha pasado</b>${e.what}</div><div><b>Qué puedes hacer</b>${e.todo}</div></div></div><details><summary>Detalle técnico</summary><pre>${e.tech}</pre></details></section>` : ''}
+    <div class="grid2"><section class="card"><header><h2>Resultado</h2></header><div class="body"><dl><dt>Implementación</dt><dd>${e.stage > 1 ? 'Completada. 7 ficheros modificados.' : 'En curso'}</dd><dt>Validación</dt><dd>${e.stage > 2 ? 'Superada: <span class="mono">' + p.validation + '</span>' : e.stage === 2 ? 'Ejecutando <span class="mono">' + p.validation + '</span>' : 'Pendiente'}</dd><dt>Integración</dt><dd>${e.failed ? 'No integrada: conflicto con la rama base' : e.stage > 3 ? `Integrada en <span class="mono">${p.base}</span> como <span class="mono">${e.commit}</span>` : e.stage === 3 ? 'Integrando en <span class="mono">' + p.base + '</span>' : 'Pendiente'}</dd></dl></div></section>
+    <section class="card"><header><h2>Datos</h2></header><div class="body"><dl><dt>Worker</dt><dd><a href="#worker-${w.id}">${w.name}</a></dd><dt>Motor</dt><dd>${p.engine}</dd><dt>Rama</dt><dd class="mono">feature/${i.n}</dd><dt>Ejecución</dt><dd class="mono">${e.id}</dd></dl></div></section></div>`;
+  },
+  ajustes() {
+    return `<div class="head"><div><h1>Ajustes</h1><p class="sub">Conexiones y avisos del servidor.</p></div></div>
+    <section class="card"><header><h2>Servidor</h2>${pill('ok', 'Funcionando')}</header><div class="body"><dl><dt>Dirección</dt><dd class="mono">https://codex.ejemplo.dev</dd><dt>Versión</dt><dd>0.34.11</dd><dt>Última copia de seguridad</dt><dd>ayer 03:00</dd></dl></div></section>
+    <section class="card"><header><h2>Credenciales</h2><button class="btn sm" data-panel="credencial-nueva">Añadir credencial</button></header><div class="list">${[['GitHub', 'Token para leer issues y empujar ramas', 'ok', 'Válida', 'github'], ['Codex', 'Sesión por Worker; se inicia en cada máquina', 'bad', 'Caducada en VM2', 'codex'], ['Telegram', 'Bot para avisos', 'ok', 'Válida', 'telegram']].map(c => `<div class="cols-4"><span class="t">${c[0]}</span><span class="m">${c[1]}</span>${pill(c[2], c[3])}<button class="btn sm" data-panel="credencial-${c[4]}">Editar</button></div>`).join('')}</div></section>
+    <section class="card"><header><h2>Avisos</h2></header><div class="body" style="display:flex;flex-direction:column;gap:12px"><label class="check"><input type="checkbox" id="n1" checked><span>Avisarme por Telegram cuando algo requiera mi atención</span></label><label class="check"><input type="checkbox" id="n2"><span>Avisarme también de cada issue integrada</span></label></div></section>`;
+  },
+};
+
+// ---- Paneles laterales de edición ----
+const field = (id, label, value, help = '', type = 'text') => `<label for="${id}">${label}<input id="${id}" type="${type}" value="${value}">${help ? `<small>${help}</small>` : ''}</label>`;
+const panels = {
+  proyecto(id) { const p = P(id) ?? { name: '', repo: '', base: 'main', parallel: 1, validation: '', engine: 'Codex', auto: true };
+    return [id === 'nuevo' ? 'Añadir proyecto' : 'Editar proyecto', field('p-name', 'Nombre', p.name) + field('p-repo', 'Repositorio de GitHub', p.repo, 'Con el formato propietario/repositorio.') + field('p-base', 'Rama base', p.base, 'Donde se integra cada issue terminada.') + field('p-par', 'Issues en paralelo', p.parallel, 'Cuántas issues de este proyecto pueden implementarse a la vez.', 'number') + field('p-val', 'Comando de validación', p.validation, 'Se ejecuta antes de integrar. Si falla, la issue no se integra.') + `<label for="p-eng">Motor<select id="p-eng"><option>Codex</option><option>Claude Code</option></select></label><label class="check"><input type="checkbox" id="p-auto" ${p.auto ? 'checked' : ''}><span>Recoger automáticamente las issues con la etiqueta <span class="mono">codex-ready</span></span></label>`, id === 'nuevo' ? 'Proyecto añadido' : 'Proyecto guardado']; },
+  worker(id) { const w = W(id);
+    return w ? ['Editar Worker', field('w-name', 'Nombre', w.name) + field('w-slots', 'Huecos de trabajo', w.slots, 'Cuántas issues puede implementar a la vez esta máquina.', 'number') + `<label for="w-eng">Motor por defecto<select id="w-eng"><option>Codex</option><option>Claude Code</option></select></label><label class="check"><input type="checkbox" id="w-pause" ${w.paused ? 'checked' : ''}><span>Pausar: termina lo que tiene y no recoge más</span></label><label class="check"><input type="checkbox" id="w-upd" checked><span>Actualizar automáticamente a la versión del servidor</span></label><div class="row">${act('Reiniciar servicio')}${act('Desconectar Worker', 'danger')}</div>`, 'Worker guardado']
+      : ['Conectar un Worker', `<p class="sub" style="margin:0">Ejecuta este comando en la máquina nueva. El código caduca en 15 minutos.</p><pre style="margin:0">codex-worker register \\\n  --server https://codex.ejemplo.dev \\\n  --code 7K2M-QX4P</pre>` + field('w-newname', 'Nombre', '', 'Opcional. Por defecto se usa el nombre de la máquina.') + field('w-newslots', 'Huecos de trabajo', 2, '', 'number'), 'Esperando a que el Worker se conecte']; },
+  issue(rest) {
+    if (rest.startsWith('editar-')) { const i = I(+rest.slice(7));
+      return [`Ajustes de la issue #${i.n}`, `<p class="sub" style="margin:0">Se aplican al siguiente intento.</p><label for="ie-eng">Motor<select id="ie-eng"><option>El del proyecto (${P(i.p).engine})</option><option>Codex</option><option>Claude Code</option></select></label><label for="ie-eff">Esfuerzo<select id="ie-eff"><option>Medio</option><option>Bajo</option><option>Alto</option></select></label><label for="ie-retry">Al reintentar<select id="ie-retry"><option>Empezar desde cero</option><option>Continuar el trabajo guardado</option></select></label>`, 'Ajustes guardados']; }
+    const p = P(rest.replace('nueva-', ''));
+    return ['Añadir issue a la cola', `<p class="sub" style="margin:0">Proyecto ${p.name} · ${p.repo}</p>` + field('i-num', 'Número de issue', '', 'La issue debe existir y estar abierta en GitHub.', 'number') + `<label for="i-eng">Motor<select id="i-eng"><option>El del proyecto (${p.engine})</option><option>Codex</option><option>Claude Code</option></select></label><label for="i-eff">Esfuerzo<select id="i-eff"><option>Medio</option><option>Bajo</option><option>Alto</option></select></label>`, 'Issue añadida a la cola']; },
+  credencial(id) { const name = { github: 'GitHub', codex: 'Codex', telegram: 'Telegram' }[id];
+    return [name ? `Editar credencial de ${name}` : 'Añadir credencial', (name ? '' : `<label for="c-kind">Servicio<select id="c-kind"><option>GitHub</option><option>Telegram</option></select></label>`) + field('c-val', 'Nuevo valor', '', 'El valor actual nunca se muestra. Déjalo vacío para conservarlo.') + `<label for="c-who">Workers que pueden usarla<select id="c-who"><option>Todos los gestionados</option><option>Solo VM1</option><option>Solo VM2</option></select></label>`, 'Credencial guardada']; },
+};
+
+// ---- Navegación ----
+const state = { tab: 'trabajo' };
+const NAV = [['inicio', 'Inicio'], ['proyectos', 'Proyectos'], ['workers', 'Workers'], ['ajustes', 'Ajustes']];
+const SECTION = { proyecto: 'proyectos', issue: 'proyectos', ejecucion: 'proyectos', worker: 'workers' };
+function route() {
+  const hash = location.hash.slice(1) || 'inicio', [name, ...rest] = hash.split('-'), arg = rest.join('-');
+  const view = views[name] ? name : 'inicio';
+  let html; try { html = views[view](arg); } catch { html = views.inicio(); }
+  document.getElementById('main').innerHTML = `<div class="page">${html}</div>`;
+  const current = SECTION[view] ?? view;
+  document.getElementById('nav').innerHTML = NAV.map(([id, label]) => `<a href="#${id}" ${id === current ? 'aria-current="page"' : ''}>${label}${id === 'inicio' ? `<span class="count num">${attention.length}</span>` : ''}</a>`).join('');
+}
+function openPanel(key) {
+  const [kind, ...rest] = key.split('-'), [title, body, done] = panels[kind](rest.join('-'));
+  document.getElementById('overlay').innerHTML = `<div class="shade" data-close></div><aside class="panel" role="dialog" aria-modal="true" aria-label="${title}"><header><h2>${title}</h2><button class="btn sm" data-close aria-label="Cerrar">Cerrar</button></header><form id="panel-form">${body}</form><footer><button class="btn" data-close>Cancelar</button><button class="btn primary" data-close data-toast="${done}">Guardar</button></footer></aside>`;
+  document.querySelector('.panel input, .panel select')?.focus();
+}
+function toast(text) {
+  document.querySelector('.toast')?.remove();
+  const el = Object.assign(document.createElement('div'), { className: 'toast', textContent: text });
+  el.setAttribute('role', 'status'); document.body.append(el); setTimeout(() => el.remove(), 2400);
+}
+document.addEventListener('click', event => {
+  const el = event.target.closest('[data-panel],[data-close],[data-toast],[data-tab]'); if (!el) return;
+  if (el.dataset.tab) { state.tab = el.dataset.tab; route(); return; }
+  if (el.tagName === 'BUTTON') event.preventDefault();
+  if (el.dataset.panel) return openPanel(el.dataset.panel);
+  if (el.hasAttribute('data-close')) document.getElementById('overlay').innerHTML = '';
+  if (el.dataset.toast) toast(el.dataset.toast);
+});
+document.addEventListener('keydown', event => { if (event.key === 'Escape') document.getElementById('overlay').innerHTML = ''; });
+document.addEventListener('submit', event => event.preventDefault());
+function applyFilter(bar) {
+  const list = document.getElementById(bar.dataset.filter), q = bar.querySelector('input').value.trim().toLowerCase(), s = bar.querySelector('select').value;
+  let shown = 0;
+  for (const row of list.querySelectorAll('[data-s]')) { const ok = (!q || row.textContent.toLowerCase().includes(q)) && (!s || row.dataset.s.split(' ').includes(s)); row.hidden = !ok; shown += ok; }
+  list.querySelector('.none')?.remove();
+  if (!shown) list.insertAdjacentHTML('beforeend', '<div class="m none">Nada coincide con el filtro.</div>');
+}
+for (const type of ['input', 'change']) document.addEventListener(type, event => { const bar = event.target.closest('.filters'); if (bar) applyFilter(bar); });
+document.getElementById('theme').addEventListener('click', () => {
+  const root = document.documentElement, dark = root.dataset.theme ? root.dataset.theme === 'dark' : !matchMedia('(prefers-color-scheme: light)').matches;
+  root.dataset.theme = dark ? 'light' : 'dark';
+});
+addEventListener('hashchange', () => { state.tab = 'trabajo'; document.getElementById('overlay').innerHTML = ''; scrollTo(0, 0); route(); });
+route();
+</script>

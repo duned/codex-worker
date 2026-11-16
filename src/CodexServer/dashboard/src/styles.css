@@ -1,0 +1,24 @@
+@import "./untitled/styles/globals.css";
+@source "./";
+
+/* Composition only: colours come from the Untitled UI tokens. */
+#dashboard { min-height: 100dvh; }
+body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-primary); }
+[hidden] { display: none !important; }
+
+/* Running work moves: pulsing status dots, a light sweep over the current step and active slots. */
+.status-dot { width: 6px; height: 6px; border-radius: 9999px; background: currentColor; flex: none; }
+.step-bar { position: relative; overflow: hidden; height: 3px; border-radius: 2px; }
+.slot { position: relative; overflow: hidden; }
+@media (prefers-reduced-motion: no-preference) {
+  .tone-run .status-dot { animation: dashboard-pulse 1.6s ease-in-out infinite; }
+  .step-now .step-bar::after, .slot-on::after {
+    content: ""; position: absolute; inset: 0; animation: dashboard-sweep 1.6s linear infinite;
+    background: linear-gradient(90deg, transparent, rgb(255 255 255 / 55%), transparent); background-size: 40% 100%; background-repeat: no-repeat;
+  }
+  .slot-on::after { animation-duration: 2.2s; background-image: linear-gradient(90deg, transparent, rgb(255 255 255 / 35%), transparent); }
+  .side-panel { animation: dashboard-slide-in .18s ease-out; }
+}
+@keyframes dashboard-pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; } 50% { opacity: .45; box-shadow: 0 0 0 4px transparent; } }
+@keyframes dashboard-sweep { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+@keyframes dashboard-slide-in { from { transform: translateX(24px); opacity: .6; } }

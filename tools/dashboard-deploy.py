@@ -170,13 +170,13 @@ def deploy(repo):
                 validate(path)
         revision = run('git', '-C', str(repo), 'rev-parse', '--short', 'HEAD', capture_output=True, text=True).stdout.strip()
         print(f'Source: {repo} @ {revision} (including current checkout edits)', flush=True)
-        frontend = repo / 'src/CodexServer/worker-poc'
+        frontend = repo / 'src/CodexServer/dashboard'
         run('npm', 'ci', '--no-audit', '--no-fund', cwd=frontend)
         run('npm', 'run', 'check', cwd=frontend)
         print(f'Build/check passed. Destination: {root}. Restart required: codex-server only.', flush=True)
         with tempfile.TemporaryDirectory(prefix='.staging-', dir=root) as staging:
             candidate = Path(staging) / 'current'
-            shutil.copytree(repo / 'src/CodexServer/obj/worker-poc/preview', candidate, symlinks=True, ignore=shutil.ignore_patterns('.vite'))
+            shutil.copytree(repo / 'src/CodexServer/obj/dashboard/preview', candidate, symlinks=True, ignore=shutil.ignore_patterns('.vite'))
             validate(candidate)
             if previous.exists():
                 shutil.rmtree(previous)

@@ -1,0 +1,27 @@
+import type { api as source } from '../en/api';
+export const api = {
+  "api.originMissing": "El navegador no envió el origen de administración. Abre el dashboard desde su dirección configurada.",
+  "api.hostMismatch": "Esta dirección no es el host de administración configurado.",
+  "api.originMismatch": "El origen de esta página no puede administrar el servidor.",
+  "api.tokenInvalid": "El token de administración no es válido.",
+  "api.sessionInvalid": "La sesión ya no es válida. Vuelve a iniciar sesión.",
+  "api.accessRejectedWithoutAServerDiagnosticCheckManagementNetworkPolicyAndProxy": "Acceso rechazado. Revisa el token, la red y el proxy.",
+  "api.unsupportedAPIPath": "Ruta de API no admitida.",
+  "api.unsupportedPreviewPath": "Ruta de vista previa no admitida.",
+  "api.httpFailed": "El servidor respondió con HTTP {status}.",
+  "api.serverConnectionUnavailableStateMayBeStaleCheckTheConnectionAndRefresh": "No se puede contactar con el servidor. Lo que ves puede no estar actualizado.",
+  "api.invalidServerDataRefreshOrCheckTheServerDeployment": "El servidor devolvió datos que este dashboard no entiende. Recarga o revisa la versión del servidor.",
+  "api.checkingAdministrationSession": "Comprobando la sesión…",
+  "api.signInToAdministerThisServer": "Inicia sesión para administrar este servidor.",
+  "api.signingOut": "Cerrando sesión…",
+  "api.signedOut": "Sesión cerrada.",
+  "api.yourSessionExpiredSignInAgain": "La sesión ha caducado. Vuelve a iniciar sesión.",
+  "api.yourSessionExpiredOrWasRejectedSignInAgain": "La sesión ha caducado o fue rechazada. Vuelve a iniciar sesión.",
+  "api.signOutCouldNotBeConfirmedByTheServerRetrySignOut": "El servidor no confirmó el cierre de sesión. Inténtalo de nuevo.",
+  "api.sessionUnavailable": "No se pudo comprobar la sesión.",
+  "api.administrationSignInRequired": "Primero inicia sesión.",
+  "api.refreshAuthoritativeStateBeforeRetrying": "Una acción anterior aún no está confirmada. Recarga antes de reintentar.",
+  "api.reconciliationUnavailable": "Espera a que termine la acción en curso.",
+  "shared.liveSignedOut": "Sesión cerrada",
+  "shared.liveInterrupted": "Actualizaciones interrumpidas"
+} satisfies Record<keyof typeof source, string>;

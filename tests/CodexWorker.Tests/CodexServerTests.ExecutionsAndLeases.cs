@@ -688,7 +688,7 @@ public sealed partial class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, dashboardResponse.StatusCode);
             Assert.Equal("text/html", dashboardResponse.Content.Headers.ContentType?.MediaType);
             var dashboard = await dashboardResponse.Content.ReadAsStringAsync();
-            Assert.Contains("id=\"worker-poc\"", dashboard);
+            Assert.Contains("id=\"dashboard\"", dashboard);
             Assert.Contains("/dashboard-assets/preview/", dashboard);
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }

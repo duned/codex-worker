@@ -11,25 +11,28 @@
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.3.0" />
   </ItemGroup>
   <ItemGroup>
-    <!-- Frontend source/dependencies are build inputs, never deployment content. -->
-    <Content Remove="worker-poc/**/*" />
+    <!-- Frontend source/dependencies are build inputs, never deployment content.
+         dashboard-legacy is a reference backup and is neither built nor embedded. -->
+    <Content Remove="dashboard/**/*" />
+    <Content Remove="dashboard-legacy/**/*" />
+    <None Remove="dashboard-legacy/**/*" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Shared/CodexProvisioning.csproj" />
     <ProjectReference Include="../WorkExecutionToolbox/WorkExecutionToolbox.csproj" />
   </ItemGroup>
-  <Target Name="RestoreWorkerPoc" BeforeTargets="PrepareForBuild"
-          Inputs="worker-poc/package.json;worker-poc/package-lock.json"
-          Outputs="worker-poc/node_modules/.package-lock.json">
-    <Exec WorkingDirectory="worker-poc" Command="npm ci --no-audit --no-fund" />
+  <Target Name="RestoreDashboard" BeforeTargets="PrepareForBuild"
+          Inputs="dashboard/package.json;dashboard/package-lock.json"
+          Outputs="dashboard/node_modules/.package-lock.json">
+    <Exec WorkingDirectory="dashboard" Command="npm ci --no-audit --no-fund" />
   </Target>
   <!-- Always regenerate: timestamp-only inputs miss deleted source and stale copied bundles. -->
-  <Target Name="BuildWorkerPoc" BeforeTargets="PrepareForBuild" DependsOnTargets="RestoreWorkerPoc">
-    <Exec WorkingDirectory="worker-poc" Command="npm run typecheck &amp;&amp; npm run lint &amp;&amp; node build.mjs &quot;$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'worker-poc'))&quot;" />
+  <Target Name="BuildDashboard" BeforeTargets="PrepareForBuild" DependsOnTargets="RestoreDashboard">
+    <Exec WorkingDirectory="dashboard" Command="npm run typecheck &amp;&amp; npm run lint &amp;&amp; node build.mjs &quot;$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'dashboard'))&quot;" />
   </Target>
-  <Target Name="EmbedDashboardPreview" BeforeTargets="AssignTargetPaths" DependsOnTargets="BuildWorkerPoc">
+  <Target Name="EmbedDashboardPreview" BeforeTargets="AssignTargetPaths" DependsOnTargets="BuildDashboard">
     <ItemGroup>
-      <_DashboardPreviewAsset Include="$(IntermediateOutputPath)worker-poc/preview/**/*" Exclude="$(IntermediateOutputPath)worker-poc/preview/.vite/**/*" />
+      <_DashboardPreviewAsset Include="$(IntermediateOutputPath)dashboard/preview/**/*" Exclude="$(IntermediateOutputPath)dashboard/preview/.vite/**/*" />
       <_DashboardPreviewAsset Update="@(_DashboardPreviewAsset)">
         <LogicalName>CodexServer.dashboard-preview/$([System.String]::Copy('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
       </_DashboardPreviewAsset>
@@ -37,7 +40,7 @@
     </ItemGroup>
   </Target>
   <!-- A no-build publish cannot prove that the assembly contains current frontend inputs. -->
-  <Target Name="RequireCurrentDashboardPublish" BeforeTargets="BuildWorkerPoc;PrepareForPublish" Condition="'$(NoBuild)' == 'true'">
+  <Target Name="RequireCurrentDashboardPublish" BeforeTargets="BuildDashboard;PrepareForPublish" Condition="'$(NoBuild)' == 'true'">
     <Error Text="Server publish requires a build to regenerate and verify embedded dashboard assets; omit --no-build." />
   </Target>
 </Project>

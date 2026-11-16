@@ -465,7 +465,7 @@ public sealed partial class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, dashboardResponse.StatusCode);
             Assert.Contains("Codex Server", await dashboardResponse.Content.ReadAsStringAsync());
             var dashboard = await dashboardResponse.Content.ReadAsStringAsync();
-            Assert.Contains("id=\"worker-poc\"", dashboard);
+            Assert.Contains("id=\"dashboard\"", dashboard);
             var resources = typeof(ServerApplication).Assembly.GetManifestResourceNames();
             Assert.DoesNotContain("CodexServer.dashboard.html", resources);
             Assert.DoesNotContain("CodexServer.worker-poc.js", resources);
@@ -477,7 +477,7 @@ public sealed partial class CodexServerTests
                 Assert.Equal(HttpStatusCode.OK, previewResponse.StatusCode);
                 var preview = await previewResponse.Content.ReadAsStringAsync();
                 Assert.Contains("class=\"dark-mode\"", preview);
-                Assert.Contains("id=\"worker-poc\"", preview);
+                Assert.Contains("id=\"dashboard\"", preview);
                 Assert.Contains("src=\"/dashboard-assets/preview/assets/theme.js\"", preview);
                 Assert.True(preview.IndexOf("assets/theme.js", StringComparison.Ordinal) < preview.IndexOf("rel=\"stylesheet\"", StringComparison.Ordinal));
                 Assert.DoesNotContain("poc-legacy-owner", preview);
@@ -503,7 +503,7 @@ public sealed partial class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, pocResponse.StatusCode);
             var poc = await pocResponse.Content.ReadAsStringAsync();
             Assert.DoesNotContain("administration-login", poc);
-            Assert.Contains("id=\"worker-poc\"", poc);
+            Assert.Contains("id=\"dashboard\"", poc);
             Assert.DoesNotContain("poc-legacy-owner", poc);
             Assert.DoesNotContain("--ink:#183135", poc);
             Assert.Contains("/dashboard-assets/preview/", poc);
