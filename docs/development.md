@@ -2,6 +2,8 @@
 
 Requires the .NET 10 SDK. From the repository root run `dotnet restore CodexWorker.sln`, `dotnet build CodexWorker.sln`, and `dotnet test CodexWorker.sln`. Dashboard build instructions are in [React architecture](server-dashboard-react.md); product releases use [release packaging](release-packaging.md).
 
+Tests live in three projects so they run as separate processes: `tests/CodexWorker.Tests`, `tests/CodexWorker.GitTests` (suites that drive real Git repositories; same `CodexWorker.Tests` namespace) and `tests/WorkExecutionToolbox.Tests`. Large suites are partial classes split by area (`WorkerV011Tests.*.cs`, `CodexServerTests.*.cs`, `GitWorktreeTests.*.cs`); add a test to the matching area file.
+
 The [November 2026 audit](auditoria-2026-11.md) records measured test timings, structural findings and the proposed clean-up plan. Earlier audits and benchmark records are in the [archive](archive/README.md).
 
 The [validation runtime profile](archive/test-runtime-profile-28.3.md) separates restore/build/discovery/execution costs and documents `TestType`, measured `Duration`, and the independent `ValidationProfile=FastCandidate` xUnit filters. Use its exact-count helper for focused runs so an empty filter cannot appear green. The repository-owned [risk-based validation policy](risk-based-validation.md) documents how to configure focused Worker Validation and force a full/release run. Existing configured commands remain authoritative until project YAML is updated.

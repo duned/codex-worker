@@ -134,20 +134,37 @@ Puedo preparar una maqueta navegable de estas pantallas para que la apruebes ant
 
 ## 6. Qué se ha hecho en esta rama
 
-Solo cambios sin riesgo funcional:
+**Limpieza**
 
-- Archivados en [`docs/archive`](archive/README.md) 11 informes históricos y los directorios `benchmarks` y `performance`; enlaces actualizados y comprobados. `docs/` queda con las guías vigentes.
+- Archivados en [`docs/archive`](archive/README.md) 11 informes históricos y los directorios `benchmarks` y `performance`; enlaces actualizados y comprobados.
 - Eliminado `tests/__pycache__`, que estaba versionado pese a estar en `.gitignore`.
-- Este informe.
 
-No se ha tocado código de producción ni tests: los cambios de los apartados 2–4 alteran comportamiento o estructura y necesitan tu decisión.
+**Tests (punto 1 del plan): de 290 s a 126 s, mismos 2.798 casos**
+
+- Cada heartbeat del Worker dormía 1 s para muestrear la CPU (`WorkerHostResourceCollector`). Ahora la CPU se calcula entre dos recogidas consecutivas, sin esperar; el primer heartbeat no informa CPU. Era también un retraso real en producción. `ManagedWorkerReadinessTests` y `ManagedHttpsSecurityTests` pasan de 96 s a 11 s.
+- El sondeo del planificador y el temporizador de heartbeat usan el `TimeProvider` inyectado.
+- Los tests con Git real (`GitWorktreeTests`, `StandaloneInterruptedExecutionTests`) están en un ensamblado propio, `tests/CodexWorker.GitTests`, que corre en otro proceso en paralelo. Conservan el espacio de nombres, así que los filtros existentes siguen valiendo.
+- `tools/validate.py` incluye el proyecto nuevo y, en modo completo, ejecuta los proyectos de test a la vez.
+
+El límite actual lo marca `CodexWorker.GitTests` (≈2 min con Git real). Bajarlo más requiere el punto 5 del plan.
+
+**Ficheros calientes (punto 2 del plan), sin cambios de comportamiento**
+
+- Traducciones: `en.ts` y `es.ts` son ahora índices; el contenido está en un fichero por área en `locales/en/` y `locales/es/` (16 áreas).
+- `WorkerV011Tests`, `CodexServerTests` y `GitWorktreeTests` están repartidos en clases parciales por área (de 220–290 KB por fichero a ≈30 KB de media). Los nombres completos de los tests no cambian.
+- `ExecutionRunner` separa integración y validación (`ExecutionRunner.Integration.cs`, `ExecutionRunner.Validation.cs`); `Worker` separa reclamación de recuperaciones, informes e historial.
+
+**Pendiente conocido, no introducido aquí**
+
+- `tests/dashboard/home-overview` tiene un caso que ya fallaba en `main` («share the same status label and tone»).
+- `LocalRepositoryDiscoveryTests.ReadsLocalFetchAndPushUrlsWithoutNetwork` falla solo en entornos que reescriben URLs SSH de Git, como este contenedor.
 
 ## 7. Plan propuesto
 
 | Orden | Trabajo | Efecto |
 | --- | --- | --- |
-| 1 | Separar ensamblados de test y quitar `-m:1`; reloj falso en `ManagedWorkerReadinessTests` | Suite de ≈5 min a ≈1,5 min |
-| 2 | Trocear ficheros calientes (traducciones, tests gigantes, `ExecutionRunner`) | Menos conflictos entre Issues paralelas |
+| 1 | Hecho: ensamblado Git separado, heartbeat sin espera, validación completa en paralelo | Suite de 290 s a 126 s |
+| 2 | Hecho: traducciones, tests gigantes, `ExecutionRunner` y `Worker` troceados | Menos conflictos entre Issues paralelas |
 | 3 | Decidir modelo de integración: PR + fusión en GitHub, o flujo actual con conflicto = reintento | Elimina la clase de fallos 491–504 |
 | 4 | Maqueta y rediseño del dashboard por contenido | Dashboard útil y un solo estilo |
 | 5 | Inyectar entorno; reducir `GitWorktreeTests`; sustituir tests de dashboard | Suite < 60 s |
