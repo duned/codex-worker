@@ -1,5 +1,11 @@
-// One canonical application; historical preview paths are redirected by the Server.
+// Served by the Server under /old next to the current dashboard; router paths exclude this base.
+export const basename = '/old';
 const legacyPreviewBase = '/dashboard-preview';
+const sectionPath = /^\/(home|projects|workers|executions|settings)(?:\/|\?|#|$)/;
+// Raw anchors in this backup still use root-relative section paths; keep them inside /old.
+export function legacyPath(href: string): string | null {
+  return sectionPath.test(href) ? basename + href : null;
+}
 export const sections = ['home', 'projects', 'workers', 'executions', 'settings'] as const;
 export type Section = typeof sections[number];
 export const resourceSections = sections.filter(section => section !== 'home');
@@ -8,7 +14,13 @@ export function canonicalPath(pathname: string, search: string): string {
   return (path === '' || path === '/' ? '/home' : path) + search;
 }
 
-export function normalizeBookmark(pathname: string, search: string, hash: string): string | null {
+export function normalizeBookmark(fullPathname: string, search: string, hash: string): string | null {
+  const pathname = fullPathname === basename ? '/' : fullPathname.startsWith(basename + '/') ? fullPathname.slice(basename.length) : fullPathname;
+  const result = normalizeBookmarkPath(pathname, search, hash);
+  return result === null ? null : basename + result;
+}
+
+function normalizeBookmarkPath(pathname: string, search: string, hash: string): string | null {
   if (hash.startsWith('#/')) {
     let url: URL;
     try { url = new URL(hash.slice(1), 'https://dashboard.invalid'); }

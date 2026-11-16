@@ -9,13 +9,18 @@ namespace CodexServer;
 /// <summary>Immutable embedded Vite output. Only manifest-listed assets become endpoints.</summary>
 internal sealed class EmbeddedDashboardAssets
 {
-    private const string ResourcePrefix = "CodexServer.dashboard-preview/";
+    internal const string CurrentAssetBase = "/dashboard-assets/preview/";
+    internal const string LegacyAssetBase = "/dashboard-assets/legacy/";
     public string Shell { get; }
     public IReadOnlyDictionary<string, byte[]> Assets { get; }
 
-    public EmbeddedDashboardAssets() : this(Read) { }
+    public EmbeddedDashboardAssets() : this(name => Read("CodexServer.dashboard-preview/", name)) { }
 
-    internal EmbeddedDashboardAssets(Func<string, byte[]> read)
+    /// <summary>The previous dashboard, embedded unchanged for the /old routes.</summary>
+    internal static EmbeddedDashboardAssets LoadLegacy() =>
+        new(name => Read("CodexServer.dashboard-legacy/", name), LegacyAssetBase);
+
+    internal EmbeddedDashboardAssets(Func<string, byte[]> read, string assetBase = CurrentAssetBase)
     {
         var manifest = JsonSerializer.Deserialize<Asset[]>(read("assets.json"),
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
@@ -36,7 +41,7 @@ internal sealed class EmbeddedDashboardAssets
             || !assets.Keys.Any(path => path.EndsWith(".css", StringComparison.Ordinal)))
             throw new InvalidOperationException("Dashboard embedded JavaScript or CSS is missing.");
         Shell = Encoding.UTF8.GetString(read("index.html"));
-        var references = Regex.Matches(Shell, "(?:src|href)=\"/dashboard-assets/preview/([^\"]+)\"");
+        var references = Regex.Matches(Shell, "(?:src|href)=\"" + Regex.Escape(assetBase) + "([^\"]+)\"");
         if (!references.Any(reference => reference.Groups[1].Value.EndsWith(".js", StringComparison.Ordinal))
             || !references.Any(reference => reference.Groups[1].Value.EndsWith(".css", StringComparison.Ordinal)))
             throw new InvalidOperationException("Dashboard shell requires JavaScript and CSS references.");
@@ -94,9 +99,9 @@ internal sealed class EmbeddedDashboardAssets
         _ => "application/octet-stream"
     };
 
-    private static byte[] Read(string name)
+    private static byte[] Read(string resourcePrefix, string name)
     {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(ResourcePrefix + name)
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourcePrefix + name)
             ?? throw new InvalidOperationException("A dashboard embedded resource is missing.");
         using var buffer = new MemoryStream();
         stream.CopyTo(buffer);

@@ -17,7 +17,7 @@ Before implementing, inspect the existing architecture, relevant contracts, repr
 ## Dashboard UI
 
 - The Server dashboard is `src/CodexServer/dashboard` (React + Untitled UI). Follow the [dashboard design guide](docs/dashboard-design-guide.md) and compare rendered screens with the approved navigable reference [`docs/mockups/dashboard-v2.html`](docs/mockups/dashboard-v2.html).
-- `src/CodexServer/dashboard-legacy` is a reference backup only. Do not build, test, deploy or extend it.
+- `src/CodexServer/dashboard-legacy` is the previous dashboard, embedded unchanged and served by the Server under `/old/...` (assets under `/dashboard-assets/legacy/`). Keep it building; do not add features to it or run its retired lint/test scripts.
 - Every visible text needs English and Spanish entries; status rules belong in `src/shared/model.ts`, not in individual screens.
 
 ## .NET and code quality

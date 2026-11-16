@@ -12,5 +12,5 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: 
 }
 function Unavailable() {
   useLanguage();
-  return <main className="p-8" role="alert"><LanguageControl /><h1>{t("shared.dashboardUnavailable")}</h1><p>{t("shared.reloadToRestoreTheSessionAndAuthoritativeState")}</p><Button href="/home" color="secondary">{t("shared.openCurrentDashboard")}</Button></main>;
+  return <main className="p-8" role="alert"><LanguageControl /><h1>{t("shared.dashboardUnavailable")}</h1><p>{t("shared.reloadToRestoreTheSessionAndAuthoritativeState")}</p><Button href="/old/home" color="secondary">{t("shared.openCurrentDashboard")}</Button></main>;
 }

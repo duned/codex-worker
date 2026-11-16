@@ -63,6 +63,7 @@ public static partial class ServerApplication
     {
         // Verify product assets before opening persistent services.
         var preview = EmbeddedDashboardAssets.LoadDevelopmentOverride();
+        var legacy = EmbeddedDashboardAssets.LoadLegacy();
         var builder = CreateBuilder(args);
         // Request URLs and redirect Locations can contain OAuth state or authorization codes.
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
@@ -558,7 +559,14 @@ public static partial class ServerApplication
                 (context.Request.Path.Value is { } value && value.Length > "/dashboard-preview".Length
                     ? value["/dashboard-preview".Length..] : "/home") + context.Request.QueryString));
         foreach (var (path, bytes) in preview.Assets)
-            app.MapGet("/dashboard-assets/preview/" + path, () => Results.Bytes(bytes, EmbeddedDashboardAssets.ContentType(path)));
+            app.MapGet(EmbeddedDashboardAssets.CurrentAssetBase + path, () => Results.Bytes(bytes, EmbeddedDashboardAssets.ContentType(path)));
+        // The previous dashboard stays reachable under /old with its own embedded assets.
+        foreach (var path in new[] { "/old", "/old/home", "/old/projects", "/old/projects/{resourceId}", "/old/projects/{projectId}/issues/{issueNumber:int}",
+            "/old/workers", "/old/workers/{resourceId}", "/old/executions", "/old/executions/{resourceId}",
+            "/old/settings", "/old/settings/{resourceId}" })
+            app.MapGet(path, () => Results.Content(legacy.Shell, "text/html; charset=utf-8"));
+        foreach (var (path, bytes) in legacy.Assets)
+            app.MapGet(EmbeddedDashboardAssets.LegacyAssetBase + path, () => Results.Bytes(bytes, EmbeddedDashboardAssets.ContentType(path)));
         app.MapGet("/workers/{resourceId}/poc", (string resourceId, HttpContext context) =>
             Results.Redirect($"/workers/{Uri.EscapeDataString(resourceId)}{context.Request.QueryString}"));
         app.MapGet("/health", async (IServerHealthService healthService, HttpContext context) =>

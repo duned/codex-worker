@@ -47,8 +47,6 @@ COVERAGE = {
     ),
 }
 DASHBOARD = "src/CodexServer/dashboard/"
-# Reference backup only: never built, tested or deployed.
-LEGACY_DASHBOARD = "src/CodexServer/dashboard-legacy/"
 NON_DOTNET_COVERAGE = {
     "tools/dashboard-deploy.py": ("tests/dashboard-deploy-tests.py",),
     "packaging/linux/nginx/reload-codex-proxy.sh": ("tests/remote-https-proxy-tests.py",),
@@ -99,11 +97,6 @@ def select(paths, full=False, metadata=True):
         return "full", "explicit full/release validation", ()
     if not paths:
         return "full", "empty or unavailable changed scope", ()
-    if all(documentation(p) for p in paths):
-        return "documentation", "documentation-only scope", ()
-    paths = [p for p in paths if not p.startswith(LEGACY_DASHBOARD)]
-    if not paths:
-        return "documentation", "legacy dashboard backup only", ()
     if all(documentation(p) for p in paths):
         return "documentation", "documentation-only scope", ()
     if all(p.startswith(DASHBOARD) or documentation(p) for p in paths):
