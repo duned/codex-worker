@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
@@ -10,6 +10,7 @@ import { t, useLanguage } from '../shared/i18n';
 import { isActive, isOnline, scheduling, schedulingTone, slots } from '../shared/model';
 import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Tile } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow } from './ExecutionRow';
+import { WorkerMaintenance } from './WorkerMaintenance';
 import { WorkerPanel } from './WorkerPanel';
 
 const journal: Validator<{ state: string; lines: string[] }> = value => {
@@ -26,6 +27,8 @@ export function WorkerPage() {
   const nodes = useNodes(), executions = useExecutions(), action = useAction(), runtime = useRuntime();
   const [tab, setTab] = useState<'work' | 'diagnostics'>('work'), [editing, setEditing] = useState(false);
   const [log, setLog] = useState<{ state: string; lines: string[] }>(), [loadingLog, setLoadingLog] = useState(false);
+  const refetchWorker = read.refetch;
+  const refreshWorker = useCallback(() => { void refetchWorker(); }, [refetchWorker]);
   const worker = read.data;
   if (!worker) return <><PageHeader title={t('workers.title')} crumbs={[{ label: t('nav.workers'), to: '/workers' }]} /><Card flush><ReadState read={read}>{null}</ReadState></Card></>;
   const state = scheduling(worker), use = slots(worker), online = isOnline(worker);
@@ -57,6 +60,8 @@ export function WorkerPage() {
     </div>
     {state === 'blocked' && blockers.length > 0 && <Card><p className="text-sm font-semibold text-primary">{t('workers.whyBlocked')}</p>
       <ul className="mt-2 list-disc pl-5 text-sm text-secondary">{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul></Card>}
+
+    <WorkerMaintenance worker={worker} onProgress={refreshWorker} />
 
     <div role="tablist" aria-label={t('workers.sections')} className="flex gap-6 border-b border-secondary">
       {(['work', 'diagnostics'] as const).map(value => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)}

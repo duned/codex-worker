@@ -59,7 +59,8 @@ public static partial class ServerApplication
 
     public static async Task<WebApplication> BuildAsync(string[] args, CancellationToken cancellationToken = default,
         NodeCapabilityDiscovery? capabilityDiscovery = null, IServerGitHubReadService? githubReadService = null,
-        IServerGitHubIssueWriteService? githubIssueWriteService = null, McpOAuthClients? oauthClients = null)
+        IServerGitHubIssueWriteService? githubIssueWriteService = null, McpOAuthClients? oauthClients = null,
+        WorkerReleaseCatalog? workerReleases = null)
     {
         // Verify product assets before opening persistent services.
         var preview = EmbeddedDashboardAssets.LoadDevelopmentOverride();
@@ -92,6 +93,7 @@ public static partial class ServerApplication
             });
         });
         builder.Services.AddSingleton<WorkerJournalRequests>();
+        builder.Services.AddSingleton(services => workerReleases ?? WorkerReleaseCatalog.CreateDefault(services.GetRequiredService<TimeProvider>()));
         var databasePath = configuration.ResolveDatabasePath();
         builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
         // Server readiness uses the same managed authentication context as Server GitHub reads/writes.
@@ -1159,6 +1161,7 @@ public static partial class ServerApplication
         });
         MapExecutionMaintenance(app);
         MapWorkerUpdates(app);
+        MapWorkerRelease(app);
         MapWorkerJournal(app);
         return app;
     }

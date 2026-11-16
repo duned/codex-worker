@@ -2,8 +2,10 @@
 
 For a restart without installing a release, see [Worker restart](worker-restart.md).
 
-The Worker editor's **Update worker** action sends an authenticated, CSRF-protected
-management request to the Server. It never copies or executes a browser shell
+The **Restart and updates** card on the Worker detail page shows the installed
+version, the latest published Worker release and the current restart/update
+operation. **Restart** and **Update to vX** ask for confirmation and then send an
+authenticated, CSRF-protected management request to the Server. It never copies or executes a browser shell
 command. Update authority is separate from configuration saving and Worker reads.
 
 Packaged Linux Workers advertise `worker-self-update-v1` when the fixed installer
@@ -20,6 +22,19 @@ Duplicate operation IDs retain their outcomes; a different ID while an update is
 pending or failed returns that existing operation. Operator policy changes revoke
 the update's authority to restore the previous policy, even when the operator
 selects the same policy again.
+
+`GET /api/v1/workers/{id}/release` returns `currentVersion`, `latestVersion`,
+`updateAvailable`, `selfUpdateSupported` and `restartSupported` for the dashboard.
+The Server reads the release catalog through the same packaged release discovery,
+caches a result for 15 minutes (a failed lookup for 2 minutes, reported as
+`release-catalog-unavailable`) and never fans dashboard reads out to GitHub. The
+displayed version is informational: the Worker still discovers and verifies the
+release it installs.
+
+While an operation is in progress the card follows it until it settles. A failed
+operation that still holds the drain lists the unmet recovery checks and offers the
+existing recovery actions (release restart drain, retry update, reconcile) after the
+operator confirms the Worker service is quiescent.
 
 Once idle, the Worker discovers the latest stable release through the shared
 packaged updater, obtains a one-time Server start authorization, and invokes a

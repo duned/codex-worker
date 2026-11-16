@@ -1,4 +1,4 @@
-import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult } from './contracts';
+import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate } from './contracts';
 import type { Validator } from './client';
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid object.');
@@ -211,3 +211,24 @@ export const archiveResult: Validator<ExecutionArchiveResult> = value => {
   return item as unknown as ExecutionArchiveResult;
 };
 export const accepted: Validator<unknown> = value => { if (value !== null) record(value); return value; };
+
+export const workerRelease: Validator<WorkerRelease> = value => {
+  const item = fields(value, [], ['updateAvailable', 'selfUpdateSupported', 'restartSupported']);
+  optional(item, ['currentVersion', 'latestVersion', 'checkedAtUtc', 'diagnostic']);
+  return item as unknown as WorkerRelease;
+};
+/** A Worker restart/update operation, or null when none was ever requested. */
+export const workerUpdate: Validator<WorkerUpdate | null> = value => {
+  if (value === null) return null;
+  const item = fields(value, ['operationId', 'workerId', 'state']);
+  if (!/^[a-f0-9]{32}$/.test(String(item.operationId)) || !['waiting-for-idle', 'updating', 'reconnecting', 'succeeded', 'failed'].includes(String(item.state)))
+    throw new Error('Invalid Worker update.');
+  optional(item, ['requestedAtUtc', 'diagnostic', 'drainReleasedAtUtc', 'expectedVersion', 'originalVersion'], ['restart']);
+  if (item.recovery != null) {
+    const recovery = fields(item.recovery, ['checkedAtUtc'], ['schedulingBlocked', 'eligible']);
+    optional(recovery, ['reportedVersion'], ['retryEligible', 'releaseDrainEligible']);
+    if (!Array.isArray(recovery.checks) || recovery.checks.length > 20) throw new Error('Invalid Worker recovery status.');
+    recovery.checks.forEach(check => fields(check, ['code', 'description', 'nextStep'], ['satisfied']));
+  }
+  return item as unknown as WorkerUpdate;
+};
