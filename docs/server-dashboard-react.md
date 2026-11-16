@@ -1,8 +1,10 @@
 # Server dashboard: architecture and build
 
-`src/CodexServer/dashboard` is the only Server dashboard. `src/CodexServer/dashboard-legacy`
-is a reference backup of the previous dashboard: it is not built, embedded, tested or
-deployed. Design rules are in the [design guide](dashboard-design-guide.md).
+`src/CodexServer/dashboard` is the Server dashboard. `src/CodexServer/dashboard-legacy`
+is the previous dashboard, kept frozen and reachable at `/old/home` (and the other
+sections under `/old/`). The Server build compiles it with its own Vite base
+(`/dashboard-assets/legacy/`) and router basename (`/old`) and embeds it next to the
+current one; the development dashboard override applies only to the current dashboard. Design rules are in the [design guide](dashboard-design-guide.md).
 
 ## Layout
 

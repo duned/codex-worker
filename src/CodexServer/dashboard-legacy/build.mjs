@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 if (!process.argv[2]) throw new Error('An output directory is required.');
 mkdirSync(resolve(process.argv[2]), { recursive: true });
 // Vite owns the production SPA graph, including hashed JS/CSS and imported assets.
-const preview = resolve(process.argv[2], 'preview');
+const preview = resolve(process.argv[2], 'legacy');
 execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--outDir', preview, '--emptyOutDir'], {
   stdio: 'inherit', timeout: 120000
 });

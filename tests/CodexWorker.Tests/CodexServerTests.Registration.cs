@@ -515,6 +515,25 @@ public sealed partial class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, themeResponse.StatusCode);
             Assert.Equal("text/javascript", themeResponse.Content.Headers.ContentType?.MediaType);
             Assert.Contains("codex-dashboard-preferences", await themeResponse.Content.ReadAsStringAsync());
+            foreach (var path in new[] { "/old", "/old/home", "/old/projects/a/issues/27", "/old/workers/worker-a?step=preparation", "/old/settings/credential-a" })
+            {
+                using var legacyResponse = await client.GetAsync(path);
+                Assert.Equal(HttpStatusCode.OK, legacyResponse.StatusCode);
+                var legacyShell = await legacyResponse.Content.ReadAsStringAsync();
+                Assert.Contains("id=\"worker-poc\"", legacyShell);
+                Assert.DoesNotContain("/dashboard-assets/preview/", legacyShell);
+                var legacyAssets = System.Text.RegularExpressions.Regex.Matches(legacyShell, "(?:src|href)=\"(/dashboard-assets/legacy/[^\"]+)\"");
+                Assert.NotEmpty(legacyAssets);
+                foreach (System.Text.RegularExpressions.Match asset in legacyAssets)
+                {
+                    using var assetResponse = await client.GetAsync(asset.Groups[1].Value);
+                    Assert.Equal(HttpStatusCode.OK, assetResponse.StatusCode);
+                }
+                using var legacyPost = await client.PostAsync(path, null);
+                Assert.Equal(HttpStatusCode.MethodNotAllowed, legacyPost.StatusCode);
+            }
+            using (var unknownLegacy = await client.GetAsync("/old/unknown"))
+                Assert.Equal(HttpStatusCode.NotFound, unknownLegacy.StatusCode);
             foreach (var asset in new[] { "js", "css" })
             {
                 using var obsolete = await client.GetAsync($"/dashboard-assets/worker-poc.{asset}");

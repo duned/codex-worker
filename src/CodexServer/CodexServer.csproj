@@ -12,7 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Frontend source/dependencies are build inputs, never deployment content.
-         dashboard-legacy is a reference backup and is neither built nor embedded. -->
+         dashboard-legacy is the previous dashboard, embedded unchanged and served under /old. -->
     <Content Remove="dashboard/**/*" />
     <Content Remove="dashboard-legacy/**/*" />
     <None Remove="dashboard-legacy/**/*" />
@@ -30,17 +30,31 @@
   <Target Name="BuildDashboard" BeforeTargets="PrepareForBuild" DependsOnTargets="RestoreDashboard">
     <Exec WorkingDirectory="dashboard" Command="npm run typecheck &amp;&amp; npm run lint &amp;&amp; node build.mjs &quot;$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'dashboard'))&quot;" />
   </Target>
-  <Target Name="EmbedDashboardPreview" BeforeTargets="AssignTargetPaths" DependsOnTargets="BuildDashboard">
+  <Target Name="RestoreLegacyDashboard" BeforeTargets="PrepareForBuild"
+          Inputs="dashboard-legacy/package.json;dashboard-legacy/package-lock.json"
+          Outputs="dashboard-legacy/node_modules/.package-lock.json">
+    <Exec WorkingDirectory="dashboard-legacy" Command="npm ci --no-audit --no-fund" />
+  </Target>
+  <!-- The legacy backup is frozen: build it for /old without its retired lint/test gates. -->
+  <Target Name="BuildLegacyDashboard" BeforeTargets="PrepareForBuild" DependsOnTargets="RestoreLegacyDashboard">
+    <Exec WorkingDirectory="dashboard-legacy" Command="node build.mjs &quot;$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'dashboard'))&quot;" />
+  </Target>
+  <Target Name="EmbedDashboardPreview" BeforeTargets="AssignTargetPaths" DependsOnTargets="BuildDashboard;BuildLegacyDashboard">
     <ItemGroup>
       <_DashboardPreviewAsset Include="$(IntermediateOutputPath)dashboard/preview/**/*" Exclude="$(IntermediateOutputPath)dashboard/preview/.vite/**/*" />
       <_DashboardPreviewAsset Update="@(_DashboardPreviewAsset)">
         <LogicalName>CodexServer.dashboard-preview/$([System.String]::Copy('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
       </_DashboardPreviewAsset>
       <EmbeddedResource Include="@(_DashboardPreviewAsset)" />
+      <_DashboardLegacyAsset Include="$(IntermediateOutputPath)dashboard/legacy/**/*" Exclude="$(IntermediateOutputPath)dashboard/legacy/.vite/**/*" />
+      <_DashboardLegacyAsset Update="@(_DashboardLegacyAsset)">
+        <LogicalName>CodexServer.dashboard-legacy/$([System.String]::Copy('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
+      </_DashboardLegacyAsset>
+      <EmbeddedResource Include="@(_DashboardLegacyAsset)" />
     </ItemGroup>
   </Target>
   <!-- A no-build publish cannot prove that the assembly contains current frontend inputs. -->
-  <Target Name="RequireCurrentDashboardPublish" BeforeTargets="BuildDashboard;PrepareForPublish" Condition="'$(NoBuild)' == 'true'">
+  <Target Name="RequireCurrentDashboardPublish" BeforeTargets="BuildDashboard;BuildLegacyDashboard;PrepareForPublish" Condition="'$(NoBuild)' == 'true'">
     <Error Text="Server publish requires a build to regenerate and verify embedded dashboard assets; omit --no-build." />
   </Target>
 </Project>
