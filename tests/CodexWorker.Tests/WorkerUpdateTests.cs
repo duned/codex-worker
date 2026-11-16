@@ -358,6 +358,42 @@ public sealed class WorkerUpdateTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task ReleaseApiReportsLatestWorkerVersionAndSupportedOperations()
+    {
+        using var temporary = new TemporaryDirectory();
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "release-test-management");
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var url = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
+            listener.Stop();
+            var lookups = 0;
+            await using var app = await ServerApplication.BuildAsync([
+                $"--Server:ListenUrl={url}", $"--Server:DatabasePath={Path.Combine(temporary.Path, "server.db")}",
+                "--Logging:LogLevel:Default=Warning"], workerReleases: new WorkerReleaseCatalog(_ => { lookups++; return Task.FromResult("1.2.0"); }, TimeProvider.System));
+            await app.StartAsync();
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var worker = Guid.NewGuid().ToString("N");
+            await store.RegisterWorkerAsync(new(2, worker, "Worker", "1.0.0", "test", 2, Capabilities));
+            await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2, Capabilities, [], ConfigurationSynchronization: "synchronized"));
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync($"/api/v1/workers/{worker}/release")).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "release-test-management");
+            var status = await client.GetFromJsonAsync<WorkerReleaseStatus>($"/api/v1/workers/{worker}/release");
+            Assert.Equal(new WorkerReleaseStatus("1.0.0", "1.2.0", true, true, false, status!.CheckedAtUtc), status);
+            await client.GetFromJsonAsync<WorkerReleaseStatus>($"/api/v1/workers/{worker}/release");
+            Assert.Equal(1, lookups);
+            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/v1/workers/{Guid.NewGuid():N}/release")).StatusCode);
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task RecoveryApiReturnsActionableConflictAndRechecksBeforeRestoringPolicy()
     {
         using var temporary = new TemporaryDirectory();

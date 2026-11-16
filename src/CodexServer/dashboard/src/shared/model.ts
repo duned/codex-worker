@@ -1,4 +1,4 @@
-import type { ExecutionSummary, GitHubIssue, WorkerObservation } from './api/contracts';
+import type { ExecutionSummary, GitHubIssue, WorkerObservation, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
 /** Visual tone of a status. Semantic colours are fixed: ok, bad, warn, run (animated) and idle. */
@@ -139,3 +139,13 @@ export function dateTime(value: string | undefined, language: string) {
   return new Date(value).toLocaleString(language === 'es' ? 'es-ES' : 'en-GB', { dateStyle: 'short', timeStyle: 'short' });
 }
 export const issueNumber = (execution: ExecutionSummary) => execution.workReference?.type === 'github-issue' ? Number(execution.workReference.id) : undefined;
+
+// Worker restart/update operations (the Server drains the Worker before either).
+/** An operation that still owns the Worker: a new restart or update cannot start until it settles or its drain is released. */
+export const maintenanceBlocking = (operation: WorkerUpdate | undefined) => !!operation &&
+  operation.state !== 'succeeded' && !(operation.restart && operation.state === 'failed' && operation.drainReleasedAtUtc);
+export function maintenanceMessage(operation: WorkerUpdate): TranslationKey {
+  const kind = operation.restart ? 'restart' : 'update';
+  if (operation.state === 'failed') return operation.drainReleasedAtUtc ? `maintenance.${kind}.released` : `maintenance.${kind}.failed`;
+  return `maintenance.${kind}.${operation.state}`;
+}

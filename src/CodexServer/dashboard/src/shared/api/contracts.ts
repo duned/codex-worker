@@ -124,3 +124,16 @@ export interface ObserverExecutionObservation {
 export interface ObserverDetail { observer: ObserverSummary; currentExecutions: ObserverExecutionObservation[] }
 export interface ObserverInventoryExecution { observerId: string; observation: ObserverExecutionObservation }
 export interface ObserverInventory { total: number; active: number; totalCapacity: number | null; observers: ObserverSummary[]; executions: ObserverInventoryExecution[] }
+export interface WorkerRelease {
+  currentVersion?: string; latestVersion?: string; updateAvailable: boolean; selfUpdateSupported: boolean; restartSupported: boolean;
+  checkedAtUtc?: string; diagnostic?: string;
+}
+export interface WorkerUpdateRecovery {
+  schedulingBlocked: boolean; checkedAtUtc: string; eligible: boolean; reportedVersion?: string; retryEligible?: boolean; releaseDrainEligible?: boolean;
+  checks: { code: string; satisfied: boolean; description: string; nextStep: string }[];
+}
+export interface WorkerUpdate {
+  operationId: string; workerId: string; state: 'waiting-for-idle' | 'updating' | 'reconnecting' | 'succeeded' | 'failed';
+  requestedAtUtc?: string; diagnostic?: string; drainReleasedAtUtc?: string; expectedVersion?: string; originalVersion?: string; restart?: boolean;
+  recovery?: WorkerUpdateRecovery;
+}
