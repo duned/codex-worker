@@ -1,0 +1,27 @@
+import type { api as source } from '../en/api';
+export const api = {
+  "api.unsupportedAPIPath": "Ruta API no compatible.",
+  "api.accessRejectedWithoutAServerDiagnosticCheckManagementNetworkPolicyAndProxy": "Acceso rechazado sin diagnóstico del servidor. Compruebe la política de red de administración y el enrutamiento del proxy.",
+  "api.serverConnectionUnavailableStateMayBeStaleCheckTheConnectionAndRefresh": "Conexión del servidor no disponible. El estado puede estar obsoleto; compruebe la conexión y actualice.",
+  "api.invalidServerDataRefreshOrCheckTheServerDeployment": "Datos del servidor no válidos. Actualice o compruebe el despliegue del servidor.",
+  "api.checkingAdministrationSession": "Comprobando sesión de administración…",
+  "api.signInToAdministerThisServer": "Inicie sesión para administrar este servidor.",
+  "api.signingOut": "Cerrando sesión…",
+  "api.signedOut": "Sesión cerrada.",
+  "api.yourSessionExpiredSignInAgain": "Su sesión caducó. Inicie sesión de nuevo.",
+  "api.signOutCouldNotBeConfirmedByTheServerRetrySignOut": "El servidor no pudo confirmar el cierre de sesión. Reintente el cierre de sesión.",
+  "api.sessionUnavailable": "Sesión no disponible.",
+  "api.administrationSignInRequired": "Se requiere inicio de sesión de administración.",
+  "api.yourSessionExpiredOrWasRejectedSignInAgain": "Su sesión caducó o fue rechazada. Inicie sesión de nuevo.",
+  "api.unsupportedPreviewPath": "Ruta de vista previa no compatible.",
+  "api.refreshAuthoritativeStateBeforeRetrying": "Actualice el estado autorizado antes de reintentar.",
+  "api.reconciliationUnavailable": "Conciliación no disponible.",
+  "api.liveStreamUnavailable": "Flujo en vivo no disponible.",
+  "api.eventBoundExceeded": "Límite de evento superado.",
+  "api.originMissing": "El inicio de sesión del navegador no está configurado. Configure AdministrationOrigin del servidor con el origen HTTPS externo exacto y reinicie el servidor. Rotar el token no solucionará esto.",
+  "api.hostMismatch": "El Host de administración del servidor no coincide. Ajuste el Host del proxy a AdministrationOrigin. Rotar el token no solucionará esto.",
+  "api.originMismatch": "El origen del navegador no coincide con AdministrationOrigin. Use la URL HTTPS configurada o corrija la configuración del servidor y reinicie. Rotar el token no solucionará esto.",
+  "api.tokenInvalid": "Token de administración rechazado. Obtenga el token existente de forma privada en el servidor.",
+  "api.sessionInvalid": "No hay sesión de administración válida. Inicie sesión con el token de administración existente.",
+  "api.httpFailed": "Solicitud fallida (HTTP {status}). El estado puede estar obsoleto; actualice antes de reintentar."
+} satisfies Record<keyof typeof source, string>;

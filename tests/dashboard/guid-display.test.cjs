@@ -11,8 +11,8 @@ test('shared GUID formatter consistently exposes the full value accessibly', () 
   assert.match(component, /return value\.slice\(0, 7\)/);
   assert.match(component, /title=\{value\}/);
   assert.match(component, /aria-label=\{t\('shared\.shortGuidAccessible'/);
-  assert.match(source('shared/locales/en.ts'), /"shared\.shortGuidAccessible"/);
-  assert.match(source('shared/locales/es.ts'), /"shared\.shortGuidAccessible"/);
+  assert.match(source('shared/locales/en/shared.ts'), /"shared\.shortGuidAccessible"/);
+  assert.match(source('shared/locales/es/shared.ts'), /"shared\.shortGuidAccessible"/);
 });
 
 test('execution list surfaces link the shared short identifier to its detail route', () => {

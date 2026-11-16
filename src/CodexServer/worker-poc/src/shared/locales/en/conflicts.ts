@@ -1,0 +1,20 @@
+export const conflicts = {
+  "conflicts.title": "Retry preserved integration conflict",
+  "conflicts.description": "Inspect this execution on its original Worker, then explicitly request one bounded attempt using the preserved implementation. Automatic retry limits remain in effect.",
+  "conflicts.inspect": "Inspect / refresh eligibility",
+  "conflicts.request": "Request one resolution attempt",
+  "conflicts.unavailable": "Recovery preview unavailable.",
+  "conflicts.parentEvidence": "Native GitHub parent history",
+  "conflicts.parentReview": "Review the repository, Issue identity, execution timestamp and ordered parent events. Confirming recovery records this evidence without changing the original execution.",
+  "conflicts.parentExplicit": "Legacy parent reconciliation requires explicit approval.",
+  "conflicts.evidence": "Preserved execution evidence",
+  "conflicts.worker": "Original Worker",
+  "conflicts.execution": "Preserved execution",
+  "conflicts.commit": "Exact implementation commit",
+  "conflicts.base": "Previewed integration base",
+  "conflicts.exhausted": "Automatic retry is exhausted for this base.",
+  "conflicts.automaticAvailable": "Automatic recovery may still be eligible.",
+  "conflicts.refreshResult": "Inspect again to reconcile the request before retrying.",
+  "conflicts.result": "Inspect recovery attempt and result",
+  "conflicts.confirm": "Queue one bounded resolution attempt for the previewed original Worker, execution and exact commit. The Worker will verify ownership and Issue intent again. Implementation will not be rerun."
+} as const;

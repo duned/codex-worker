@@ -1,3 +1,4 @@
+import { localeSource } from './locale-source.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -56,8 +57,8 @@ test('language, theme and sign-out controls keep their accessible actions', () =
 test('sidebar status uses API version and successful fetch time, and localizes both languages', () => {
   const status = read('shared/ServerStatus.tsx');
   const validation = read('shared/api/validation.ts');
-  const english = read('shared/locales/en.ts');
-  const spanish = read('shared/locales/es.ts');
+  const english = localeSource('en');
+  const spanish = localeSource('es');
 
   assert.match(status, /typeof data\?\.version === 'string'/);
   assert.match(status, /timestamp\(timestampIso\)/);

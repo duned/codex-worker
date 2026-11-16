@@ -1,3 +1,4 @@
+import { localeSource } from './locale-source.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -9,8 +10,8 @@ const styles = read('poc.css');
 const dialog = read('shared/Dialogs.tsx');
 const issues = read('features/projects/Issues.tsx');
 const workspace = read('features/projects/Workspace.tsx');
-const english = read('shared/locales/en.ts');
-const spanish = read('shared/locales/es.ts');
+const english = localeSource('en');
+const spanish = localeSource('es');
 
 function rule(selector) {
   const start = styles.indexOf(`${selector} {`);

@@ -1,3 +1,4 @@
+import { localeSource } from './locale-source.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -109,8 +110,8 @@ test('current execution metadata is Project, GitHub Issue, then Elapsed, with el
 test('timeline provides visible state text, completed checkmarks, a restrained active pulse, and reduced-motion support', () => {
   const detail = read('detail.jsx');
   const styles = read('poc.css');
-  const english = read('shared/locales/en.ts');
-  const spanish = read('shared/locales/es.ts');
+  const english = localeSource('en');
+  const spanish = localeSource('es');
 
   assert.match(detail, /stage\.state === 'completed' \? t\('workers\.stageCompleted'\)/);
   assert.match(detail, /stage\.state === 'current' \? t\('workers\.currentStageReported'\)/);

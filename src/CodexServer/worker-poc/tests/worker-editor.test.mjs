@@ -1,3 +1,4 @@
+import { localeSource } from './locale-source.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -69,7 +70,7 @@ test('Worker editor uses revision-checked persistence, native form validation an
 
 test('only an available Worker version exposes the Server update action', () => {
   const editor = read('features/workers/WorkerEditor.tsx');
-  const english = read('shared/locales/en.ts');
+  const english = localeSource('en');
   assert.match(editor, /version\.state === 'available'[\s\S]*?editorUpdateWorker/);
   assert.match(editor, /version\.state === 'in-progress'/);
   assert.match(editor, /version\.state === 'failed'/);
@@ -85,8 +86,8 @@ test('only an available Worker version exposes the Server update action', () => 
 
 test('Telegram editor uses shared Untitled UI controls and never renders the saved token', () => {
   const editor = read('features/workers/WorkerEditor.tsx');
-  const english = read('shared/locales/en.ts');
-  const spanish = read('shared/locales/es.ts');
+  const english = localeSource('en');
+  const spanish = localeSource('es');
   assert.match(editor, /import \{ Checkbox \} from .*checkbox\/checkbox/);
   assert.equal((editor.match(/<Checkbox /g) ?? []).length, 2);
   assert.match(editor, /<Input label=\{t\('workers\.telegramChat'\)\}[^>]*hint=/);
@@ -114,8 +115,8 @@ test('Worker data refresh keeps the mounted editor, dirty draft and scroller ava
 });
 
 test('Worker editor copy is complete in English and Spanish', () => {
-  const english = read('shared/locales/en.ts');
-  const spanish = read('shared/locales/es.ts');
+  const english = localeSource('en');
+  const spanish = localeSource('es');
   const keys = source => [...source.matchAll(/"(workers\.editor[^"]+)":/g)].map(match => match[1]).sort();
   assert.deepEqual(keys(spanish), keys(english));
 });
@@ -140,7 +141,7 @@ test('invalid managed configuration does not hide or block an available controll
 for (const [flag, reason] of Object.entries({ busy: 'busy', refreshing: 'refreshing', editorLocked: 'editor-locked', workerStatusError: 'worker-status-error', pending: 'pending', loading: 'loading', error: 'status-error', failed: 'failed', locked: 'locked' })) {
   test(`update explains ${reason} and has localized recovery text`, () => {
     assert.equal(workerUpdateBlockReason(updateWorker(), { [flag]: true }), reason);
-    for (const language of ['en', 'es']) assert.ok(read(`shared/locales/${language}.ts`).includes(`"workers.editorUpdateBlock.${reason}"`));
+    for (const language of ['en', 'es']) assert.ok(localeSource(language).includes(`"workers.editorUpdateBlock.${reason}"`));
   });
 }
 for (const [overrides, reason] of [[{ availability: 'offline' }, 'offline'], [{ availability: 'stale' }, 'stale'], [{ capabilities: [] }, 'unsupported'], [{ lifecycleState: 'stopped' }, 'lifecycle']]) {

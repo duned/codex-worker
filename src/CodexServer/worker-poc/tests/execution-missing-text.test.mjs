@@ -1,3 +1,4 @@
+import { localeSource } from './locale-source.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
@@ -13,8 +14,8 @@ test('Execution detail keeps rendering when a server-derived translation key has
   // the key may have no matching resource even though the static type is cast.
   assert.match(i18n, /\(key \? resources\[language\]\[key\] : undefined\)\s*\?\?\s*resources\[language\]\['shared\.unknown'\]/);
   assert.match(detail, /t\(`maintenance\.classification\.\$\{attention\.classification\}` as TranslationKey\)/);
-  assert.match(read('shared/locales/en.ts'), /"shared\.unknown":/);
-  assert.match(read('shared/locales/es.ts'), /"shared\.unknown":/);
+  assert.match(localeSource('en'), /"shared\.unknown":/);
+  assert.match(localeSource('es'), /"shared\.unknown":/);
 });
 
 test('Execution detail shows localized unavailable text for absent optional stage and summary fields', () => {
@@ -27,8 +28,8 @@ test('failed Execution detail uses a localized fallback for missing, null, or em
   const detail = read('features/executions/ExecutionsPage.tsx');
   const contract = read('shared/api/contracts.ts');
   const validation = read('shared/api/validation.ts');
-  const english = read('shared/locales/en.ts');
-  const spanish = read('shared/locales/es.ts');
+  const english = localeSource('en');
+  const spanish = localeSource('es');
 
   // The API's optional completionSummary is the available failure explanation;
   // a missing or blank value gets an explicit localized fallback.
@@ -50,8 +51,8 @@ test('missing translator input falls back safely and failed detail retains optio
 
 test('execution list keeps state details inside the badge and presents localized two-line timestamps', () => {
   const detail = read('features/executions/ExecutionTable.tsx');
-  const english = read('shared/locales/en.ts');
-  const spanish = read('shared/locales/es.ts');
+  const english = localeSource('en');
+  const spanish = localeSource('es');
   const dateRenderer = detail.match(/function ExecutionListTimestamp\([\s\S]*?\n\}/)?.[0];
 
   assert.ok(dateRenderer);
