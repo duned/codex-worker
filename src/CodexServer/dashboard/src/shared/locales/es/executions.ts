@@ -7,5 +7,8 @@ export const executions = {
   "executions.integrating": "Integrando", "executions.pending": "Pendiente", "executions.technicalDetail": "Detalle técnico", "executions.result": "Resultado",
   "executions.implementation": "Implementación", "executions.done": "Completada", "executions.inProgress": "En curso", "executions.validation": "Validación",
   "executions.integration": "Integración", "executions.duration": "Duración", "executions.summary": "Resumen", "executions.engine": "Motor",
-  "executions.created": "Encolada", "executions.finished": "Terminada", "executions.id": "Identificador", "executions.retryOf": "Reintento de"
+  "executions.created": "Encolada", "executions.finished": "Terminada", "executions.id": "Identificador", "executions.retryOf": "Reintento de",
+  "executions.view": "Vista", "executions.viewCurrent": "Actuales", "executions.viewArchived": "Archivadas", "executions.archived": "Archivada",
+  "executions.archivedAt": "Archivada", "executions.archivedDescription": "Ejecuciones terminadas ocultas de las listas. Restaura una para volver a mostrarla.",
+  "executions.noArchived": "No hay ejecuciones archivadas que coincidan.", "executions.select": "Seleccionar {name}", "executions.selectAll": "Seleccionar todas las mostradas"
 } satisfies Record<keyof typeof source, string>;

@@ -28,9 +28,10 @@ export interface ExecutionSummary {
   durationMilliseconds?: number; recoveryState?: string; recoveryReason?: string; pendingReason?: string;
   managedEligibilityState?: string; managedEligibilityReasons?: string[]; managedEligibilityCheckedAtUtc?: string;
   completionSummary?: string; validationResult?: string; integrationResult?: string; failureClassification?: string;
-  recoverable?: boolean; attemptNumber?: number; retryOfExecutionId?: string; workerExecutionId?: string; workspaceRecovery?: string;
+  recoverable?: boolean; attemptNumber?: number; retryOfExecutionId?: string; workerExecutionId?: string; workspaceRecovery?: string; archivedAtUtc?: string;
   workReference?: { type: string; id: string; url?: string; title?: string; selection?: { engine: 'codex' | 'ccc'; model?: string | null; effort?: string | null } };
 }
+export interface ExecutionArchiveResult { changed: string[]; refused: { id: string; reason: string }[] }
 export interface ExecutionMaintenanceRequest {
   operationId: string; workerId: string; serverExecutionId?: string | null; workerExecutionId?: string | null;
   assignmentId?: string | null; generation?: number | null; action: 'inventory' | 'inspect' | 'cleanup' | 'archive' | 'retry-report' | 'reconcile-completion';

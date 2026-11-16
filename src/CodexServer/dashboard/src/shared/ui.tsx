@@ -107,13 +107,14 @@ export function Slots({ used, total }: { used: number; total: number }) {
 }
 
 /** Search box plus status select shared by every list. */
-export function Filters({ query, onQuery, status, onStatus, options, placeholder }: {
-  query: string; onQuery(value: string): void; status: string; onStatus(value: string): void; options: { value: string; label: string }[]; placeholder: string;
+export function Filters({ query, onQuery, status, onStatus, options, placeholder, children }: {
+  query: string; onQuery(value: string): void; status: string; onStatus(value: string): void; options: { value: string; label: string }[]; placeholder: string; children?: ReactNode;
 }) {
   return <div className="flex flex-wrap gap-2 border-b border-secondary px-5 py-3">
     <input type="search" aria-label={placeholder} placeholder={placeholder} value={query} onChange={event => onQuery(event.target.value)}
       className="min-w-0 flex-[1_1_220px] rounded-lg bg-primary px-3 py-2 text-md text-primary shadow-xs ring-1 ring-primary outline-none ring-inset placeholder:text-placeholder focus:ring-2 focus:ring-brand" />
     <Select label={t('common.status')} value={status} onChange={onStatus} options={[{ value: '', label: t('common.allStatuses') }, ...options]} hideLabel />
+    {children}
   </div>;
 }
 export function matches(text: string, query: string) { return !query.trim() || text.toLowerCase().includes(query.trim().toLowerCase()); }

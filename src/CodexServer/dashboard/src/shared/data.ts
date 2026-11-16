@@ -3,7 +3,9 @@ import { useApiRead } from './api/session';
 import { executions, nodes, projects, workers } from './api/validation';
 import type { ExecutionSummary, ProjectSummary, WorkerObservation } from './api/contracts';
 
+// The Server hides archived executions unless a list asks for them.
 export const recentExecutionsPath = '/api/v1/executions?limit=100&offset=0';
+export const archivedExecutionsPath = '/api/v1/executions?limit=100&offset=0&archived=only';
 export const useProjects = () => useApiRead('/api/v1/projects', projects);
 export const useWorkers = () => useApiRead('/api/v1/workers', workers);
 export const useNodes = () => useApiRead('/api/v1/nodes', nodes);

@@ -70,6 +70,10 @@ export function explain(execution: ExecutionSummary): { what: TranslationKey; to
   return { what: 'explain.failed.what', todo: 'explain.failed.todo' };
 }
 
+/** Archive only hides finished executions. An uncertain lease still needs reconciliation, so it stays visible. */
+export const canArchive = (execution: ExecutionSummary) => !execution.archivedAtUtc &&
+  ['Completed', 'Failed', 'Cancelled'].includes(execution.state) && !(execution.state === 'Failed' && execution.recoveryState === 'LeaseExpiredUncertain');
+
 export const needsAttention = (execution: ExecutionSummary) => execution.state === 'Failed' &&
   !['RebaseConflictRequeued', 'LeaseExpiredRequeued'].includes(execution.recoveryState ?? '');
 /** Only the latest attempt of each Issue can need attention: a newer attempt supersedes older failures. */

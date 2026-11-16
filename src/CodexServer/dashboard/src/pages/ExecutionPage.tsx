@@ -1,14 +1,14 @@
 import { useState, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { Button } from '../untitled/components/base/buttons/button';
-import { useAction } from '../shared/actions';
+import { useAction, useArchive } from '../shared/actions';
 import { useApiRead, useRuntime } from '../shared/api/session';
 import type { Validator } from '../shared/api/client';
 import { execution as validateExecution, record } from '../shared/api/validation';
 import { useNames, useProjects } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { dateTime, duration, executionStatus, explain, isActive, issueNumber, stepProgress } from '../shared/model';
-import { Ago, Card, Explanation, KeyValues, Notice, PageHeader, ReadState, StatusPill, Steps } from '../shared/ui';
+import { canArchive, dateTime, duration, executionStatus, explain, isActive, issueNumber, stepProgress } from '../shared/model';
+import { Ago, Card, Explanation, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps } from '../shared/ui';
 import { executionLabel } from './ExecutionRow';
 
 interface ConflictPreview { executionId: string; workerId?: string; candidate?: Record<string, unknown>; eligible: boolean; reason: string }
@@ -20,7 +20,7 @@ const conflictPreview: Validator<ConflictPreview> = value => {
 };
 
 export function ExecutionPage() {
-  const language = useLanguage(), { executionId = '' } = useParams(), runtime = useRuntime(), action = useAction(), names = useNames();
+  const language = useLanguage(), { executionId = '' } = useParams(), runtime = useRuntime(), action = useAction(), archive = useArchive(), names = useNames();
   const path = `/api/v1/executions/${encodeURIComponent(executionId)}`;
   const read = useApiRead(path, validateExecution), projects = useProjects();
   const [preview, setPreview] = useState<ConflictPreview>(), [checking, setChecking] = useState(false);
@@ -44,11 +44,14 @@ export function ExecutionPage() {
       ...(issuePath ? [{ label: `#${number}`, to: issuePath }] : []), { label: t('executions.attempt', { n: item.attemptNumber ?? 1 }) }]}
       title={executionLabel(item)}
       description={<span className="flex flex-wrap items-center gap-2"><StatusPill status={status} />
+        {item.archivedAtUtc && <Pill tone="idle">{t('executions.archived')}</Pill>}
         {t('executions.attemptOn', { n: item.attemptNumber ?? 1, worker: names.worker(item.assignedWorkerId) })} · {t('executions.startedAgo')} <Ago value={item.startedAtUtc ?? item.createdAtUtc} /></span>}
       actions={<>
         {item.state === 'Queued' && <Button color="secondary-destructive" isDisabled={!!action.busy}
           onClick={() => void action.run(`cancel-${item.id}`, `${path}/cancel`, 'POST', {}, 'actions.cancelled')}>{t('actions.cancelQueued')}</Button>}
         {item.state === 'Failed' && number && <Button color="primary" isDisabled={!!action.busy} onClick={() => void enqueue()}>{t('actions.retryFresh')}</Button>}
+        {(canArchive(item) || item.archivedAtUtc) && <Button color="secondary" isDisabled={archive.busy}
+          onClick={() => void archive.run([item.id], !item.archivedAtUtc)}>{t(item.archivedAtUtc ? 'actions.restore' : 'actions.archive')}</Button>}
         {item.workReference?.url && <Button color="secondary" href={item.workReference.url} target="_blank" rel="noreferrer">{t('actions.openGitHub')}</Button>}
       </>} />
 
@@ -84,6 +87,7 @@ export function ExecutionPage() {
         [t('executions.created'), dateTime(item.createdAtUtc, language)],
         [t('executions.finished'), dateTime(item.completedAtUtc, language)],
         [t('executions.id'), <span className="font-mono text-xs">{item.id}</span>],
+        ...(item.archivedAtUtc ? [[t('executions.archivedAt'), dateTime(item.archivedAtUtc, language)] as [string, ReactNode]] : []),
         ...(item.retryOfExecutionId ? [[t('executions.retryOf'), <a className="font-mono text-xs underline" href={`/executions/${item.retryOfExecutionId}`}>{item.retryOfExecutionId.slice(0, 8)}</a>] as [string, ReactNode]] : [])
       ]} /></Card>
     </div>

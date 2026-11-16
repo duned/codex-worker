@@ -1,4 +1,4 @@
-import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential } from './contracts';
+import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult } from './contracts';
 import type { Validator } from './client';
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid object.');
@@ -48,7 +48,7 @@ export const projects = list<ProjectSummary>(value => { const item = fields(valu
 export const executions = list<ExecutionSummary>(value => {
   const item = fields(value, ['id', 'projectId', 'state', 'createdAtUtc']);
   optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState', 'recoveryReason', 'pendingReason', 'managedEligibilityState', 'managedEligibilityCheckedAtUtc', 'completionSummary',
-    'validationResult', 'integrationResult', 'failureClassification', 'retryOfExecutionId', 'workerExecutionId', 'workspaceRecovery'], ['recoverable'], ['durationMilliseconds', 'attemptNumber']);
+    'validationResult', 'integrationResult', 'failureClassification', 'retryOfExecutionId', 'workerExecutionId', 'workspaceRecovery', 'archivedAtUtc'], ['recoverable'], ['durationMilliseconds', 'attemptNumber']);
   if (item.stageStartedAtUtc != null) {
     const stages = record(item.stageStartedAtUtc);
     const allowed = new Set(['claimed', 'preparing', 'codex', 'validation', 'integration', 'reporting']);
@@ -204,4 +204,10 @@ export const issues = list<GitHubIssue>(validateIssue);
 export const issue: Validator<GitHubIssue> = value => { validateIssue(value); return value as GitHubIssue; };
 export const credentials = list<Credential>(value => { optional(fields(value, ['id', 'provider', 'type', 'status']), ['assignedWorkerId', 'revokedAtUtc']); });
 /** Mutation responses are re-read from their collections; only require a JSON object or no content. */
+export const archiveResult: Validator<ExecutionArchiveResult> = value => {
+  const item = record(value);
+  if (!Array.isArray(item.changed) || item.changed.some(id => typeof id !== 'string') || !Array.isArray(item.refused)) throw new Error('Invalid archive result.');
+  item.refused.forEach(refusal => fields(refusal, ['id', 'reason']));
+  return item as unknown as ExecutionArchiveResult;
+};
 export const accepted: Validator<unknown> = value => { if (value !== null) record(value); return value; };

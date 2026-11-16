@@ -69,6 +69,7 @@ public interface IRegistryStore
     Task<IReadOnlyList<ExecutionRequest>> ListExecutionsAsync(ExecutionQuery query, CancellationToken cancellationToken = default);
     Task<ExecutionRequest?> GetExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
     Task<ExecutionRequest?> CancelQueuedExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
+    Task<ExecutionArchiveResult> SetExecutionsArchivedAsync(IReadOnlyList<string> executionRequestIds, bool archived, CancellationToken cancellationToken = default);
     Task<ExecutionReconciliationResult?> ReconcileUncertainExecutionAsync(string executionRequestId,
         ExecutionReconciliationRequest request, CancellationToken cancellationToken = default);
     Task<ExecutionRequest?> TransitionExecutionAsync(string executionRequestId, ExecutionStateTransition transition, CancellationToken cancellationToken = default);
@@ -93,8 +94,9 @@ public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference Wor
     [property: JsonIgnore] DateTimeOffset? ExpectedProjectCreatedAtUtc = null,
     [property: JsonIgnore] DateTimeOffset? ReadyLabelAppliedAtUtc = null);
 public sealed record ManagedEligibilityUpdate(string State, IReadOnlyList<string> Reasons, DateTimeOffset CheckedAtUtc);
+/// <summary>Archived: null or "include" lists every execution, "exclude" hides archived ones and "only" lists just those.</summary>
 public sealed record ExecutionQuery(string? ProjectId = null, string? State = null, string? WorkType = null,
-    string? WorkId = null, int Limit = 50, int Offset = 0);
+    string? WorkId = null, int Limit = 50, int Offset = 0, string? Archived = null);
 public sealed record ExecutionReconciliationRequest(string Disposition, string Evidence, string? IntegrationCommit = null);
 public sealed record ExecutionReconciliationResult(ExecutionRequest Execution, ExecutionRequest? Retry);
 public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference WorkReference,
@@ -107,7 +109,7 @@ public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference
     string? WorkspaceRecovery = null, string? PendingReason = null, IReadOnlyList<string>? MissingRequirements = null,
     string ManagedEligibilityState = "eligible", IReadOnlyList<string>? ManagedEligibilityReasons = null,
     DateTimeOffset? ManagedEligibilityCheckedAtUtc = null,
-    IReadOnlyDictionary<string, DateTimeOffset>? StageStartedAtUtc = null);
+    IReadOnlyDictionary<string, DateTimeOffset>? StageStartedAtUtc = null, DateTimeOffset? ArchivedAtUtc = null);
 public sealed record ExecutionLease(string ExecutionId, string WorkerId, long Generation,
     DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);
 public sealed record ExecutionLeaseRenewal(string WorkerId, long Generation);
@@ -258,6 +260,7 @@ public static class ExecutionAdministrationValidation
             return "workId must be a positive decimal GitHub Issue number.";
         if (query.Limit is < 1 or > 100) return "limit must be between 1 and 100.";
         if (query.Offset is < 0 or > 10000) return "offset must be between 0 and 10000.";
+        if (query.Archived is not (null or "include" or "exclude" or "only")) return "archived must be include, exclude or only.";
         return null;
     }
 
@@ -551,7 +554,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
 {
     private readonly ILogger _logger = logger ?? NullLogger<SqliteRegistryStore>.Instance;
 
-    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json FROM execution_requests";
+    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json, (SELECT archived_at_utc FROM execution_archive a WHERE a.execution_id=execution_requests.id) FROM execution_requests";
     public const int CurrentSchemaVersion = 21;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
@@ -818,6 +821,11 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                         managed_eligibility_checked_at_utc TEXT NULL,
                         stage_started_at_utc_json TEXT NULL
                 );
+                -- Presentation-only: hides finished executions from default lists; never lifecycle state.
+                CREATE TABLE IF NOT EXISTS execution_archive (
+                    execution_id TEXT NOT NULL PRIMARY KEY,
+                    archived_at_utc TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS execution_leases (
                     execution_id TEXT NOT NULL,
                     generation INTEGER NOT NULL,
@@ -870,7 +878,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             await freshness.ExecuteNonQueryAsync(cancellationToken);
             foreach (var (table, category) in new[] { ("projects", "projects"), ("workers", "workers"),
                 ("execution_requests", "executions"), ("execution_leases", "executions"),
-                ("execution_metadata", "executions"), ("worker_auth_tokens", "workers"), ("worker_updates", "executions") })
+                ("execution_metadata", "executions"), ("worker_auth_tokens", "workers"), ("worker_updates", "executions"),
+                ("execution_archive", "executions") })
             {
                 foreach (var operation in new[] { "INSERT", "UPDATE", "DELETE" })
                 {
@@ -1522,11 +1531,12 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = ExecutionSelect + " WHERE ($project IS NULL OR project_id=$project) AND ($state IS NULL OR state=$state) AND ($type IS NULL OR work_type IN ('issue','github-issue')) AND ($workId IS NULL OR work_id=$workId OR (work_type IN ('issue','github-issue') AND work_id NOT GLOB '*[^0-9]*' AND CAST(work_id AS INTEGER)=CAST($workId AS INTEGER))) ORDER BY queue_order DESC LIMIT $limit OFFSET $offset;";
+        command.CommandText = ExecutionSelect + " WHERE ($project IS NULL OR project_id=$project) AND ($state IS NULL OR state=$state) AND ($type IS NULL OR work_type IN ('issue','github-issue')) AND ($workId IS NULL OR work_id=$workId OR (work_type IN ('issue','github-issue') AND work_id NOT GLOB '*[^0-9]*' AND CAST(work_id AS INTEGER)=CAST($workId AS INTEGER))) AND ($archived IS NULL OR $archived='include' OR ($archived='only') = EXISTS (SELECT 1 FROM execution_archive a WHERE a.execution_id=execution_requests.id)) ORDER BY queue_order DESC LIMIT $limit OFFSET $offset;";
         command.Parameters.AddWithValue("$project", (object?)query.ProjectId ?? DBNull.Value);
         command.Parameters.AddWithValue("$state", (object?)query.State ?? DBNull.Value);
         command.Parameters.AddWithValue("$type", (object?)workType ?? DBNull.Value);
         command.Parameters.AddWithValue("$workId", (object?)workId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$archived", (object?)query.Archived ?? DBNull.Value);
         command.Parameters.AddWithValue("$limit", query.Limit);
         command.Parameters.AddWithValue("$offset", query.Offset);
         var result = new List<ExecutionRequest>();
@@ -2255,7 +2265,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         reader.IsDBNull(26) ? null : reader.GetString(26), reader.GetInt32(27), reader.IsDBNull(28) ? null : reader.GetString(28),
         null, null, reader.GetString(29), reader.IsDBNull(30) ? null : JsonSerializer.Deserialize<string[]>(reader.GetString(30), ProjectJson),
         reader.IsDBNull(31) ? null : DateTimeOffset.Parse(reader.GetString(31)),
-        reader.IsDBNull(32) ? null : JsonSerializer.Deserialize<Dictionary<string, DateTimeOffset>>(reader.GetString(32), ProjectJson));
+        reader.IsDBNull(32) ? null : JsonSerializer.Deserialize<Dictionary<string, DateTimeOffset>>(reader.GetString(32), ProjectJson),
+        reader.IsDBNull(33) ? null : DateTimeOffset.Parse(reader.GetString(33), System.Globalization.CultureInfo.InvariantCulture));
 
     public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
     {

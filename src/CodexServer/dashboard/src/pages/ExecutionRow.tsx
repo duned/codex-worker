@@ -2,7 +2,7 @@ import type { ExecutionSummary } from '../shared/api/contracts';
 import { useNames } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
 import { dateTime, executionStatus, issueNumber } from '../shared/model';
-import { HeadRow, RowLink, StatusPill, Steps } from '../shared/ui';
+import { HeadRow, Pill, RowLink, StatusPill, Steps } from '../shared/ui';
 
 const columns = 'md:grid-cols-[minmax(0,2.2fr)_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_180px]';
 export const executionLabel = (execution: ExecutionSummary) => {
@@ -10,20 +10,32 @@ export const executionLabel = (execution: ExecutionSummary) => {
   return number ? `#${number}${title ? ` · ${title}` : ''}` : execution.workReference?.id ?? execution.id;
 };
 
-export function ExecutionHead() {
-  return <HeadRow className={columns}><span>{t('executions.issue')}</span><span>{t('executions.project')}</span><span>{t('executions.worker')}</span><span>{t('executions.started')}</span><span>{t('common.status')}</span></HeadRow>;
+export function ExecutionHead({ selection }: { selection?: { checked: boolean; disabled: boolean; onChange(value: boolean): void } }) {
+  const head = <HeadRow className={`flex-1 ${columns}`}><span>{t('executions.issue')}</span><span>{t('executions.project')}</span><span>{t('executions.worker')}</span><span>{t('executions.started')}</span><span>{t('common.status')}</span></HeadRow>;
+  return selection ? <div className="flex items-center bg-secondary"><SelectBox label={t('executions.selectAll')} {...selection} />{head}</div> : head;
+}
+
+function SelectBox({ label, checked, disabled, onChange }: { label: string; checked: boolean; disabled: boolean; onChange(value: boolean): void }) {
+  return <label className="flex shrink-0 items-center self-stretch pl-5">
+    <span className="sr-only">{label}</span>
+    <input type="checkbox" className="size-4 accent-[var(--color-bg-brand-solid)] disabled:opacity-40" checked={checked} disabled={disabled}
+      onChange={event => onChange(event.target.checked)} />
+  </label>;
 }
 
 /** One execution in a list: Issue, project, Worker, start and status. */
-export function ExecutionRow({ execution }: { execution: ExecutionSummary }) {
+export function ExecutionRow({ execution, selection }: { execution: ExecutionSummary; selection?: { checked: boolean; disabled: boolean; onChange(value: boolean): void } }) {
   const language = useLanguage(), names = useNames();
-  return <RowLink to={`/executions/${encodeURIComponent(execution.id)}`} className={`grid-cols-1 ${columns}`}>
+  const row = <RowLink to={`/executions/${encodeURIComponent(execution.id)}`} className={`grid-cols-1 ${selection ? 'flex-1' : ''} ${columns}`}>
     <span className="min-w-0 font-medium break-words text-primary">{executionLabel(execution)}</span>
     <span className="text-sm text-tertiary">{names.project(execution.projectId)}</span>
     <span className="text-sm text-tertiary">{names.worker(execution.assignedWorkerId)}</span>
     <span className="text-sm text-tertiary tabular-nums">{dateTime(execution.startedAtUtc ?? execution.createdAtUtc, language)}</span>
-    <span><StatusPill status={executionStatus(execution)} /></span>
+    <span className="flex flex-wrap items-center gap-1.5"><StatusPill status={executionStatus(execution)} />
+      {execution.archivedAtUtc && <Pill tone="idle">{t('executions.archived')}</Pill>}</span>
   </RowLink>;
+  return selection ? <div className="flex items-center">
+    <SelectBox label={t('executions.select', { name: executionLabel(execution) })} {...selection} />{row}</div> : row;
 }
 
 /** An active execution with its lifecycle steps. */

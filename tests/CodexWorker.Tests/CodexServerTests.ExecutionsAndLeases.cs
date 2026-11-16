@@ -196,6 +196,61 @@ public sealed partial class CodexServerTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task ArchiveHidesOnlyFinishedExecutionsFromListsWithoutChangingLifecycle()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "execution-archive.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Archive", "team/archive", "main", "", []));
+        var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+        var finished = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "2")));
+        await store.CancelQueuedExecutionAsync(finished.Id);
+        var failed = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "3")));
+        var uncertain = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "4")));
+        await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database}"))
+        {
+            // Terminal states normally come from Worker reports and lease expiry; seed them directly.
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE execution_requests SET state='Failed' WHERE id=$failed; UPDATE execution_requests SET state='Failed', recovery_state='LeaseExpiredUncertain' WHERE id=$uncertain;";
+            command.Parameters.AddWithValue("$failed", failed.Id);
+            command.Parameters.AddWithValue("$uncertain", uncertain.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+        var before = (await store.GetResourceStatusAsync()).Freshness!.Executions;
+
+        var result = await store.SetExecutionsArchivedAsync([finished.Id, failed.Id, queued.Id, uncertain.Id, "missing"], archived: true);
+        Assert.Equal([finished.Id, failed.Id], result.Changed);
+        Assert.Equal(new[] { new ExecutionArchiveRefusal(queued.Id, "not-finished"), new ExecutionArchiveRefusal(uncertain.Id, "not-finished"),
+            new ExecutionArchiveRefusal("missing", "not-found") }, result.Refused);
+        Assert.True((await store.GetResourceStatusAsync()).Freshness!.Executions > before);
+        Assert.Equal(new ExecutionArchiveRefusal(finished.Id, "already-archived"),
+            Assert.Single((await store.SetExecutionsArchivedAsync([finished.Id], archived: true)).Refused));
+
+        // Archive is presentation only: state and detail reads are unchanged.
+        var archived = await store.GetExecutionAsync(finished.Id);
+        Assert.Equal("Cancelled", archived!.State);
+        Assert.NotNull(archived.ArchivedAtUtc);
+        Assert.Equal([uncertain.Id, queued.Id], (await store.ListExecutionsAsync(new ExecutionQuery(ProjectId: project.Id, Archived: "exclude"))).Select(item => item.Id));
+        Assert.Equal([failed.Id, finished.Id], (await store.ListExecutionsAsync(new ExecutionQuery(ProjectId: project.Id, Archived: "only"))).Select(item => item.Id));
+        Assert.Equal(4, (await store.ListExecutionsAsync(new ExecutionQuery(ProjectId: project.Id))).Count);
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.ListExecutionsAsync(new ExecutionQuery(Archived: "all")));
+
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        Assert.NotNull((await restarted.GetExecutionAsync(finished.Id))!.ArchivedAtUtc);
+        Assert.Equal([finished.Id], (await restarted.SetExecutionsArchivedAsync([finished.Id], archived: false)).Changed);
+        Assert.Null((await restarted.GetExecutionAsync(finished.Id))!.ArchivedAtUtc);
+        Assert.Equal(new ExecutionArchiveRefusal(finished.Id, "not-archived"),
+            Assert.Single((await restarted.SetExecutionsArchivedAsync([finished.Id], archived: false)).Refused));
+        Assert.NotNull(ExecutionArchiveValidation.Error(new ExecutionArchiveRequest([], true)));
+        Assert.NotNull(ExecutionArchiveValidation.Error(new ExecutionArchiveRequest(Enumerable.Range(0, 101).Select(i => $"id-{i}").ToArray(), true)));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task ExecutionAdministrationFiltersDetailsCancelsOnlyQueuedWorkAndPersistsAcrossRestart()
     {
         using var temporary = new TemporaryDirectory();
@@ -684,6 +739,13 @@ public sealed partial class CodexServerTests
             using var cancelled = await client.PostAsync($"/api/v1/executions/{executionId}/cancel", content: null);
             Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
             Assert.Equal("Cancelled", (await cancelled.Content.ReadFromJsonAsync<ExecutionRequest>())!.State);
+            using var archive = await client.PostAsJsonAsync("/api/v1/executions/archive", new ExecutionArchiveRequest([executionId], true));
+            Assert.Equal(HttpStatusCode.OK, archive.StatusCode);
+            Assert.Equal([executionId], (await archive.Content.ReadFromJsonAsync<ExecutionArchiveResult>())!.Changed);
+            Assert.DoesNotContain((await client.GetFromJsonAsync<ExecutionRequest[]>($"/api/v1/executions?projectId={project.Id}"))!, item => item.Id == executionId);
+            Assert.Equal(executionId, Assert.Single((await client.GetFromJsonAsync<ExecutionRequest[]>($"/api/v1/executions?projectId={project.Id}&archived=only"))!).Id);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/v1/executions?archived=all")).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/v1/executions/archive", new ExecutionArchiveRequest([], true))).StatusCode);
             using var dashboardResponse = await client.GetAsync("/executions");
             Assert.Equal(HttpStatusCode.OK, dashboardResponse.StatusCode);
             Assert.Equal("text/html", dashboardResponse.Content.Headers.ContentType?.MediaType);

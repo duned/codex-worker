@@ -1067,10 +1067,11 @@ public static partial class ServerApplication
             catch (ProjectInUseException ex) { return Results.Conflict(new { error = ex.Message, queued = ex.Queued, assigned = ex.Assigned, running = ex.Running }); }
         });
         app.MapGet("/api/v1/executions", async (string? projectId, string? state, string? workType, string? workId,
-            int? limit, int? offset, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+            int? limit, int? offset, string? archived, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
-            var query = new ExecutionQuery(projectId, state, workType, workId, limit ?? 50, offset ?? 0);
+            // Archived executions are hidden from administration lists unless explicitly requested.
+            var query = new ExecutionQuery(projectId, state, workType, workId, limit ?? 50, offset ?? 0, archived ?? "exclude");
             var error = ExecutionAdministrationValidation.QueryError(query);
             if (error is not null) return Results.BadRequest(new { error });
             return Results.Ok(await store.ListExecutionsAsync(query, context.RequestAborted));
@@ -1110,6 +1111,14 @@ public static partial class ServerApplication
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             return Results.Json(new { error = "Execution states are owned by Worker assignment and report contracts. Use queued cancellation or uncertain execution reconciliation." },
                 statusCode: StatusCodes.Status410Gone);
+        });
+        app.MapPost("/api/v1/executions/archive", async (ExecutionArchiveRequest request, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            var error = ExecutionArchiveValidation.Error(request);
+            if (error is not null || request.ExecutionIds is not { } ids) return Results.BadRequest(new { error });
+            return Results.Ok(await store.SetExecutionsArchivedAsync(ids, request.Archived, context.RequestAborted));
         });
         app.MapPost("/api/v1/executions/{executionRequestId}/cancel", async (string executionRequestId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>

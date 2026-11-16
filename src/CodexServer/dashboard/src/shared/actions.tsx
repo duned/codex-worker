@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { useState } from 'react';
 import { useRuntime } from './api/session';
-import { accepted } from './api/validation';
+import { accepted, archiveResult } from './api/validation';
 import { t, type TranslationKey } from './i18n';
 
 interface Toast { id: number; text: string; failed: boolean }
@@ -35,6 +35,30 @@ export function useAction() {
       return false;
     }
     finally { setBusy(undefined); }
+  }
+  return { run, busy };
+}
+
+/** Archives or restores finished executions. Archive only hides them from default lists. */
+export function useArchive() {
+  const runtime = useRuntime();
+  const [busy, setBusy] = useState(false);
+  async function run(ids: string[], archived: boolean) {
+    if (busy || !ids.length) return false;
+    setBusy(true);
+    try {
+      const result = await runtime.mutate('executions-archive', '/api/v1/executions/archive', 'POST', { executionIds: ids, archived }, archiveResult);
+      await runtime.queries.invalidateQueries();
+      if (result.changed.length) toast(t(archived ? 'actions.archived' : 'actions.restored', { n: result.changed.length }));
+      if (result.refused.length) toast(t('actions.archiveRefused', { n: result.refused.length }), true);
+      return result.changed.length > 0;
+    }
+    catch (error) {
+      toast(error instanceof Error ? error.message : t('common.actionFailed'), true);
+      try { await runtime.reconcile('executions-archive', async () => { await runtime.queries.invalidateQueries(); }); } catch { /* Still pending; keep the lock. */ }
+      return false;
+    }
+    finally { setBusy(false); }
   }
   return { run, busy };
 }
