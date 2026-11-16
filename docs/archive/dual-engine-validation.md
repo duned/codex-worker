@@ -35,7 +35,7 @@ Record actual local build/test outcomes in the task result, including environmen
 restrictions. Do not infer passing results from this coverage map. Fake flags and
 responses validate our contract only. Vendor compatibility, commercial account
 access, service environment and actual confinement need the optional
-[operator-initiated live checks](dual-engine-operations.md#automated-evidence-and-optional-live-acceptance).
+[operator-initiated live checks](../dual-engine-operations.md#automated-evidence-and-optional-live-acceptance).
 Those real-node, real-credential checks were not run as part of this change.
 
 ## Local results (2026-11-01)

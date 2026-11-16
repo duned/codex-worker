@@ -128,7 +128,7 @@ never attach raw CLI output or authentication files to an Issue.
 
 The deterministic suite uses local SQLite, fake Git/GitHub boundaries and fake
 CLI child processes. It needs no Anthropic subscription/API key or live GitHub.
-See [dual-engine validation](dual-engine-validation.md) for coverage and commands.
+See [dual-engine validation](archive/dual-engine-validation.md) for coverage and commands.
 Fake help/output deliberately implements the adapter contract; it does **not**
 prove a released vendor binary supports that contract.
 

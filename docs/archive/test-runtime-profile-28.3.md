@@ -4,7 +4,7 @@
 
 Measured on 2026-10-13 on one Ubuntu 24.04 x64 host with two logical CPUs (AMD EPYC 7763), .NET SDK 10.0.112/runtime 10.0.12, VSTest 18.0.2, Debug/net10.0. Both solution test projects use xUnit 2.9.3, Microsoft.NET.Test.Sdk 17.14.1 and the Visual Studio adapter 3.1.4. MSBuild projects ran sequentially; existing xUnit collection scheduling was retained, including the nonparallel `ServerTokenEnvironment` collection.
 
-Inspection found **no `scripts/validate.sh` and no checked-in CI workflow**. [Development](development.md) documents solution restore/build/test; the example project YAML configures `dotnet test`. The actual deployed Worker's project YAML is outside this checkout and was not inspected. These measurements decompose the documented solution gate, not an invented replacement script or a claim about the deployed authoritative command.
+Inspection found **no `scripts/validate.sh` and no checked-in CI workflow**. [Development](../development.md) documents solution restore/build/test; the example project YAML configures `dotnet test`. The actual deployed Worker's project YAML is outside this checkout and was not inspected. These measurements decompose the documented solution gate, not an invented replacement script or a claim about the deployed authoritative command.
 
 One full baseline ran before adding metadata. Subsequent execution used focused filters only. Commands, all on the same host:
 
@@ -125,7 +125,7 @@ dotnet test CodexWorker.sln --no-build --no-restore -m:1 --filter 'Duration=Slow
 dotnet test CodexWorker.sln --no-build --no-restore -m:1 --filter 'ValidationProfile=FastCandidate'
 ```
 
-**A bare VSTest invocation may exit successfully for an empty filter.** Use [the explicit count guard](../tools/check-test-filter.py) for a checked result. It runs the same `dotnet test --filter` command with TRX and hang detection, requires the expected positive aggregate case count (including theory rows), and rejects skipped/failed cases, absent TRX and command failures. A project with no matches is permissible only when the total across the solution exactly matches the positive expected count. Update counts deliberately when tests change. This helper is optional local tooling, not a replacement authoritative gate.
+**A bare VSTest invocation may exit successfully for an empty filter.** Use [the explicit count guard](../../tools/check-test-filter.py) for a checked result. It runs the same `dotnet test --filter` command with TRX and hang detection, requires the expected positive aggregate case count (including theory rows), and rejects skipped/failed cases, absent TRX and command failures. A project with no matches is permissible only when the total across the solution exactly matches the positive expected count. Update counts deliberately when tests change. This helper is optional local tooling, not a replacement authoritative gate.
 
 To avoid executing the expensive suite repeatedly, complete Unit/Component/Fast sets and representative Integration/Medium/Slow intersections were verified after adding traits:
 
