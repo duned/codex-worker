@@ -182,6 +182,69 @@ public sealed class ManagedExecutionMaintenanceTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task ManualCompletionNeedsNoDrainButRequiresCapabilityAndUncontestedIssue()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var path = Path.Combine(temporary.Path, "server.db");
+        var registry = new SqliteRegistryStore(path, timeProvider: clock);
+        await registry.InitializeAsync();
+        var commands = new ExecutionMaintenanceStore(path, clock);
+        await commands.InitializeAsync();
+        var worker = Guid.NewGuid().ToString("N");
+        CodexServer.WorkerCapability[] Capabilities(bool manual) => WorkerAuthenticationRequirements.ForRepository("o/r").Select(r =>
+            new CodexServer.WorkerCapability(r.Type, r.Name, Scope: r.Scope)).Concat([
+                new CodexServer.WorkerCapability("tool", "git"), new CodexServer.WorkerCapability("agent-provider", "codex"),
+                new CodexServer.WorkerCapability("protocol", ExecutionMaintenanceProtocol.Capability)])
+            .Concat(manual ? [new CodexServer.WorkerCapability("protocol", ExecutionMaintenanceProtocol.ManualCompletionCapability)] : []).ToArray();
+        await registry.RegisterWorkerAsync(new(2, worker, "worker", "1", "linux", 2, Capabilities(false)));
+        await registry.HeartbeatWorkerAsync(new(2, worker, "1", "running", 0, 2, Capabilities(false), []));
+        var project = await registry.CreateProjectAsync(new("p", "o/r", "main", "", []));
+        var execution = await registry.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "1")));
+        var assignment = Assert.IsType<WorkAssignment>((await registry.RequestAssignmentAsync(new(worker, true, 1,
+            new Dictionary<string, int> { [project.Id] = 1 }))).Assignment);
+        var localId = Guid.NewGuid();
+        var generation = assignment.Lease?.Generation ?? 0;
+        await registry.ReportExecutionAsync(execution.Id, new(worker, assignment.AssignmentId, localId.ToString(), "Failed",
+            ValidationResult: "passed", FailureClassification: "InfrastructureFailure", Generation: generation));
+        var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), worker, execution.Id, localId,
+            assignment.AssignmentId, generation, ExecutionMaintenanceProtocol.ManualCompletion, true);
+        Assert.True(ExecutionMaintenanceProtocol.Valid(request));
+        Assert.False(ExecutionMaintenanceProtocol.Valid(request with { Apply = false }));
+        // Old Workers without the protocol cannot receive it.
+        Assert.Equal("worker-manual-completion-protocol-unavailable",
+            await ServerApplication.MaintenanceAuthorityReasonAsync(request, registry, CancellationToken.None));
+        await registry.HeartbeatWorkerAsync(new(2, worker, "1", "running", 0, 2, Capabilities(true), []));
+        // Scheduling stays enabled: no drain is required.
+        Assert.Null(await ServerApplication.MaintenanceAuthorityReasonAsync(request, registry, CancellationToken.None));
+        await commands.CreateAsync(request, "operator:test");
+        await commands.ClaimAsync(worker);
+        var completed = await registry.ReportExecutionAsync(execution.Id, new WorkerExecutionReport(worker, assignment.AssignmentId,
+            localId.ToString(), "Completed", ValidationResult: "passed", IntegrationResult: "passed", Generation: generation,
+            CompletionReconciliationOperationId: request.OperationId));
+        Assert.Equal("Completed", completed?.State);
+        Assert.Equal("CompletionReconciled", completed?.RecoveryState);
+        Assert.Null(completed?.FailureClassification);
+        // Once completed it is no longer eligible.
+        Assert.Equal("failed-terminal-execution-required",
+            await ServerApplication.MaintenanceAuthorityReasonAsync(request with { OperationId = Guid.NewGuid().ToString("N") }, registry, CancellationToken.None));
+
+        // A newer attempt for the same Issue makes an older failure ineligible.
+        var second = await registry.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "2")));
+        var secondAssignment = Assert.IsType<WorkAssignment>((await registry.RequestAssignmentAsync(new(worker, true, 1,
+            new Dictionary<string, int> { [project.Id] = 1 }))).Assignment);
+        var secondLocal = Guid.NewGuid();
+        await registry.ReportExecutionAsync(second.Id, new(worker, secondAssignment.AssignmentId, secondLocal.ToString(), "Failed",
+            ValidationResult: "passed", FailureClassification: "InfrastructureFailure", Generation: secondAssignment.Lease!.Generation));
+        await registry.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "2")));
+        Assert.Equal("issue-execution-ownership-changed", await ServerApplication.MaintenanceAuthorityReasonAsync(
+            request with { OperationId = Guid.NewGuid().ToString("N"), ServerExecutionId = second.Id, WorkerExecutionId = secondLocal,
+                AssignmentId = secondAssignment.AssignmentId, Generation = secondAssignment.Lease.Generation }, registry, CancellationToken.None));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task DurableDispatchSerializesConcurrentCommandsAndNeverReplaysExpiredWork()
     {
         using var temporary = new TemporaryDirectory();

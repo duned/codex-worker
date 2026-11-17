@@ -96,7 +96,7 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
     {
         if (issueNumber <= 0) throw new WorkerInfrastructureException("Assigned GitHub Issue number must be positive.");
         var result = await RunGhAsync(["issue", "view", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            "--repo", repository, "--json", "number,title,body,createdAt,state"], cancellationToken, allowGracefulCancellation: true);
+            "--repo", repository, "--json", "number,title,body,createdAt,state,labels"], cancellationToken, allowGracefulCancellation: true);
         try
         {
             using var document = JsonDocument.Parse(result.StandardOutput);
@@ -106,8 +106,12 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
             if (requireOpen && !string.Equals(issue.GetProperty("state").GetString(), "OPEN", StringComparison.OrdinalIgnoreCase))
                 throw new GitHubOperationException("issue view", issueNumber, false, GitHubFailureKind.DeterministicRequest,
                     GitHubRemoteState.NotApplicable, $"Assigned Issue #{issueNumber} in '{repository}' is not open.");
+            // Labels let a managed claim clear stale lifecycle labels left by an earlier attempt.
+            var labels = issue.TryGetProperty("labels", out var labelArray) && labelArray.ValueKind == JsonValueKind.Array
+                ? labelArray.EnumerateArray().Select(label => label.GetProperty("name").GetString() ?? "").Where(name => name.Length > 0).ToArray()
+                : null;
             return new GitHubIssue(issue.GetProperty("number").GetInt32(), issue.GetProperty("title").GetString() ?? "",
-                issue.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "", issue.GetProperty("createdAt").GetDateTimeOffset());
+                issue.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "", issue.GetProperty("createdAt").GetDateTimeOffset(), labels);
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or InvalidDataException)

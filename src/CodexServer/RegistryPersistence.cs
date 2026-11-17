@@ -2103,7 +2103,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             command.Parameters.AddWithValue("$operation", operationId);
             var body = await command.ExecuteScalarAsync(cancellationToken) as string;
             var operation = body is null ? null : JsonSerializer.Deserialize<CodexProvisioning.ExecutionMaintenanceCommand>(body);
-            if (operation is not { Status: "running", Request: { Action: "reconcile-completion", Apply: true } scope } ||
+            var manual = operation?.Request.Action == CodexProvisioning.ExecutionMaintenanceProtocol.ManualCompletion;
+            if (operation is not { Status: "running", Request: { Action: "reconcile-completion" or CodexProvisioning.ExecutionMaintenanceProtocol.ManualCompletion, Apply: true } scope } ||
                 operation.DeadlineUtc is null || operation.DeadlineUtc <= _timeProvider.GetUtcNow() ||
                 !CodexProvisioning.ExecutionMaintenanceProtocol.Valid(scope) || scope.ServerExecutionId != executionRequestId ||
                 scope.WorkerId != report.WorkerId || scope.AssignmentId != report.AssignmentId || scope.Generation != report.Generation ||
@@ -2111,21 +2112,22 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 report.ValidationResult != "passed" || report.IntegrationResult != "passed" ||
                 previous is null || previous.State is not ("Failed" or "Completed") || previous.Lease?.State is not ("Released" or "Expired") ||
                 previous.Lease.Generation != report.Generation || previous.WorkerExecutionId != report.WorkerExecutionId ||
-                !CompletionMaintenanceEligible(previous) ||
+                (manual ? previous.State != "Failed" : !CompletionMaintenanceEligible(previous)) ||
                 previous.State == "Completed" && previous.RecoveryState != "CompletionReconciled")
                 throw new ExecutionRequestOwnershipException();
             // Recheck drain and conflicting Issue ownership in the same transaction as
             // the terminal correction, after all remote completion checkpoints finish.
             command.Parameters.Clear();
             command.CommandText = """
-                SELECT EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND scheduling_policy='Draining')
-                    AND NOT EXISTS (SELECT 1 FROM execution_requests WHERE assigned_worker_id=$worker AND state IN ('Assigned','Running'))
+                SELECT ($manual OR (EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND scheduling_policy='Draining')
+                    AND NOT EXISTS (SELECT 1 FROM execution_requests WHERE assigned_worker_id=$worker AND state IN ('Assigned','Running'))))
                     AND NOT EXISTS (SELECT 1 FROM execution_requests other JOIN execution_requests source ON source.id=$id
                         WHERE other.id!=source.id AND other.project_id=source.project_id AND other.work_type IN ('issue','github-issue')
                         AND CAST(other.work_id AS INTEGER)=CAST(source.work_id AS INTEGER) AND (other.created_at_utc>=source.created_at_utc OR other.state IN ('Queued','Assigned','Running','Completed')))
                 """;
             command.Parameters.AddWithValue("$worker", report.WorkerId);
             command.Parameters.AddWithValue("$id", executionRequestId);
+            command.Parameters.AddWithValue("$manual", manual);
             if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) != 1)
                 throw new ExecutionRequestOwnershipException();
             reconciliation = true;

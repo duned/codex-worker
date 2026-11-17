@@ -135,3 +135,27 @@ public sealed class GitHubLabelTests
         }
     }
 }
+
+public sealed class GitHubAssignedIssueLabelTests
+{
+    // A managed claim clears stale lifecycle labels from an earlier attempt only if the
+    // assigned Issue read includes its labels.
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task AssignedIssueReadIncludesLabels()
+    {
+        string[]? requested = null;
+        var github = new CodexWorker.GitHubClient("team/repo", (arguments, _) =>
+        {
+            requested = arguments.ToArray();
+            return Task.FromResult(new CodexWorker.ProcessResult(0,
+                """{"number":49,"title":"T","body":"B","createdAt":"2026-11-17T15:01:09Z","state":"OPEN","labels":[{"name":"codex-working"},{"name":"codex-integration-conflict"}]}""", ""));
+        });
+
+        var issue = await github.GetIssueAsync(49, CancellationToken.None);
+
+        Assert.Contains(requested!, argument => argument.Split(',').Contains("labels"));
+        Assert.Equal(["codex-working", "codex-integration-conflict"], issue!.Labels);
+    }
+}

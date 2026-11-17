@@ -288,6 +288,24 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         catch (SqliteException ex) { throw PersistenceFailure("quarantine managed completion", ex); }
     }
 
+    /// <summary>Records an operator-confirmed completion of already-integrated work.</summary>
+    internal async Task MarkManuallyCompletedAsync(Guid executionId, CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE executions SET state='Completed', recovery_state=$state, reporting_failure=NULL, completed_at_utc=COALESCE(completed_at_utc,$now) WHERE execution_id=$id";
+        command.Parameters.AddWithValue("$state", ManuallyCompletedState);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$id", executionId.ToString());
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(ct) != 1)
+                throw new WorkerInfrastructureException($"Execution history row was not found for {executionId}.");
+        }
+        catch (SqliteException ex) { throw PersistenceFailure("record manual completion", ex); }
+    }
+
+    public const string ManuallyCompletedState = "manually-completed";
     public const string ManagedCompletionQuarantinedState = "managed-completion-quarantined";
     public const string ManagedNotIntegratedState = "managed-not-integrated";
 

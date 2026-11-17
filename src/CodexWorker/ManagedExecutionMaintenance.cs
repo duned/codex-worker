@@ -25,6 +25,10 @@ internal sealed class ManagedExecutionMaintenance(ExecutionHistoryStore history,
         if (current is null) return new("refused", "worker-record-missing", []);
         if (current.ServerExecutionId != request.ServerExecutionId || current.AssignmentId != request.AssignmentId || current.OwnershipGeneration != request.Generation)
             return new("refused", "worker-identity-mismatch", []);
+        if (request.Action == ExecutionMaintenanceProtocol.ManualCompletion)
+            // Runs under the project's repository gate without a drain: it never mutates the base branch.
+            return reconcileCompletion is null ? new("refused", "project-unavailable", []) :
+                await reconcileCompletion(command, authorize, ct);
         if (request.Action == "reconcile-completion")
         {
             using var maintenance = runtime.Registry.TryBeginServerMaintenance();

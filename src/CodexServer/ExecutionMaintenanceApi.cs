@@ -138,6 +138,23 @@ public static partial class ServerApplication
             await registry.AuthenticateObserverAsync(workerId, server, ObserverBearer(context), context.RequestAborted) is not null
         : await AuthorizedWorkerAsync(context, registry, workerId);
 
+    /// <summary>Server-side eligibility for operator manual completion: a terminal failed attempt whose
+    /// lease ended, with no newer, active or completed attempt for the same Issue.</summary>
+    internal static async Task<string?> ManualCompletionReasonAsync(ExecutionRequest execution, IRegistryStore registry, CancellationToken ct)
+    {
+        if (execution.State != "Failed" || execution.Lease?.State is not ("Released" or "Expired") || execution.WorkerExecutionId is null)
+            return "failed-terminal-execution-required";
+        if (execution.WorkReference.Type is not ("issue" or "github-issue") ||
+            !int.TryParse(execution.WorkReference.Id, out var issueNumber) || issueNumber <= 0)
+            return "completion-issue-identity-missing";
+        var others = await registry.ListExecutionsAsync(new(ProjectId: execution.ProjectId, WorkType: "github-issue",
+            WorkId: execution.WorkReference.Id, Limit: 100), ct);
+        if (others.Count == 100) return "completion-ownership-review-bound-exceeded";
+        return others.Any(other => other.Id != execution.Id &&
+            (other.CreatedAtUtc >= execution.CreatedAtUtc || other.State is "Queued" or "Assigned" or "Running" or "Completed"))
+            ? "issue-execution-ownership-changed" : null;
+    }
+
     internal static async Task<string?> MaintenanceAuthorityReasonAsync(ExecutionMaintenanceRequest request,
         IRegistryStore registry, CancellationToken ct, TimeProvider? clock = null,
         ExecutionMaintenanceStore? commands = null, int staleAfterSeconds = 90)
@@ -171,7 +188,10 @@ public static partial class ServerApplication
         if (worker.Availability is not ("online" or "draining")) return "worker-offline";
         if (!worker.Capabilities.Any(c => c.Type == "protocol" && c.Name == ExecutionMaintenanceProtocol.Capability))
             return "worker-maintenance-protocol-unavailable";
-        if (request.Apply && (worker.SchedulingPolicy != WorkerSchedulingPolicy.Draining ||
+        // Manual completion only records an already-integrated result and closes its Issue;
+        // it never touches the repository base, so the Worker does not need to drain.
+        if (request.Apply && request.Action != ExecutionMaintenanceProtocol.ManualCompletion &&
+            (worker.SchedulingPolicy != WorkerSchedulingPolicy.Draining ||
             request.Action != "retry-report" && worker.ActiveAssignments != 0))
             return "worker-drain-required";
         if (request.Action == "archived-branches")
@@ -189,6 +209,12 @@ public static partial class ServerApplication
             execution.WorkerExecutionId is not null && !string.Equals(execution.WorkerExecutionId, request.WorkerExecutionId.ToString(), StringComparison.OrdinalIgnoreCase))
             return "stale-ownership";
         if (request.Action == "inspect") return null;
+        if (request.Action == ExecutionMaintenanceProtocol.ManualCompletion)
+        {
+            if (!worker.Capabilities.Any(c => c.Type == "protocol" && c.Name == ExecutionMaintenanceProtocol.ManualCompletionCapability))
+                return "worker-manual-completion-protocol-unavailable";
+            return await ManualCompletionReasonAsync(execution, registry, ct);
+        }
         if (request.Action == "reconcile-completion")
         {
             if (!worker.Capabilities.Any(c => c.Type == "protocol" && c.Name == ExecutionMaintenanceProtocol.CompletionCapability))
