@@ -26,11 +26,11 @@ export class HttpClient {
         body: options.body === undefined ? undefined : JSON.stringify(options.body), credentials: 'same-origin', cache: 'no-store', signal });
       if (signal.aborted) { await response.body?.cancel(); throw cancelled(); }
       if (!response.ok) {
-        await response.body?.cancel();
+        const detail = [400, 404, 409, 503].includes(response.status) ? await errorDetail(response) : (await response.body?.cancel(), undefined);
         const diagnostic = response.headers.get('X-Codex-Administration-Error') ?? '';
         throw new ApiError(options.session && [401, 403].includes(response.status)
           ? Object.hasOwn(diagnostics, diagnostic) ? diagnostics[diagnostic] : t("api.accessRejectedWithoutAServerDiagnosticCheckManagementNetworkPolicyAndProxy")
-          : t('api.httpFailed', { status: response.status }), response.status);
+          : detail ?? t('api.httpFailed', { status: response.status }), response.status);
       }
       return response;
     } catch (error) {
@@ -52,4 +52,20 @@ export class HttpClient {
       throw new ApiError(t("api.invalidServerDataRefreshOrCheckTheServerDeployment"));
     }
   }
+}
+
+/** Reads the bounded `{ error, reasons }` body the Server attaches to rejected requests, if any. */
+async function errorDetail(response: Response): Promise<string | undefined> {
+  try {
+    if (!(response.headers.get('Content-Type') ?? '').includes('json')) { await response.body?.cancel(); return undefined; }
+    const text = await response.text();
+    if (text.length > 16384) return undefined;
+    const value: unknown = JSON.parse(text);
+    if (typeof value !== 'object' || value === null) return undefined;
+    const { error, reasons } = value as { error?: unknown; reasons?: unknown };
+    const parts = [typeof error === 'string' ? error.trim() : '',
+      ...(Array.isArray(reasons) ? reasons.filter((reason): reason is string => typeof reason === 'string').slice(0, 10) : [])]
+      .map(part => part.replace(/[\r\n]+/g, ' ').slice(0, 500)).filter(Boolean);
+    return parts.length ? parts.join(' ') : undefined;
+  } catch { return undefined; }
 }
