@@ -88,10 +88,13 @@ public static partial class ServerApplication
             return Results.Ok(await store.AdvanceWorkerUpdateAsync(workerId, operationId, verified: true, cancellationToken: context.RequestAborted));
         });
         app.MapPost("/api/v1/workers/{workerId}/update/{operationId}/fail", async (string workerId, string operationId,
-            HttpContext context, IRegistryStore store) =>
+            WorkerUpdateFailure? failure, HttpContext context, IRegistryStore store) =>
         {
             if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
-            return Results.Ok(await store.AdvanceWorkerUpdateAsync(workerId, operationId, fail: true, cancellationToken: context.RequestAborted));
+            // Older Workers send no reason; only an explicit refusal releases the Server drain.
+            if (failure is not null && failure.Reason != WorkerUpdateProtocol.RefusedReason) return Results.BadRequest(new { reason = "invalid-worker-update" });
+            return Results.Ok(await store.AdvanceWorkerUpdateAsync(workerId, operationId, fail: true,
+                cancellationToken: context.RequestAborted, refused: failure is not null));
         });
     }
 }

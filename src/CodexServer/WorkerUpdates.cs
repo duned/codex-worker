@@ -32,14 +32,14 @@ public sealed partial class SqliteRegistryStore
         ?? throw new InvalidOperationException("worker-unavailable");
 
     public Task<WorkerUpdateOperation?> AdvanceWorkerUpdateAsync(string workerId, string? operationId = null,
-        string? version = null, bool fail = false, bool verified = false, CancellationToken cancellationToken = default) =>
-        ChangeWorkerUpdateAsync(workerId, operationId, fail ? "fail" : verified ? "verified" : version is null ? "poll" : "start", version, cancellationToken);
+        string? version = null, bool fail = false, bool verified = false, CancellationToken cancellationToken = default, bool refused = false) =>
+        ChangeWorkerUpdateAsync(workerId, operationId, refused ? "refuse" : fail ? "fail" : verified ? "verified" : version is null ? "poll" : "start", version, cancellationToken);
 
     private async Task<WorkerUpdateOperation?> ChangeWorkerUpdateAsync(string workerId, string? operationId,
         string action, string? version, CancellationToken ct)
     {
         if (!WorkerUpdateProtocol.ValidId(workerId) ||
-            action is "release-drain" or "request" or "restart" or "retry" or "start" or "fail" or "verified" && !WorkerUpdateProtocol.ValidId(operationId ?? string.Empty) ||
+            action is "release-drain" or "request" or "restart" or "retry" or "start" or "fail" or "refuse" or "verified" && !WorkerUpdateProtocol.ValidId(operationId ?? string.Empty) ||
             operationId is not null && !WorkerUpdateProtocol.ValidId(operationId) ||
             version is not null && !WorkerUpdateProtocol.ValidVersion(version))
             throw new InvalidDataException("invalid-worker-update");
@@ -160,7 +160,7 @@ public sealed partial class SqliteRegistryStore
                 command.Parameters.RemoveAt("$policy");
             }
         }
-        if ((action is "request" or "restart") && (operation is null || (operation.State == "succeeded" || operation is { Restart: true, State: "failed", DrainReleasedAtUtc: not null }) && operation.OperationId != operationId))
+        if ((action is "request" or "restart") && (operation is null || (operation.State == "succeeded" || operation is { State: "failed", DrainReleasedAtUtc: not null }) && operation.OperationId != operationId))
         {
             if (!fresh || heartbeat is null || heartbeat.LifecycleState is not (WorkerLifecycleStates.Running or WorkerLifecycleStates.NotReady or WorkerLifecycleStates.Ready or WorkerLifecycleStates.Draining or WorkerLifecycleStates.DrainRequested or WorkerLifecycleStates.Drained) || !WorkerUpdateProtocol.ValidVersion(heartbeat.WorkerVersion) ||
                 !heartbeat.Capabilities.Any(c => c.Type == "protocol" && c.Name == (action == "restart" ? WorkerUpdateProtocol.RestartCapability : WorkerUpdateProtocol.Capability)))
@@ -207,7 +207,20 @@ public sealed partial class SqliteRegistryStore
         }
         if (operation is { State: "updating" or "reconnecting" } && action == "verified" && operation.OperationId == operationId)
             operation = operation with { InstallerVerified = true };
-        if (operation is not null && action == "fail" && operation.OperationId == operationId && operation.State != "succeeded" && operation.DrainReleasedAtUtc is null)
+        if (operation is { State: "waiting-for-idle" } && action == "refuse" && operation.OperationId == operationId)
+        {
+            // Refused before start authorization: the Worker neither drained nor dispatched anything,
+            // so the Server releases its drain instead of holding the Worker for recovery.
+            if (operation.OwnsDrain && policy == WorkerSchedulingPolicy.Draining)
+            {
+                command.CommandText = "UPDATE workers SET scheduling_policy=$prior WHERE worker_id=$worker;";
+                command.Parameters.AddWithValue("$prior", operation.PriorPolicy);
+                await command.ExecuteNonQueryAsync(ct);
+                command.Parameters.RemoveAt("$prior");
+            }
+            operation = operation with { State = "failed", Diagnostic = WorkerUpdateProtocol.RefusedDiagnostic, DrainReleasedAtUtc = now, OwnsDrain = false };
+        }
+        if (operation is not null && action is "fail" or "refuse" && operation.OperationId == operationId && operation.State != "succeeded" && operation.DrainReleasedAtUtc is null)
             operation = operation with { State = "failed", Diagnostic = operation.Restart ? "restart-failed-inspect-service-and-journal-before-retry" : "update-failed-inspect-service-and-journal-before-retry" };
         if (operation is not null)
         {

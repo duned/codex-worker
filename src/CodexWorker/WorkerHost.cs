@@ -23,6 +23,7 @@ public sealed class WorkerHost
         string? executionHistoryPath = null)
     {
         _registration = registrationClient ?? new WorkerRegistrationClient();
+        _registration.UseMaintenancePolicy(global.Worker.Provisioning);
         _agentAuthentication = agentAuthentication;
         _executionHistoryPath = executionHistoryPath;
         _global = global;
@@ -560,7 +561,7 @@ public sealed class WorkerHost
                 // Recovery updates use local policy and Server authorization, not the invalid managed snapshot.
                 // The Server also verifies idle executions/leases and holds scheduling drained until readiness returns.
                 if (managed && active.Count == 0 &&
-                    await _registration.ExecuteWorkerUpdateAsync(_global.Server, _global.Worker.Provisioning, runtimeReadModel, executionToken))
+                    await _registration.ExecuteWorkerUpdateAsync(_global.Server, _global.Worker.Provisioning, runtimeReadModel, _output.Warning, executionToken))
                     continue;
                 if (managed && managedConfiguration?.Status.SynchronizationStatus == "synchronized" && active.Count == 0 &&
                     await _registration.ExecuteTelegramTestAsync(_global.Server, managedConfiguration, telegram, executionToken))

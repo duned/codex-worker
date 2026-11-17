@@ -143,9 +143,12 @@ export const issueNumber = (execution: ExecutionSummary) => execution.workRefere
 // Worker restart/update operations (the Server drains the Worker before either).
 /** An operation that still owns the Worker: a new restart or update cannot start until it settles or its drain is released. */
 export const maintenanceBlocking = (operation: WorkerUpdate | undefined) => !!operation &&
-  operation.state !== 'succeeded' && !(operation.restart && operation.state === 'failed' && operation.drainReleasedAtUtc);
+  operation.state !== 'succeeded' && !(operation.state === 'failed' && operation.drainReleasedAtUtc);
+/** Diagnostic the Server records when the Worker refused before draining or dispatching anything. */
+export const refusedByWorker = 'refused-by-worker-installation-or-local-policy';
 export function maintenanceMessage(operation: WorkerUpdate): TranslationKey {
   const kind = operation.restart ? 'restart' : 'update';
-  if (operation.state === 'failed') return operation.drainReleasedAtUtc ? `maintenance.${kind}.released` : `maintenance.${kind}.failed`;
+  if (operation.state === 'failed') return operation.diagnostic === refusedByWorker ? `maintenance.${kind}.refused`
+    : operation.drainReleasedAtUtc ? `maintenance.${kind}.released` : `maintenance.${kind}.failed`;
   return `maintenance.${kind}.${operation.state}`;
 }

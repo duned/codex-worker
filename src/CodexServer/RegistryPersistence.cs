@@ -47,7 +47,7 @@ public interface IRegistryStore
     Task<WorkerUpdateOperation?> GetWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation?> ReleaseWorkerRestartDrainAsync(string workerId, string operationId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation> RequestWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default, bool restart = false);
-    Task<WorkerUpdateOperation?> AdvanceWorkerUpdateAsync(string workerId, string? operationId = null, string? version = null, bool fail = false, bool verified = false, CancellationToken cancellationToken = default);
+    Task<WorkerUpdateOperation?> AdvanceWorkerUpdateAsync(string workerId, string? operationId = null, string? version = null, bool fail = false, bool verified = false, CancellationToken cancellationToken = default, bool refused = false);
     Task<WorkerRegistrationResponse?> SetWorkerSchedulingPolicyAsync(string workerId, string policy, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default);
     Task<CentralProject?> GetProjectAsync(string projectId, CancellationToken cancellationToken = default);

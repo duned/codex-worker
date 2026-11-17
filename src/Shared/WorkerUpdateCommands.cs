@@ -15,12 +15,19 @@ public sealed record WorkerUpdateRecovery(bool SchedulingBlocked, DateTimeOffset
 public sealed record WorkerUpdateRecoveryCheck(string Code, bool Satisfied, string Description, string NextStep);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkerUpdatePreparation(string Version);
+/// <summary>Optional reason a Worker reports with a failed operation.</summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record WorkerUpdateFailure(string Reason);
 public static class WorkerUpdateProtocol
 {
     public const string RestartCapability = "worker-restart-v1";
     public const string RestartPolicyKey = "worker:restart";
     public const string Capability = "worker-self-update-v1";
     public const string PolicyKey = "worker:self-update";
+    /// <summary>The Worker refused the operation before draining or dispatching anything, so nothing is uncertain.</summary>
+    public const string RefusedReason = "refused";
+    /// <summary>Diagnostic of an operation the Worker refused because its installation or local policy does not permit it.</summary>
+    public const string RefusedDiagnostic = "refused-by-worker-installation-or-local-policy";
     public static bool ValidId(string value) => Guid.TryParseExact(value, "N", out _);
     public static bool ValidVersion(string? value)
     {

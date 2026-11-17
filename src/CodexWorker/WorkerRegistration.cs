@@ -441,13 +441,20 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
             WithMaintenanceCapability(await CapabilityDiscovery.GetCachedAsync(cancellationToken)), await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken));
 
-    private static IReadOnlyList<WorkerCapabilityContract> WithMaintenanceCapability(IReadOnlyList<WorkerCapabilityContract> capabilities) =>
+    private ProvisioningPolicy? _maintenancePolicy;
+
+    /// <summary>The node-local policy decides which Server-requested restart/update this process may perform.
+    /// Only permitted operations are advertised, so the Server never offers one this Worker must refuse.</summary>
+    internal void UseMaintenancePolicy(ProvisioningPolicy policy) => _maintenancePolicy = policy;
+
+    private IReadOnlyList<WorkerCapabilityContract> WithMaintenanceCapability(IReadOnlyList<WorkerCapabilityContract> capabilities) =>
         capabilities.Append(new("protocol", ExecutionMaintenanceProtocol.Capability))
             .Append(new("protocol", ExecutionMaintenanceProtocol.CompletionCapability))
             .Append(new("protocol", ExecutionMaintenanceProtocol.BranchCapability))
-            .Concat(SelfUpdateSupported
+            .Concat(SelfUpdateSupported && MaintenanceAllowed(_maintenancePolicy, restart: false)
                 ? [new WorkerCapabilityContract("protocol", WorkerUpdateProtocol.Capability)] : [])
-            .Concat(RestartSupported ? [new WorkerCapabilityContract("protocol", WorkerUpdateProtocol.RestartCapability)] : [])
+            .Concat(RestartSupported && MaintenanceAllowed(_maintenancePolicy, restart: true)
+                ? [new WorkerCapabilityContract("protocol", WorkerUpdateProtocol.RestartCapability)] : [])
             .Distinct().ToArray();
 
     private async Task<bool> TryVerifyCredentialAsync(string endpoint, string identity, string token, int capacity, CancellationToken cancellationToken)
