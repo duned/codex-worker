@@ -429,6 +429,45 @@ public sealed class ServerGitHubAdministrationTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task RebaseConflictRetryIsAssignedWithoutReadyLabel()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "rebase-retry.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition("Retry", issueReadyLabel: "ready"));
+        var workerId = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 1, capabilities));
+        await registry.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var request = new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(10, labels: ["ready"]));
+        var service = new ServerGitHubAdministrationService(registry, read);
+        var original = await service.EnqueueIssueAsync(project.Id, new WorkReference("issue", "10"));
+        var first = (await service.RequestAssignmentAsync(request)).Assignment!;
+        var localExecution = Guid.NewGuid().ToString();
+        await registry.ReportExecutionAsync(original.Id, new WorkerExecutionReport(workerId, first.AssignmentId, localExecution,
+            "Failed", CompletedAtUtc: DateTimeOffset.UtcNow, IntegrationResult: CodexProvisioning.ManagedIntegrationResults.RebaseConflict,
+            FailureClassification: "IntegrationConflict", Recoverable: true, Generation: first.Lease!.Generation));
+        // The Worker replaced the working label with its conflict label; ready is gone.
+        read.Add(project.Repository, Issue(10, labels: ["codex-integration-conflict"]));
+        var retry = Assert.Single(await registry.ListQueuedByIssueAsync(project.Id, "10"));
+        Assert.Equal("eligible", Assert.Single((await service.RefreshQueuedEligibilityAsync(project.Id, 10))!).ManagedEligibilityState);
+
+        // The Worker still offers its preserved conflict for recovery; the Server's own retry owns it silently.
+        var response = await service.RequestAssignmentAsync(request with { IntegrationRecoveries =
+            [new(project.Id, original.Id, localExecution, new string('a', 40))] });
+
+        Assert.NotNull(response.Assignment);
+        Assert.Equal(retry.Id, response.Assignment.ServerExecutionId);
+        Assert.Equal(original.Id, response.Assignment.Metadata["rebaseConflictRetryOf"]);
+        Assert.False(response.Assignment.Metadata.ContainsKey("freshRecoveryExecutionId"));
+        Assert.True(response.IntegrationRecoveryRejections is null || response.IntegrationRecoveryRejections.Count == 0);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1392,6 +1431,55 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal("partial", result.GetProperty("outcome").GetString());
         Assert.Equal("failed", result.GetProperty("items")[0].GetProperty("Status").GetString());
         Assert.DoesNotContain("private-provider-detail", result.GetRawText(), StringComparison.Ordinal);
+    }
+
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task NewBlockersAreRefusedOnceAnIssueIsReadyOrRunning()
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "ordering.db");
+        var registry = new SqliteRegistryStore(path);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition(issueReadyLabel: "ready"));
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(50));
+        read.Add(project.Repository, Issue(52, labels: ["ready"]));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+        var tools = new ServerToolboxTools(registry, service);
+        static string? Reason(object value) => JsonSerializer.SerializeToElement(value) is var json &&
+            json.TryGetProperty("reason", out var reason) ? reason.GetString() : null;
+
+        // Ready before its blocker: the Server could already have started it, so the link is refused.
+        Assert.Equal("issue-already-ready-remove-ready-set-dependencies-then-mark-ready",
+            Reason(await tools.Dependencies(project.Id, 52, [50], true, default)));
+        Assert.DoesNotContain("blocked-by:add", writer.Operations);
+
+        // Queued or running work cannot be stopped by a late blocker either.
+        await service.EnqueueIssueAsync(project.Id, new WorkReference("issue", "52"));
+        Assert.Equal("issue-execution-active-dependency-would-not-apply",
+            Reason(await tools.Dependencies(project.Id, 52, [50], true, default)));
+
+        // A package stops before writing any blocker or label for such a child.
+        var package = new ServerWorkPackageTools(registry, service, new IssuePlanningOperations(path), new ExecutionMaintenanceStore(path));
+        read.Add(project.Repository, Issue(48));
+        var result = JsonSerializer.SerializeToElement(await package.Plan(project.Id,
+            new("parent", Guid.NewGuid().ToString("N"), "Plan", "Details", 48),
+            [new("http1", Guid.NewGuid().ToString("N"), "Plan", "Details", 50), new("http2", Guid.NewGuid().ToString("N"), "Plan", "Details", 52)],
+            [new("http2", "http1")], default, readyChildren: ["http1", "http2"]));
+        Assert.Equal("partial", result.GetProperty("outcome").GetString());
+        var last = result.GetProperty("steps").EnumerateArray().Last();
+        Assert.Equal("blocked-by", last.GetProperty("Operation").GetString());
+        Assert.Equal("issue-execution-active-dependency-would-not-apply", last.GetProperty("Result").GetProperty("reason").GetString());
+        Assert.DoesNotContain("blocked-by:add", writer.Operations);
+        Assert.DoesNotContain("label:add", writer.Operations);
+
+        // Removing a blocker and re-stating an existing one remain allowed.
+        read.Add(project.Repository, Issue(52, labels: ["ready"], blockers: [BlockingIssue(50, "open")]));
+        Assert.Null(Reason(await tools.Dependencies(project.Id, 52, [50], true, default)));
+        Assert.Null(Reason(await tools.Dependencies(project.Id, 52, [50], false, default)));
     }
 
     [Trait("TestType", "Component")]

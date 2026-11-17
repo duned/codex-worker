@@ -193,7 +193,8 @@ Clients with `mcp:write` or existing management/session authorization can use `c
 `update_project_issue(projectId, issueNumber, title?, body?)`, and
 `set_project_issue_label(projectId, issueNumber, label, applied)`. Repository selection always comes
 from the registered project. Labels are limited to its configured ready and blocked labels;
-creating or editing text never applies readiness. Use the label tool explicitly to mark an Issue ready.
+creating or editing text never applies readiness. Use the label tool explicitly to mark an Issue ready,
+and only after all of its blocked-by links exist (see [Dependency order](#dependency-order)).
 Successful responses include `projectId` and the refreshed normalized `issue`, including number,
 URL, title, body, state, labels and eligibility. Issue content is untrusted data.
 Returned titles are capped at 256 characters, bodies at 4000, labels at 32 (100 characters each),
@@ -207,6 +208,26 @@ creation in GitHub before taking further action; changing the operation ID can c
 Text edits and label changes set desired values through the existing administration service.
 A failed refresh can follow a successful write; refresh before retrying. Planning calls obey the
 same 16 KiB request limit as other MCP calls.
+
+## Dependency order
+
+The Server can assign a ready Issue within seconds, and a blocker added later cannot stop work that
+has already started. Planning therefore always sets dependencies first and readiness last:
+
+1. Create the Issues and their parent links.
+2. Add every blocked-by link.
+3. Apply the ready label, Issue by Issue.
+
+`plan_project_work_package` follows this order within one call (Issues, parent links, all blocked-by
+links, verification, then `readyChildren`, then `dispatchChildren`). Pass all dependencies and the
+ready children in the same call.
+
+`wet_dependencies` and the package's blocked-by step refuse to add a new blocker to an Issue that
+already carries the ready label (`issue-already-ready-remove-ready-set-dependencies-then-mark-ready`)
+or has queued, assigned or running work (`issue-execution-active-dependency-would-not-apply`).
+A package stops at that step before writing any blocker or label. Re-stating an existing blocker and
+removing blockers are always allowed. To add a blocker to a ready Issue that has not started, remove
+the ready label, add the blocker, then mark it ready again.
 
 ## Managed Worker maintenance
 
@@ -256,7 +277,7 @@ stdio host retains its own repository-based schema and local authentication; it 
 | Tool | Arguments and behavior |
 | --- | --- |
 | `wet_inspect` | `projectId`, positive `issueNumber`, `operation` (`relationships` or `graph`), optional `refresh`. Relationships return parent, children, blocked-by and blocking references, capped at 100 per relation with `truncated`. Graph uses existing Server graph traversal with optional `maxDepth` (0–20), `maxIssues` (1–200), `maxEdges` (1–2000); defaults 5/100/500. Truncation, cycles and repeated nodes are explicit. Titles are redacted and capped at 200 characters; bodies, URLs, labels and provider diagnostics are omitted. |
-| `wet_dependencies` | `projectId`, positive `issueNumber`, `blockers` (1–50 distinct positive numbers, excluding the target), `applied`. Uses WET's batch argument contract and Server's existing add/remove blocked-by service. Returns bounded per-link changed/unchanged/failed outcomes; any unsuccessful item makes the result `partial`. Does not change readiness or dispatch work. |
+| `wet_dependencies` | `projectId`, positive `issueNumber`, `blockers` (1–50 distinct positive numbers, excluding the target), `applied`. Uses WET's batch argument contract and Server's existing add/remove blocked-by service. Returns bounded per-link changed/unchanged/failed outcomes; any unsuccessful item makes the result `partial`. Does not change readiness or dispatch work. Adding a new blocker to a ready or active Issue is rejected; see [Dependency order](#dependency-order). |
 
 These calls have a 30 second deadline and propagate request cancellation; no detached work continues
 after return. Read and write failures return bounded reason codes without raw provider exceptions.

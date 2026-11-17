@@ -13,7 +13,7 @@ public sealed class ServerIssuePlanningTools(IRegistryStore registry, IServerGit
 {
     [McpServerTool(Name = "create_project_issue", ReadOnly = false, Destructive = false, OpenWorld = true)]
     [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:write"]}]""")]
-    [Description("Create a planning Issue in a configured project, without making it ready. Supply a stable 32-character GUID operationId and reuse it for retries. An uncertain result must be reconciled in GitHub, never retried with a new identity. Use set_project_issue_label explicitly to mark ready.")]
+    [Description("Create a planning Issue in a configured project, without making it ready. Supply a stable 32-character GUID operationId and reuse it for retries. An uncertain result must be reconciled in GitHub, never retried with a new identity. Set its blocked-by links (wet_dependencies) before marking it ready with set_project_issue_label.")]
     public async Task<object> Create(string projectId, string operationId, string title, string body, CancellationToken cancellationToken)
     {
         if (!Guid.TryParseExact(operationId, "N", out _)) throw new McpException("operationId must be a 32-character GUID.");
@@ -52,7 +52,7 @@ public sealed class ServerIssuePlanningTools(IRegistryStore registry, IServerGit
 
     [McpServerTool(Name = "set_project_issue_label", ReadOnly = false, Destructive = true, OpenWorld = true)]
     [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:write"]}]""")]
-    [Description("Explicitly apply or remove a project's configured ready or blocked label. No other lifecycle labels are supported. Repeating the desired state is safe.")]
+    [Description("Explicitly apply or remove a project's configured ready or blocked label. No other lifecycle labels are supported. Repeating the desired state is safe. Apply ready only after all of the Issue's blocked-by links exist: the Server may start a ready Issue within seconds, and blockers cannot be added afterwards. For parent/child packages prefer plan_project_work_package with dependencies and readyChildren.")]
     public async Task<object> Label(string projectId, int issueNumber, string label, bool applied, CancellationToken cancellationToken)
     {
         Number(issueNumber);

@@ -1341,6 +1341,11 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         metadata["assignedAtUtc"] = now.ToString("O");
         if (freshRecovery && interrupted is not null)
             metadata["freshRecoveryExecutionId"] = interrupted.Id;
+        // The rebase-conflict retry was queued by the Server itself; the Issue carries the
+        // conflict label rather than the ready label, which must not block that retry.
+        if (assignedExecution is not null && interrupted is { State: "Failed", RecoveryState: "RebaseConflictRequeued" } &&
+            interrupted.ProjectId == assignedExecution.ProjectId && interrupted.WorkReference == assignedExecution.WorkReference)
+            metadata["rebaseConflictRetryOf"] = interrupted.Id;
         ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "assignment", "lease-acquired", project.Id, candidate.Value.Work with { Url = $"https://github.com/{project.Repository}/issues/{candidate.Value.Work.Id}" }, candidate.Value.Id, request.WorkerId, assignmentId, generation);
         return new(true, new WorkAssignment(assignmentId, candidate.Value.Id, project, candidate.Value.Work, request.WorkerId, metadata,
             new ExecutionLease(candidate.Value.Id, request.WorkerId, generation, now, expires, "Active", _leaseRenewalIntervalSeconds)), recoveryRejections);
@@ -1405,6 +1410,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                     else if (sourceReader.IsDBNull(1) || sourceReader.GetString(1) != request.WorkerId ||
                         sourceReader.IsDBNull(2) || sourceReader.GetString(2) != recovery.WorkerExecutionId)
                         reason = "The original Server execution does not corroborate this Worker's local execution identity.";
+                    else if (!sourceReader.IsDBNull(5) && sourceReader.GetString(5) == "RebaseConflictRequeued")
+                        reason = null; // The Server already queued a fresh attempt for this conflict.
                     else if (sourceReader.GetString(0) != "Failed" || sourceReader.IsDBNull(3) || sourceReader.GetString(3) != (recovery.Kind == "Codex" ? "CodexInterruption" : "IntegrationConflict") ||
                         !sourceReader.GetBoolean(4) || !sourceReader.IsDBNull(5))
                         reason = "The original Server execution is not a verified recoverable execution interruption/conflict; inspect its outcome and lease reconciliation state.";

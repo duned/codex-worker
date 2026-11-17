@@ -192,9 +192,10 @@ public sealed partial class ExecutionRunner(WorkerConfiguration config, IGitRepo
                 {
                     integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating", execution), () => git.CommitAndIntegrateAsync(issue,
                         token => ValidateAfterRebaseAsync(context, repairs, token),
-                        // A first attempt never asks the engine to resolve a rebase conflict: the conflict is
-                        // preserved and reported. Only validation failures on rebased source may be repaired.
-                        (_, _) => Task.FromResult(false),
+                        // A first attempt asks its engine once per conflict budget to merge the rebase in
+                        // place; authoritative post-rebase validation still gates integration. An unresolved
+                        // conflict is aborted cleanly and reported as a rebase conflict for a fresh attempt.
+                        (details, token) => ResolveFirstAttemptConflictAsync(context, engine, details, token),
                         (details, token) => RepairIntegrationAsync(context, engine, implementationSummary, repairs, details, token),
                         ct, token => EnsureIntegrationAuthorityAsync(execution, token)),
                         completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);

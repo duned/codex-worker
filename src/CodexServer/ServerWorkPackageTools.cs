@@ -16,7 +16,7 @@ public sealed class ServerWorkPackageTools(IRegistryStore registry, IServerGitHu
 {
     [McpServerTool(Name = "plan_project_work_package", ReadOnly = false, Destructive = true, OpenWorld = true)]
     [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:write"]}]""")]
-    [Description("Create/update a parent and 1–20 children in one project, then assign and verify native parent and blocked-by relationships. Keys are unique within this request; dependencies refer to child keys. Reuse each Issue's stable GUID operationId on retries; never replace an uncertain creation identity. Existing issueNumber updates that Issue. Returns ordered step results and Issue/execution identities, stopping on failure. No readiness or dispatch unless explicitly requested with child keys. Dispatch uses Server eligibility and scheduling; inspect execution IDs with get_execution. No branch operations.")]
+    [Description("Create/update a parent and 1–20 children in one project, then assign and verify native parent and blocked-by relationships. Keys are unique within this request; dependencies refer to child keys. Reuse each Issue's stable GUID operationId on retries; never replace an uncertain creation identity. Existing issueNumber updates that Issue. Returns ordered step results and Issue/execution identities, stopping on failure. Order is fixed: Issues, parent links, all blocked-by links, verification, then ready labels per child, then dispatch. Pass every dependency and readyChildren in this one call; do not mark children ready separately before their blockers exist. No readiness or dispatch unless explicitly requested with child keys. Dispatch uses Server eligibility and scheduling; inspect execution IDs with get_execution. No branch operations.")]
     public async Task<object> Plan(string projectId, WorkPackageIssue parent, WorkPackageIssue[] children,
         WorkPackageDependency[] dependencies, CancellationToken cancellationToken,
         string[]? readyChildren = null, string[]? dispatchChildren = null)
@@ -60,6 +60,19 @@ public sealed class ServerWorkPackageTools(IRegistryStore registry, IServerGitHu
                 new(children.Select(child => identities[child.Key]).ToArray()), cancellationToken);
             steps.Add(new("parent", parent.Key, Describe(parents)));
             if (parents.Items.Any(item => item.Status is not ("changed" or "unchanged"))) return Result(false);
+            // Every blocker is set and verified before any child is marked ready; an existing child that is
+            // already ready or running cannot take new blockers in order, so the package stops first.
+            foreach (var group in dependencies.GroupBy(dependency => dependency.ChildKey))
+            {
+                currentOperation = "blocked-by";
+                currentKey = group.Key;
+                if (await IssueDependencyOrdering.AddBlockersRefusalAsync(registry, github, project, identities[group.Key],
+                        group.Select(dependency => identities[dependency.BlockerKey]).ToArray(), cancellationToken) is { } refusal)
+                {
+                    steps.Add(new("blocked-by", group.Key, new { outcome = "rejected", reason = refusal }));
+                    return Result(false);
+                }
+            }
             foreach (var group in dependencies.GroupBy(dependency => dependency.ChildKey))
             {
                 currentOperation = "blocked-by";

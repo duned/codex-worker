@@ -53,7 +53,7 @@ public sealed class ServerToolboxTools(IRegistryStore registry, IServerGitHubAdm
 
     [McpServerTool(Name = "wet_dependencies", ReadOnly = false, Destructive = true, OpenWorld = true)]
     [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:write"]}]""")]
-    [Description("Set desired native blocked-by links through Server's existing relationship service and WET batch argument contract. Supply 1–50 distinct positive blockers, excluding the Issue itself; applied adds or removes links. Does not mark ready or dispatch. A partial, cancelled or timed-out write requires a refreshed wet_inspect before retry. Calls have a 30 second deadline; no detached work or automatic replay.")]
+    [Description("Set desired native blocked-by links through Server's existing relationship service and WET batch argument contract. Supply 1–50 distinct positive blockers, excluding the Issue itself; applied adds or removes links. Does not mark ready or dispatch. Set every blocker before marking the Issue ready: adding blockers is refused while the Issue has the ready label or queued/running work, because the Server may already have started it. A partial, cancelled or timed-out write requires a refreshed wet_inspect before retry. Calls have a 30 second deadline; no detached work or automatic replay.")]
     public Task<object> Dependencies(string projectId, int issueNumber, int[] blockers, bool applied,
         CancellationToken cancellationToken) => Run(projectId, async (project, token) =>
     {
@@ -65,6 +65,8 @@ public sealed class ServerToolboxTools(IRegistryStore registry, IServerGitHubAdm
         {
             throw new McpException("Supply 1–50 distinct positive blockers in a supported project repository, without self-links.");
         }
+        if (applied && await IssueDependencyOrdering.AddBlockersRefusalAsync(registry, github, project, issueNumber, blockers, token) is { } refusal)
+            return Rejected(refusal);
         var result = await github.SetIssueBlockedByBatchAsync(projectId, issueNumber, new(blockers, applied), token);
         return new
         {

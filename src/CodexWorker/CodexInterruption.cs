@@ -16,6 +16,9 @@ internal sealed record CodexFailure(string Category, string Reason, bool Recover
     internal static bool RequiresFreshSession(ExecutionHistoryEntry source) =>
         source.FailureReason?.StartsWith(ContextLimit + ":", StringComparison.Ordinal) == true;
 
+    internal static readonly CodexFailure IncompleteTurn = new("Codex incomplete turn",
+        "Codex ended the turn without a usable final response; the preserved workspace is resumed within the recovery budget", true);
+
     internal static CodexFailure Classify(string evidence, bool timedOut = false)
     {
         var text = evidence.ToLowerInvariant();

@@ -305,23 +305,34 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                     return await RunStructuredAsync(projectDirectory, prompt, ct, useStandardInput);
                 }
                 var failure = CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError));
-                if (result.ExitCode == 0 && !failure.Recoverable)
-                    throw new CodexExecutionInfrastructureException("Unknown Codex failure",
-                        "Codex execution produced no structured final response and no recognized external cause.");
+                if (result.ExitCode == 0 && !failure.Recoverable) throw IncompleteTurn(result, null);
                 throw new CodexExecutionInfrastructureException(failure.Category,
                     $"{failure.Summary}. Exit code {result.ExitCode}.")
                     { Recoverable = failure.Recoverable, FailureSummary = failure.Summary };
             }
-            try { return CodexResultParser.Parse(await File.ReadAllTextAsync(outputPath, ct)); }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            { throw new CodexExecutionInfrastructureException("Unknown Codex failure",
-                $"Codex execution did not return a valid structured task result: {ex.Message}", ex); }
+            var finalResponse = await File.ReadAllTextAsync(outputPath, ct);
+            if (string.IsNullOrWhiteSpace(finalResponse)) throw IncompleteTurn(result, null);
+            try { return CodexResultParser.Parse(finalResponse); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { throw IncompleteTurn(result, ex); }
         }
         finally
         {
             TryDelete(schemaPath);
             TryDelete(outputPath);
         }
+    }
+
+    /// <summary>The CLI exited successfully without a usable final response: the turn ended early
+    /// (for example a dropped stream under concurrent load). A recognized external cause keeps its own
+    /// classification; otherwise the preserved workspace is resumed through the bounded Codex recovery budget.</summary>
+    private CodexExecutionInfrastructureException IncompleteTurn(ProcessResult result, Exception? parseFailure)
+    {
+        var failure = CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError));
+        if (!failure.Recoverable) failure = CodexFailure.IncompleteTurn;
+        var detail = parseFailure is null ? "no structured final response" :
+            "an invalid structured final response: " + FailureDiagnosticRedactor.Redact(parseFailure.Message, projectEnvironment?.Values.ToArray());
+        return new CodexExecutionInfrastructureException(failure.Category, $"{failure.Summary}. Codex exited with {detail}.", parseFailure)
+            { Recoverable = true, FailureSummary = failure.Summary };
     }
 
     private async Task<bool> SupportsResumeAsync(string directory, IReadOnlyDictionary<string, string?> environment, CancellationToken ct)

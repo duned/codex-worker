@@ -174,6 +174,7 @@ public sealed partial class ExecutionRunner
     }
 
     private int _conflictResolutionAttempts;
+    private int _firstAttemptConflictResolutions;
 
     private async Task VerifyConflictIntentAsync(ExecutionContext context, CancellationToken ct, bool resolving = false)
     {
@@ -239,6 +240,32 @@ public sealed partial class ExecutionRunner
             throw new GitConflictResolutionIncompleteException("Verified conflict resolution did not complete. Workspace and rebase remain preserved: " + diagnostic);
         }
         return true;
+    }
+
+    /// <summary>Resolves a first-attempt rebase conflict against newer base work in the execution worktree.
+    /// Returning false aborts the rebase, preserves the implementation and reports a rebase conflict.</summary>
+    private async Task<bool> ResolveFirstAttemptConflictAsync(ExecutionContext context, IImplementationEngine engine,
+        string details, CancellationToken ct)
+    {
+        if (++_firstAttemptConflictResolutions > config.Validation.MaxFixAttempts) return false;
+        await EnsureIntegrationAuthorityAsync(context.Execution, ct);
+        ImplementationResult result;
+        try
+        {
+            result = await output.RunProgressAsync(TaskLabel(context.Issue,
+                    $"Conflict resolution {_firstAttemptConflictResolutions}/{config.Validation.MaxFixAttempts}", context.Execution),
+                () => engine.ResolveIntegrationConflictAsync(Request(context), details, ct),
+                x => x.Status, x => x.Status == "success", warning: x => x.Status != "success", ct: ct);
+        }
+        catch (CodexExecutionInfrastructureException ex)
+        {
+            // The rebase is aborted and verified clean by the caller; the conflict is then
+            // reported normally instead of leaving an engine-interrupted rebase in place.
+            output.Warning($"Execution {context.Execution.ExecutionId} · conflict resolution did not complete: {FailureDiagnosticRedactor.Redact(ex.Message, config.Environment.Variables.Values.ToArray())}");
+            return false;
+        }
+        await EnsureIntegrationAuthorityAsync(context.Execution, ct);
+        return result.Status == "success";
     }
 
     private async Task EnsureIntegrationAuthorityAsync(WorkerExecution execution, CancellationToken ct)

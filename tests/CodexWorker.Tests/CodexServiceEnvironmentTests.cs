@@ -467,7 +467,7 @@ public sealed class CodexServiceEnvironmentTests
     [InlineData(1, "insufficient_quota", "Codex usage limit", true)]
     [InlineData(0, "context_length_exceeded", "Codex context limit", true)]
     [InlineData(1, "context_length_exceeded", "Codex context limit", true)]
-    [InlineData(0, "unrecognized", "Unknown Codex failure", false)]
+    [InlineData(0, "unrecognized", "Codex incomplete turn", true)]
     [InlineData(1, "unrecognized", "Codex CLI/process failure", false)]
     public async Task MissingFinalResponseRetainsExplicitCliCause(int exitCode, string code, string category, bool recoverable)
     {
@@ -492,6 +492,45 @@ public sealed class CodexServiceEnvironmentTests
             Assert.Equal(category, failure.Category);
             Assert.Equal(recoverable, failure.Recoverable);
             Assert.DoesNotContain("private-value", failure.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", previous);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("")]
+    [InlineData("not json")]
+    public async Task SuccessfulExitWithoutUsableFinalResponseIsRecoverableIncompleteTurn(string finalResponse)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var directory = CreateDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE");
+        try
+        {
+            // Codex exits 0 and writes an empty (or unparseable) last message when a turn ends early.
+            var executable = Path.Combine(directory, "codex");
+            await File.WriteAllTextAsync(executable, $$$"""
+                #!/bin/sh
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = "--output-last-message" ]; then printf '%s' '{{{finalResponse}}}' > "$2"; fi
+                  shift
+                done
+                exit 0
+                """);
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", executable);
+            var instructions = Path.Combine(directory, "AGENTS.md");
+            await File.WriteAllTextAsync(instructions, "Test instructions");
+            var executor = new CodexExecutor(new ProcessRunner(), new CodexSettings());
+            var failure = await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => executor.RunAsync(directory,
+                instructions, new GitHubIssue(1, "Test", "Test", DateTimeOffset.UtcNow), CancellationToken.None));
+            Assert.Equal("Codex incomplete turn", failure.Category);
+            Assert.True(failure.Recoverable);
         }
         finally
         {
