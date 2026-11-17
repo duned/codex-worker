@@ -14,11 +14,23 @@ Once service dispatch is prepared, the local drain cannot be cancelled until the
 service restarts, preventing execution admission during the service-manager call.
 If that call fails, inspect the journal and restart the drained service locally.
 
-On the Server **Worker detail** page, use **Restart worker**, then **Refresh restart
-status** to follow the pending operation and its outcome. The Worker must be online
-and advertise `worker-restart-v1`. Enable `worker.provisioning.enabled` locally and
-add `worker:restart` to `worker.provisioning.allowedPrivilegedActions` to authorize
-remote restart. A matching denied action wins. Refresh the packaged installation
+On the Server **Worker detail** page, use **Restart** in **Restart and updates**; the
+card follows the operation until it settles. The Worker must be online and advertise
+`worker-restart-v1`. Enable `worker.provisioning.enabled` locally and add
+`worker:restart` to `worker.provisioning.allowedPrivilegedActions` to authorize remote
+restart. A matching denied action wins. The Worker advertises `worker-restart-v1`
+(and `worker-self-update-v1` for `worker:self-update`) only when its installation
+supports the operation and its local policy allows it, so the dashboard does not offer
+an operation the Worker would refuse.
+
+If a Worker still receives an operation it cannot perform (for example after a local
+policy change), it logs the refusal and the policy key to add, and reports `refused`
+on `POST .../update/{operationId}/fail` with `{ "reason": "refused" }`. Because nothing
+was drained or dispatched, the Server records the failure with diagnostic
+`refused-by-worker-installation-or-local-policy`, restores the prior scheduling policy
+and accepts a new request. A failure report without a reason keeps the existing
+recovery semantics. Dispatch failures are also logged with the exit code and bounded
+standard error. Refresh the packaged installation
 locally if its sudo policy predates restart support. This permission authorizes only
 `systemctl --no-block restart codex-worker.service`; callers cannot supply commands.
 

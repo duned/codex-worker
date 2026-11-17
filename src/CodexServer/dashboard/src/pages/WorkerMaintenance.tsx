@@ -83,6 +83,7 @@ export function WorkerMaintenance({ worker, onProgress }: { worker: WorkerObserv
       </div>
     </div>}
     {!online && <p className="mt-4 text-sm text-tertiary">{t('maintenance.offline')}</p>}
-    {online && info && !info.restartSupported && !info.selfUpdateSupported && <p className="mt-4 text-sm text-tertiary">{t('maintenance.unsupported')}</p>}
+    {online && info && !info.restartSupported && <p className="mt-4 text-sm text-tertiary">{t('maintenance.restartNotEnabled')}</p>}
+    {online && info?.updateAvailable && !info.selfUpdateSupported && <p className="mt-4 text-sm text-tertiary">{t('maintenance.updateNotEnabled')}</p>}
   </Card>;
 }

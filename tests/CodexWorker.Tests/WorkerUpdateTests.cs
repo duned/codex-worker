@@ -120,6 +120,151 @@ public sealed class WorkerUpdateTests
         Assert.Equal(operation.OperationId, (await store.GetWorkerUpdateAsync(worker))?.OperationId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RestartOrUpdateRefusedByLocalPolicyIsLoggedAndReleasesServerDrain(bool restart)
+    {
+        // Regression: a Worker whose local policy does not allow the operation used to report a silent
+        // failure, leaving the Server drain held for manual recovery with nothing in the journal.
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock { Now = DateTimeOffset.UtcNow };
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
+        await store.HeartbeatWorkerAsync(new(2, worker, ApplicationVersion.Display, "running", 0, 2, capabilities, [],
+            ConfigurationSynchronization: "synchronized", InstanceId: "original"));
+        var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: restart);
+        Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await File.WriteAllTextAsync(settings.IdentityFile, worker);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile, CancellationToken.None);
+        using var history = new ExecutionHistoryStore(Path.Combine(temporary.Path, "history.db"));
+        var runtime = new WorkerRuntimeReadModel(new(), [], history);
+        runtime.Lifecycle.SetReady();
+        var before = runtime.Lifecycle.Snapshot;
+        using var handler = new UpdateStoreHandler(store, worker);
+        using var http = new HttpClient(handler);
+        var client = new WorkerRegistrationClient(http);
+        var messages = new List<string>();
+        var dispatches = 0;
+        Task<ProcessResult> Dispatch(string executable, string[] arguments, TimeSpan timeout, CancellationToken ct) { dispatches++; return Task.FromResult(new ProcessResult(0, "", "")); }
+        // Restart is supported but the default local policy does not allow it. Self-update support depends
+        // on the packaged install path, which tests never have, so an update is refused as unsupported.
+        var policy = new ProvisioningPolicy();
+
+        Assert.True(await client.ExecuteWorkerUpdateAsync(settings, policy, runtime, restartSupported: true, Dispatch, CancellationToken.None, messages.Add));
+
+        Assert.Equal(0, dispatches);
+        Assert.Equal(before, runtime.Lifecycle.Snapshot);
+        var message = Assert.Single(messages);
+        Assert.Contains("refused", message, StringComparison.Ordinal);
+        if (restart) Assert.Contains(WorkerUpdateProtocol.RestartPolicyKey, message, StringComparison.Ordinal);
+        var failed = await store.GetWorkerUpdateAsync(worker);
+        Assert.Equal(("failed", WorkerUpdateProtocol.RefusedDiagnostic), (failed?.State, failed?.Diagnostic));
+        Assert.NotNull(failed?.DrainReleasedAtUtc);
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        // Nothing is left to recover: polling dispatches nothing and a new request can start.
+        Assert.False(await client.ExecuteWorkerUpdateAsync(settings, policy, runtime, restartSupported: true, Dispatch, CancellationToken.None, messages.Add));
+        Assert.Single(messages);
+        var next = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: restart);
+        Assert.NotEqual(operation.OperationId, next.OperationId);
+        Assert.Equal("waiting-for-idle", next.State);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnreachableServerDuringUpdatePollIsNotAWorkerFailure(bool timeout)
+    {
+        // Regression: a Server outage while polling for restart/update stopped the whole Worker loop.
+        using var temporary = new TemporaryDirectory();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await File.WriteAllTextAsync(settings.IdentityFile, Guid.NewGuid().ToString("N"));
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile, CancellationToken.None);
+        using var history = new ExecutionHistoryStore(Path.Combine(temporary.Path, "history.db"));
+        var runtime = new WorkerRuntimeReadModel(new(), [], history);
+        using var http = new HttpClient(new OfflineHandler(timeout));
+        var client = new WorkerRegistrationClient(http);
+        var policy = new ProvisioningPolicy { Enabled = true, AllowedPrivilegedActions = [WorkerUpdateProtocol.RestartPolicyKey] };
+        Assert.False(await client.ExecuteWorkerUpdateAsync(settings, policy, runtime, restartSupported: true,
+            (_, _, _, _) => throw new InvalidOperationException("No dispatch expected."), CancellationToken.None));
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.ExecuteWorkerUpdateAsync(settings, policy, runtime, restartSupported: true,
+            (_, _, _, _) => throw new InvalidOperationException("No dispatch expected."), cancelled.Token));
+    }
+
+    private sealed class OfflineHandler(bool timeout) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return timeout ? throw new TaskCanceledException("timeout") : throw new HttpRequestException("Server offline");
+        }
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task FailApiAcceptsLegacyEmptyReportsAndOnlyReleasesExplicitRefusals()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var url = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
+        listener.Stop();
+        await using var app = await ServerApplication.BuildAsync([
+            $"--Server:ListenUrl={url}", $"--Server:DatabasePath={Path.Combine(temporary.Path, "server.db")}",
+            "--Logging:LogLevel:Default=Warning"]);
+        await app.StartAsync();
+        var store = app.Services.GetRequiredService<IRegistryStore>();
+        var worker = Guid.NewGuid().ToString("N");
+        const string token = "worker-secret-with-sufficient-entropy";
+        Assert.True(await store.BootstrapWorkerAsync(await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(5)),
+            new WorkerRegistrationRequest(2, worker, "Worker", "1.0.0", "test", 2, Capabilities), token, operation: "enroll"));
+        await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2, Capabilities, [], ConfigurationSynchronization: "synchronized"));
+        using var client = new HttpClient { BaseAddress = new Uri(url) };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var legacy = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"));
+        using (var response = await client.PostAsync($"/api/v1/workers/{worker}/update/{legacy.OperationId}/fail", null))
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var failed = await store.GetWorkerUpdateAsync(worker);
+        Assert.Equal("failed", failed?.State);
+        Assert.Null(failed?.DrainReleasedAtUtc);
+        Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync($"/api/v1/workers/{worker}/update/{legacy.OperationId}/fail",
+            new WorkerUpdateFailure("something-else"))).StatusCode);
+
+        await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2, Capabilities, [], ConfigurationSynchronization: "synchronized"));
+        await store.ReconcileWorkerUpdateAsync(worker);
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        var refused = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"));
+        using (var response = await client.PostAsJsonAsync($"/api/v1/workers/{worker}/update/{refused.OperationId}/fail",
+            new WorkerUpdateFailure(WorkerUpdateProtocol.RefusedReason)))
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull((await store.GetWorkerUpdateAsync(worker))?.DrainReleasedAtUtc);
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        await app.StopAsync();
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(true, new[] { WorkerUpdateProtocol.RestartPolicyKey }, new string[0], true, true)]
+    [InlineData(true, new[] { WorkerUpdateProtocol.RestartPolicyKey }, new string[0], false, false)]
+    [InlineData(false, new[] { WorkerUpdateProtocol.RestartPolicyKey }, new string[0], true, false)]
+    [InlineData(true, new[] { WorkerUpdateProtocol.RestartPolicyKey }, new[] { WorkerUpdateProtocol.RestartPolicyKey }, true, false)]
+    [InlineData(true, new[] { WorkerUpdateProtocol.PolicyKey }, new string[0], false, true)]
+    public void MaintenanceRequiresEnabledPolicyAllowingTheExactAction(bool enabled, string[] allowed, string[] denied, bool restart, bool expected) =>
+        Assert.Equal(expected, WorkerRegistrationClient.MaintenanceAllowed(
+            new ProvisioningPolicy { Enabled = enabled, AllowedPrivilegedActions = [.. allowed], DeniedActions = [.. denied] }, restart));
+
     private sealed class UpdateStoreHandler(SqliteRegistryStore store, string worker) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -135,8 +280,12 @@ public sealed class WorkerUpdateTests
                 operation = await store.AdvanceWorkerUpdateAsync(worker, path.Split('/')[6], preparation?.Version, cancellationToken: cancellationToken);
             }
             else
+            {
+                var failure = request.Content is null ? null : await request.Content.ReadFromJsonAsync<WorkerUpdateFailure>(cancellationToken);
                 operation = await store.AdvanceWorkerUpdateAsync(worker, path.Split('/')[6],
-                    fail: path.EndsWith("/fail", StringComparison.Ordinal), verified: path.EndsWith("/verified", StringComparison.Ordinal), cancellationToken: cancellationToken);
+                    fail: path.EndsWith("/fail", StringComparison.Ordinal), verified: path.EndsWith("/verified", StringComparison.Ordinal), cancellationToken: cancellationToken,
+                    refused: failure?.Reason == WorkerUpdateProtocol.RefusedReason);
+            }
             return operation is null ? new(HttpStatusCode.NoContent) : new(HttpStatusCode.OK) { Content = JsonContent.Create(operation) };
         }
     }
