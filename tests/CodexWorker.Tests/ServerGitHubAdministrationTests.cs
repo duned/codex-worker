@@ -1436,6 +1436,55 @@ public sealed class ServerGitHubAdministrationTests
     [Trait("TestType", "Component")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public async Task NewBlockersAreRefusedOnceAnIssueIsReadyOrRunning()
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "ordering.db");
+        var registry = new SqliteRegistryStore(path);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition(issueReadyLabel: "ready"));
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(50));
+        read.Add(project.Repository, Issue(52, labels: ["ready"]));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+        var tools = new ServerToolboxTools(registry, service);
+        static string? Reason(object value) => JsonSerializer.SerializeToElement(value) is var json &&
+            json.TryGetProperty("reason", out var reason) ? reason.GetString() : null;
+
+        // Ready before its blocker: the Server could already have started it, so the link is refused.
+        Assert.Equal("issue-already-ready-remove-ready-set-dependencies-then-mark-ready",
+            Reason(await tools.Dependencies(project.Id, 52, [50], true, default)));
+        Assert.DoesNotContain("blocked-by:add", writer.Operations);
+
+        // Queued or running work cannot be stopped by a late blocker either.
+        await service.EnqueueIssueAsync(project.Id, new WorkReference("issue", "52"));
+        Assert.Equal("issue-execution-active-dependency-would-not-apply",
+            Reason(await tools.Dependencies(project.Id, 52, [50], true, default)));
+
+        // A package stops before writing any blocker or label for such a child.
+        var package = new ServerWorkPackageTools(registry, service, new IssuePlanningOperations(path), new ExecutionMaintenanceStore(path));
+        read.Add(project.Repository, Issue(48));
+        var result = JsonSerializer.SerializeToElement(await package.Plan(project.Id,
+            new("parent", Guid.NewGuid().ToString("N"), "Plan", "Details", 48),
+            [new("http1", Guid.NewGuid().ToString("N"), "Plan", "Details", 50), new("http2", Guid.NewGuid().ToString("N"), "Plan", "Details", 52)],
+            [new("http2", "http1")], default, readyChildren: ["http1", "http2"]));
+        Assert.Equal("partial", result.GetProperty("outcome").GetString());
+        var last = result.GetProperty("steps").EnumerateArray().Last();
+        Assert.Equal("blocked-by", last.GetProperty("Operation").GetString());
+        Assert.Equal("issue-execution-active-dependency-would-not-apply", last.GetProperty("Result").GetProperty("reason").GetString());
+        Assert.DoesNotContain("blocked-by:add", writer.Operations);
+        Assert.DoesNotContain("label:add", writer.Operations);
+
+        // Removing a blocker and re-stating an existing one remain allowed.
+        read.Add(project.Repository, Issue(52, labels: ["ready"], blockers: [BlockingIssue(50, "open")]));
+        Assert.Null(Reason(await tools.Dependencies(project.Id, 52, [50], true, default)));
+        Assert.Null(Reason(await tools.Dependencies(project.Id, 52, [50], false, default)));
+    }
+
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public async Task McpPlanningBoundsAndRedactsIssueContent()
     {
         using var temporary = new TemporaryDirectory();
