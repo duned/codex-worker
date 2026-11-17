@@ -979,9 +979,12 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
         var queued = await registry.ListQueuedByIssueAsync(projectId, number, cancellationToken);
         if (queued.Count == 0) return queued;
         var issue = await _reads.GetIssueAsync(project, issueNumber, cancellationToken);
-        var update = EligibilityUpdate(issue, project.Repository, issueNumber);
         foreach (var execution in queued)
-            await registry.UpdateManagedEligibilityAsync(execution.Id, update, cancellationToken);
+        {
+            var evaluated = issue is not null && await IsRebaseConflictRetryAsync(execution, cancellationToken)
+                ? WithoutReadyLabelRequirement(issue, project) : issue;
+            await registry.UpdateManagedEligibilityAsync(execution.Id, EligibilityUpdate(evaluated, project.Repository, issueNumber), cancellationToken);
+        }
         return await registry.ListQueuedByIssueAsync(projectId, number, cancellationToken);
     }
 
@@ -1004,12 +1007,11 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                     int.Parse(assignment.Work.Id, System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
                 var update = EligibilityUpdate(issue, assignment.Project.Repository,
                     int.Parse(assignment.Work.Id, System.Globalization.CultureInfo.InvariantCulture));
-                var freshRecovery = assignment.Metadata.ContainsKey("freshRecoveryExecutionId");
+                var freshRecovery = assignment.Metadata.ContainsKey("freshRecoveryExecutionId") ||
+                    assignment.Metadata.ContainsKey("rebaseConflictRetryOf");
                 if (freshRecovery && issue is not null)
                 {
-                    var readyReason = $"Issue is missing ready label '{assignment.Project.IssueReadyLabel}'.";
-                    var reasons = issue.EligibilityReasons.Where(reason => reason != readyReason).ToArray();
-                    issue = issue with { IsEligible = reasons.Length == 0, EligibilityReasons = reasons };
+                    issue = WithoutReadyLabelRequirement(issue, assignment.Project);
                     update = EligibilityUpdate(issue, assignment.Project.Repository, issue.Number);
                 }
                 var recovery = (assignment.Metadata.ContainsKey("integrationRecoveryExecutionId") || assignment.Metadata.ContainsKey("codexRecoveryExecutionId"));
@@ -1057,6 +1059,20 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
         }
         return new(false, null);
     }
+
+    /// <summary>A Server-queued retry (interrupted lease or rebase conflict) was not requested through the
+    /// ready label; the Issue carries the Worker's conflict/working label instead. Other reasons still apply.</summary>
+    private static ManagedGitHubIssue WithoutReadyLabelRequirement(ManagedGitHubIssue issue, CentralProject project)
+    {
+        var readyReason = $"Issue is missing ready label '{project.IssueReadyLabel}'.";
+        var reasons = issue.EligibilityReasons.Where(reason => reason != readyReason).ToArray();
+        return issue with { IsEligible = reasons.Length == 0, EligibilityReasons = reasons };
+    }
+
+    private async Task<bool> IsRebaseConflictRetryAsync(ExecutionRequest execution, CancellationToken cancellationToken) =>
+        execution is { WorkspaceRecovery: "FreshWorkspaceRequired", RetryOfExecutionId: { } source } &&
+        await registry.GetExecutionAsync(source, cancellationToken) is { State: "Failed", RecoveryState: "RebaseConflictRequeued" } previous &&
+        previous.ProjectId == execution.ProjectId && previous.WorkReference == execution.WorkReference;
 
     private ManagedEligibilityUpdate EligibilityUpdate(ManagedGitHubIssue? issue, string repository, int issueNumber) => issue is null
         ? new("blocked", [$"GitHub Issue #{issueNumber} is missing or is no longer visible in '{repository}'."], _clock.GetUtcNow())

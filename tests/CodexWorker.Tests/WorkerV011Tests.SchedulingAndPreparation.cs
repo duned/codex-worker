@@ -313,7 +313,7 @@ public sealed partial class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
-    public async Task FirstAttemptConflictIsPreservedWithoutEngineResolutionAndSchedulerContinues()
+    public async Task UnresolvedFirstAttemptConflictIsPreservedAndSchedulerContinues()
     {
         using var historyDatabase = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(historyDatabase.Path);
@@ -321,11 +321,13 @@ public sealed partial class WorkerV011Tests
         h.GitHub.ReadyIssueCount = 2;
         h.Git.IntegrationFailure = new GitIntegrationConflictException("rebase conflict was safely aborted") { RebaseAborted = true };
         h.Git.CheckConflictPolicy = true;
+        h.Codex.ConflictAction = () => new CodexOutcome("failed", "could not combine both changes", [], false, null);
 
         var conflicted = await h.ProcessOneAsync();
         Assert.Equal(IssueOutcomeKind.IntegrationConflict, conflicted!.Kind);
         Assert.Equal(1, h.Git.ConflictPolicyChecks);
-        Assert.Equal(0, h.Codex.ConflictResolutions);
+        // The first attempt asks its own engine once, without Issue intent verification.
+        Assert.Equal(1, h.Codex.ConflictResolutions);
         Assert.Single(h.Codex.Issues);
         Assert.Equal("IntegrationConflict", Assert.Single(await history.ReadAllAsync()).State);
         // A standalone first attempt that only lost the rebase returns to the ready queue once.

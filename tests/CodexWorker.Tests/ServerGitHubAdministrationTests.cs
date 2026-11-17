@@ -429,6 +429,45 @@ public sealed class ServerGitHubAdministrationTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task RebaseConflictRetryIsAssignedWithoutReadyLabel()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "rebase-retry.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition("Retry", issueReadyLabel: "ready"));
+        var workerId = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 1, capabilities));
+        await registry.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var request = new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(10, labels: ["ready"]));
+        var service = new ServerGitHubAdministrationService(registry, read);
+        var original = await service.EnqueueIssueAsync(project.Id, new WorkReference("issue", "10"));
+        var first = (await service.RequestAssignmentAsync(request)).Assignment!;
+        var localExecution = Guid.NewGuid().ToString();
+        await registry.ReportExecutionAsync(original.Id, new WorkerExecutionReport(workerId, first.AssignmentId, localExecution,
+            "Failed", CompletedAtUtc: DateTimeOffset.UtcNow, IntegrationResult: CodexProvisioning.ManagedIntegrationResults.RebaseConflict,
+            FailureClassification: "IntegrationConflict", Recoverable: true, Generation: first.Lease!.Generation));
+        // The Worker replaced the working label with its conflict label; ready is gone.
+        read.Add(project.Repository, Issue(10, labels: ["codex-integration-conflict"]));
+        var retry = Assert.Single(await registry.ListQueuedByIssueAsync(project.Id, "10"));
+        Assert.Equal("eligible", Assert.Single((await service.RefreshQueuedEligibilityAsync(project.Id, 10))!).ManagedEligibilityState);
+
+        // The Worker still offers its preserved conflict for recovery; the Server's own retry owns it silently.
+        var response = await service.RequestAssignmentAsync(request with { IntegrationRecoveries =
+            [new(project.Id, original.Id, localExecution, new string('a', 40))] });
+
+        Assert.NotNull(response.Assignment);
+        Assert.Equal(retry.Id, response.Assignment.ServerExecutionId);
+        Assert.Equal(original.Id, response.Assignment.Metadata["rebaseConflictRetryOf"]);
+        Assert.False(response.Assignment.Metadata.ContainsKey("freshRecoveryExecutionId"));
+        Assert.True(response.IntegrationRecoveryRejections is null || response.IntegrationRecoveryRejections.Count == 0);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

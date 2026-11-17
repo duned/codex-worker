@@ -175,6 +175,8 @@ public sealed partial class GitWorktreeTests
     [InlineData(true, true, "standalone")]
     [InlineData(false, true, "standalone")]
     [InlineData(true, false, "standalone")]
+    [InlineData(true, true, "failed")]
+    [InlineData(false, true, "failed")]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     public async Task FirstAttemptsIntegrateFromSameBaseInEitherOrder(bool firstFinishesFirst, bool overlap, string scenario)
@@ -239,10 +241,18 @@ public sealed partial class GitWorktreeTests
             Assert.Equal(IssueOutcomeKind.Succeeded, (await tasks[winner]).Kind);
             engines[follower].Release.SetResult();
             var result = await tasks[follower];
-            // A first attempt never asks the engine to resolve a conflict: disjoint work integrates
-            // after the rebase, overlapping work is preserved and reported without stopping the Worker.
-            Assert.Equal(0, engines[follower].ResolutionCalls);
-            if (!overlap)
+            // Disjoint work integrates after the rebase without the engine. Overlapping work asks the
+            // follower's engine to resolve the rebase in place; an unresolved conflict is aborted,
+            // preserved and reported as a rebase conflict without stopping the Worker.
+            Assert.Equal(overlap ? 1 : 0, engines[follower].ResolutionCalls);
+            if (overlap && scenario != "failed")
+            {
+                Assert.Equal(IssueOutcomeKind.Succeeded, result.Kind);
+                Assert.Equal("base + task 17 + task 18", await fixture.Git("show", "integration:base.txt"));
+                Assert.Equal("3", await fixture.Git("rev-list", "--count", "integration"));
+                Assert.Equal(1, validation.CombinedCalls);
+            }
+            else if (!overlap)
             {
                 Assert.Equal(IssueOutcomeKind.Succeeded, result.Kind);
                 foreach (var issue in issues)
