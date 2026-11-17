@@ -23,7 +23,7 @@ export function ExecutionPage() {
   const language = useLanguage(), { executionId = '' } = useParams(), runtime = useRuntime(), action = useAction(), archive = useArchive(), names = useNames();
   const path = `/api/v1/executions/${encodeURIComponent(executionId)}`;
   const read = useApiRead(path, validateExecution), projects = useProjects();
-  const [preview, setPreview] = useState<ConflictPreview>(), [checking, setChecking] = useState(false);
+  const [preview, setPreview] = useState<ConflictPreview>(), [checking, setChecking] = useState(false), [confirmReconcile, setConfirmReconcile] = useState(false);
   const item = read.data;
   if (!item) return <><PageHeader title={t('executions.detail')} crumbs={[{ label: t('nav.executions'), to: '/executions' }]} /><Card flush><ReadState read={read}>{null}</ReadState></Card></>;
   const project = projects.data?.find(entry => entry.id === item.projectId), number = issueNumber(item), status = executionStatus(item), reason = explain(item);
@@ -50,12 +50,25 @@ export function ExecutionPage() {
         {item.state === 'Queued' && <Button color="secondary-destructive" isDisabled={!!action.busy}
           onClick={() => void action.run(`cancel-${item.id}`, `${path}/cancel`, 'POST', {}, 'actions.cancelled')}>{t('actions.cancelQueued')}</Button>}
         {item.state === 'Failed' && number && <Button color="primary" isDisabled={!!action.busy} onClick={() => void enqueue()}>{t('actions.retryFresh')}</Button>}
+        {item.state === 'Failed' && number && !item.archivedAtUtc && !confirmReconcile &&
+          <Button color="secondary" isDisabled={!!action.busy} onClick={() => setConfirmReconcile(true)}>{t('actions.reconcileManually')}</Button>}
         {(canArchive(item) || item.archivedAtUtc) && <Button color="secondary" isDisabled={archive.busy}
           onClick={() => void archive.run([item.id], !item.archivedAtUtc)}>{t(item.archivedAtUtc ? 'actions.restore' : 'actions.archive')}</Button>}
         {item.workReference?.url && <Button color="secondary" href={item.workReference.url} target="_blank" rel="noreferrer">{t('actions.openGitHub')}</Button>}
       </>} />
 
     <Card><Steps execution={item} /></Card>
+
+    {confirmReconcile && item.state === 'Failed' && <Notice>
+      <div className="flex flex-col gap-3">
+        <span>{t('actions.reconcileHint')}</span>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" color="primary" isDisabled={!!action.busy} onClick={() => void action.run(`${path}/manual-completion`, `${path}/manual-completion`, 'POST',
+            { operationId: crypto.randomUUID().replaceAll('-', '') }, 'actions.manualCompletionRequested').then(() => setConfirmReconcile(false))}>{t('actions.confirmReconcile')}</Button>
+          <Button size="sm" color="secondary" isDisabled={!!action.busy} onClick={() => setConfirmReconcile(false)}>{t('actions.cancel')}</Button>
+        </div>
+      </div>
+    </Notice>}
 
     {reason && <Card>
       <Explanation what={t(reason.what)} todo={t(reason.todo)}>

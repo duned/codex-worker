@@ -278,6 +278,24 @@ visible until it reconnects. Archive receipts, execution lineage and provenance
 remain retained; permanent purge is not supported. Remote Issue mutation is limited
 to the verified completion reconciliation described above.
 
+### Manual completion from the dashboard
+
+When an execution integrated its commit but failed while reporting (for example *Issue state conflicts
+with pending success reporting*), the execution page offers **Reconcile manually** for failed
+executions. After the operator confirms, the Server sends a `manual-completion` maintenance command
+(`POST /api/v1/executions/{id}/manual-completion` with an `operationId`) to the original Worker.
+
+- Server checks: the execution is `Failed` with an ended lease, it is the newest attempt for its
+  Issue with no queued, running or completed attempt, and the Worker advertises
+  `execution-manual-completion-v1`. No drain is needed: the command never touches the base branch.
+- The Worker runs it when idle, under the project's repository gate. It refuses unless validation
+  passed and the exact recorded integration commit is on the authoritative remote base.
+- Effects: the ready, failed, blocked, integration-conflict and integration-recovery labels are
+  removed, the working label is replaced by the done label, the success report (marked by execution)
+  is posted once, and the Issue is closed. Unrelated labels stay. The execution is reported to the
+  Server as `Completed` (`CompletionReconciled`) and recorded locally as `manually-completed`.
+- It never runs the engine, validation or integration, and a repeated request is refused.
+
 ## Installed standalone batch command
 
 Use the installed Worker tool against its running local Management API:

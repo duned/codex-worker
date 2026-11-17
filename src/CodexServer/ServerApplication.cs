@@ -1159,6 +1159,32 @@ public static partial class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
+        // Operator confirmation that a failed execution's work is already integrated: the original Worker
+        // verifies the exact commit on the remote base, marks the execution completed and closes the Issue.
+        app.MapPost("/api/v1/executions/{executionRequestId}/manual-completion", async (string executionRequestId,
+            ManualCompletionRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore registry,
+            ExecutionMaintenanceStore commands, TimeProvider clock) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if (request is null || !Guid.TryParseExact(request.OperationId, "N", out _))
+                return Results.BadRequest(new { reason = "invalid-operation-id" });
+            var prior = await commands.GetAsync(request.OperationId, context.RequestAborted);
+            if (prior is not null)
+                return prior.Request.ServerExecutionId == executionRequestId && prior.Request.Action == CodexProvisioning.ExecutionMaintenanceProtocol.ManualCompletion
+                    ? Results.Ok(prior) : Results.Conflict(new { reason = "operation-scope-conflict" });
+            var execution = await registry.GetExecutionAsync(executionRequestId, context.RequestAborted);
+            if (execution is null) return Results.NotFound(new { reason = "execution-not-found" });
+            if (!Guid.TryParse(execution.WorkerExecutionId, out var workerExecutionId) || execution.AssignedWorkerId is null)
+                return Results.Conflict(new { reason = "worker-execution-proof-missing" });
+            var maintenance = new CodexProvisioning.ExecutionMaintenanceRequest(request.OperationId, execution.AssignedWorkerId, execution.Id,
+                workerExecutionId, execution.AssignmentId, execution.Lease?.Generation, CodexProvisioning.ExecutionMaintenanceProtocol.ManualCompletion, Apply: true);
+            if (!CodexProvisioning.ExecutionMaintenanceProtocol.Valid(maintenance)) return Results.Conflict(new { reason = "invalid-maintenance-scope" });
+            var reason = await MaintenanceAuthorityReasonAsync(maintenance, registry, context.RequestAborted, clock, commands, settings.WorkerStaleAfterSeconds);
+            if (reason is not null) return Results.Conflict(new { reason });
+            try { return Results.Accepted($"/api/v1/maintenance/executions/{request.OperationId}",
+                await commands.CreateAsync(maintenance, $"server-management:{context.TraceIdentifier}", context.RequestAborted)); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { reason = ex.Message }); }
+        });
         MapExecutionMaintenance(app);
         MapWorkerUpdates(app);
         MapWorkerRelease(app);
@@ -1284,3 +1310,5 @@ public static partial class ServerApplication
 
     public static string DisplayVersion => CodexProvisioning.ProductVersion.Display(Assembly.GetExecutingAssembly());
 }
+
+public sealed record ManualCompletionRequest(string OperationId);

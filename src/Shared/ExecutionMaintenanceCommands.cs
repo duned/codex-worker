@@ -45,6 +45,10 @@ public static class ExecutionMaintenanceProtocol
         !branch.Contains("//", StringComparison.Ordinal) && !branch.EndsWith('/') && !branch.EndsWith('.') &&
         branch.Split('/').All(part => !part.StartsWith('.') && !part.EndsWith(".lock", StringComparison.Ordinal));
     public const string CompletionCapability = "execution-completion-reconciliation-v1";
+    /// <summary>Operator-confirmed completion of an execution whose exact commit is already on the
+    /// remote base: the Worker marks it completed and leaves the Issue closed with only the done label.</summary>
+    public const string ManualCompletionCapability = "execution-manual-completion-v1";
+    public const string ManualCompletion = "manual-completion";
     public static bool Valid(ExecutionMaintenanceRequest request) =>
         request is not null &&
         (request.ProjectId is null ? request.ProjectRevision is null : request.Action == "archived-branches" &&
@@ -64,7 +68,8 @@ public static class ExecutionMaintenanceProtocol
                 request.Branches.All(b => b is not null && ArchivedBranch(b.Branch) && b.ExpectedTip is { Length: 40 or 64 } && b.ExpectedTip.All(char.IsAsciiHexDigit))) :
             request.Repository is null && request.OlderThanDays is null && request.Branches is null && (request.Action == "inventory" ? !request.Apply && request.ServerExecutionId is null && request.WorkerExecutionId is null &&
             request.AssignmentId is null && request.Generation is null :
-            request.Action is "inspect" or "cleanup" or "archive" or "retry-report" or "reconcile-completion" &&
+            request.Action is "inspect" or "cleanup" or "archive" or "retry-report" or "reconcile-completion" or ManualCompletion &&
+            (request.Action != ManualCompletion || request.Apply) &&
             request.Project is null && request.IssueNumber is null && request.Outcome is null && request.Origin is null && request.Offset == 0 &&
             Guid.TryParseExact(request.ServerExecutionId, "N", out _) && request.WorkerExecutionId is not null &&
             request.WorkerExecutionId != Guid.Empty && Guid.TryParseExact(request.AssignmentId, "N", out _) && request.Generation > 0 &&

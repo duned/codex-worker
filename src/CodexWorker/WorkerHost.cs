@@ -574,7 +574,9 @@ public sealed class WorkerHost
                             var project = runtimes.SingleOrDefault(p => p.Configuration.Project.Name == entry?.Project &&
                                 p.Configuration.Project.Repository == entry.Repository);
                             return project is null ? new("refused", "project-unavailable", []) :
-                                await project.Worker.ReconcileManagedCompletionAsync(command, authorize, token);
+                                command.Request.Action == ExecutionMaintenanceProtocol.ManualCompletion
+                                    ? await project.Worker.CompleteManuallyAsync(command, authorize, token)
+                                    : await project.Worker.ReconcileManagedCompletionAsync(command, authorize, token);
                         }))
                     continue;
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining &&
