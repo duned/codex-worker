@@ -166,7 +166,7 @@ export function Explanation({ what, todo, children }: { what: string; todo: stri
 }
 
 export function Notice({ tone = 'idle', children }: { tone?: Tone; children: ReactNode }) {
-  return <div role={tone === 'bad' ? 'alert' : 'status'} className={cx('flex items-start gap-3 rounded-xl px-4 py-3 text-sm ring-1 ring-inset', toneClass[tone])}>
+  return <div role={tone === 'bad' ? 'alert' : 'status'} className={cx('flex items-start gap-3 rounded-xl px-4 py-3 text-sm ring-1 ring-inset', toneClass[tone], `tone-${tone}`)}>
     <span className="status-dot mt-1.5" aria-hidden="true" /><div className="min-w-0">{children}</div>
   </div>;
 }

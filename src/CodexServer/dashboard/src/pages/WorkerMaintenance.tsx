@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
 import { useApiRead } from '../shared/api/session';
@@ -33,6 +33,16 @@ export function WorkerMaintenance({ worker, onProgress }: { worker: WorkerObserv
     const id = setInterval(() => { void refetchUpdate(); onProgress(); }, 5000);
     return () => clearInterval(id);
   }, [inProgress, refetchUpdate, onProgress]);
+
+  // The Server compares the latest release with the Worker's current version on every read, so a new
+  // installed version or a settled operation only needs a fresh read, not a new release lookup.
+  const refetchRelease = release.refetch, settled = `${worker.workerVersion}|${inProgress ? '' : operation?.state ?? ''}`;
+  const lastSettled = useRef(settled);
+  useEffect(() => {
+    if (lastSettled.current === settled) return;
+    lastSettled.current = settled;
+    void refetchRelease();
+  }, [settled, refetchRelease]);
 
   async function request(kind: 'restart' | 'update') {
     if (await action.run(`worker-update-${worker.workerId}`, `${base}/update`, 'POST', { operationId: operationId(), restart: kind === 'restart' },
