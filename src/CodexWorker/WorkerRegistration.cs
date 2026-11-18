@@ -37,6 +37,14 @@ public static class WorkerAgentCapabilities
 {
     public static WorkerCapabilityContract AuthenticatedProvider(string provider) =>
         new("agent-provider", provider.Trim().ToLowerInvariant());
+
+    /// <summary>Capabilities to advertise while projects are revalidated after a tool inventory change. Repository
+    /// authentication is withdrawn until revalidated, but agent readiness is owned by its own preflight, which
+    /// recomputes it in the same control-loop pass; dropping it here made every heartbeat in between report the
+    /// Worker as having no AI agent.</summary>
+    public static IReadOnlyList<WorkerCapabilityContract> KeepAgentReadiness(
+        IReadOnlyList<WorkerCapabilityContract> discovered, IReadOnlyList<WorkerCapabilityContract> current) =>
+        discovered.Concat(current.Where(capability => capability.Type is "agent-provider" or "agent-readiness")).Distinct().ToArray();
 }
 
 public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerId, string WorkerVersion,

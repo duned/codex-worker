@@ -5,7 +5,7 @@ import { useApiRead } from '../shared/api/session';
 import { commands as validateCommands } from '../shared/api/validation';
 import type { Capability, NodeCommandSummary, NodeSummary } from '../shared/api/contracts';
 import { t, tryT, useLanguage } from '../shared/i18n';
-import { commandActive, deviceLoginUrl, needsLocalCompletion, terminalSignIn, offeredToolActions, toolActionCommand, toolActions, toolCommand, toolInFlight, toolProgress, type ToolAction } from '../shared/model';
+import { commandActive, deniedPolicyHint, deviceLoginUrl, needsLocalCompletion, type PolicyHint, terminalSignIn, offeredToolActions, toolActionCommand, toolActions, toolCommand, toolInFlight, toolProgress, type ToolAction } from '../shared/model';
 import { Ago, Card, Check, Empty, Notice, Pill, ReadState, Rows, useNow, CopyValue } from '../shared/ui';
 
 type Selection = { capabilityId: string; action: ToolAction };
@@ -101,6 +101,24 @@ export function WorkerTools({ node, nodes, online, onSettled }: {
 
 const requestVisibleMs = 90_000;
 
+/** What to change in the Worker's local policy (it is only editable on the Worker itself). */
+function PolicyFix({ hint }: { hint: PolicyHint }) {
+  const setting = hint.kind === 'privileged' ? 'worker.provisioning.allowedPrivilegedActions'
+    : hint.kind === 'credentials' ? 'worker.provisioning.allowCredentials' : 'worker.provisioning.allowNonPrivileged';
+  return <div className="rounded-lg bg-secondary px-3 py-2 text-sm text-secondary">
+    <p className="font-medium text-utility-red-500">{t('tools.policyDenied')}</p>
+    {hint.kind === 'privileged' ? <ol className="mt-2 list-decimal space-y-1.5 pl-5">
+      <li>{t('tools.policyPrivilegedStep1')}<div className="mt-1"><CopyValue value="sudo /opt/codex-worker/CodexWorker config show" /></div></li>
+      <li>{t('tools.policyPrivilegedStep2', { setting })}<div className="mt-1"><CopyValue value={hint.key} /></div>
+        <div className="mt-1"><CopyValue value={`sudo /opt/codex-worker/CodexWorker config set ${setting} '<${t('tools.policyCurrentList')}>,${hint.key}'`} /></div></li>
+      <li>{t('tools.policyRestart')}</li>
+    </ol> : <ol className="mt-2 list-decimal space-y-1.5 pl-5">
+      <li>{t('tools.policySetTrue', { setting })}<div className="mt-1"><CopyValue value={`sudo /opt/codex-worker/CodexWorker config set ${setting} true`} /></div></li>
+      <li>{t('tools.policyRestart')}</li>
+    </ol>}
+  </div>;
+}
+
 /** Sign-in that has to be finished in a terminal on the Worker, with the exact command to copy. */
 function TerminalSignIn({ command, signedIn }: { command: string; signedIn: boolean }) {
   return <details className="rounded-lg bg-secondary px-3 py-2 text-sm" open={!signedIn}>
@@ -128,7 +146,7 @@ function CommandState({ command }: { command: NodeCommandSummary }) {
   const login = command.loginInstructions, loginUrl = login && deviceLoginUrl(login.verificationUri);
   const deadline = Date.parse(command.deadlineUtc ?? '');
   const showCode = command.status === 'Running' && !!login && (!Number.isFinite(deadline) || deadline > Date.now());
-  const localCompletion = needsLocalCompletion(command);
+  const localCompletion = needsLocalCompletion(command), policyHint = deniedPolicyHint(command);
   const tone = active ? 'run' : command.status === 'Succeeded' ? 'ok' : command.status === 'Cancelled' || localCompletion ? 'idle' : 'bad';
   const failure = (command.failureDetail ? tryT(`tools.failure.${command.failureDetail.code ?? ''}`, command.failureDetail.description) : undefined) ?? (command.status === 'Failed' || command.status === 'TimedOut'
     ? tryT(`tools.diagnostic.${command.diagnostic ?? ''}`, command.diagnostic ?? '') || undefined : undefined);
@@ -146,6 +164,7 @@ function CommandState({ command }: { command: NodeCommandSummary }) {
     </div>}
     {active && !showCode && <p className="text-tertiary">{t(command.request.action === 'Login' ? 'tools.waitingCode' : command.status === 'Pending' ? 'tools.requestedDetail' : 'tools.runningDetail')}</p>}
     {command.status === 'Succeeded' && <p className="text-tertiary">{t('tools.succeededDetail')}</p>}
-    {failure && !localCompletion && <p className="text-utility-red-500">{failure}</p>}
+    {failure && !localCompletion && !policyHint && <p className="text-utility-red-500">{failure}</p>}
+    {policyHint && <PolicyFix hint={policyHint} />}
   </div>;
 }

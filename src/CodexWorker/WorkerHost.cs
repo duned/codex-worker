@@ -613,7 +613,7 @@ public sealed class WorkerHost
                         await claudeReadiness.RefreshAsync(executionToken);
                         discoveredCapabilities = await _registration.CapabilityDiscovery.RefreshAsync(executionToken);
                         validatedConfigurations.Clear();
-                        heartbeatCapabilities = discoveredCapabilities;
+                        heartbeatCapabilities = WorkerAgentCapabilities.KeepAgentReadiness(discoveredCapabilities, heartbeatCapabilities);
                         await InitializeProjectsAsync(executionToken);
                     }
                 }
