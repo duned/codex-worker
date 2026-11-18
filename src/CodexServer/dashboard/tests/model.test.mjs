@@ -24,6 +24,19 @@ test('a failed execution marks the step it failed at, using timings when the sta
   assert.equal(model.explain(failed).todo, 'explain.conflict.todo');
 });
 
+test('a rejected push and an integration lost mid-flight get specific explanations', () => {
+  const rejected = execution({ state: 'Failed', failureClassification: 'IntegrationConflict', currentStage: 'Integration',
+    completionSummary: "GitHub rejected the push to 'main' because the change creates or updates GitHub Actions workflow files." });
+  assert.equal(model.explain(rejected).what, 'explain.pushRejected.what');
+  assert.equal(model.explain(rejected).todo, 'explain.pushRejected.todo');
+  const conflict = execution({ state: 'Failed', failureClassification: 'IntegrationConflict', completionSummary: 'The integration base kept advancing.' });
+  assert.equal(model.explain(conflict).what, 'explain.integration.what');
+  const lostIntegrating = execution({ state: 'Failed', recoveryState: 'LeaseExpiredUncertain', currentStage: 'Integration' });
+  assert.equal(model.explain(lostIntegrating).what, 'explain.integrationUncertain.what');
+  const lostEarlier = execution({ state: 'Failed', recoveryState: 'LeaseExpiredUncertain', currentStage: 'Validation' });
+  assert.equal(model.explain(lostEarlier).what, 'explain.workerLost.what');
+});
+
 test('automatically requeued failures do not need attention, and newer attempts supersede older failures', () => {
   const requeued = execution({ id: 'a', state: 'Failed', failureClassification: 'IntegrationConflict', recoveryState: 'RebaseConflictRequeued', createdAtUtc: at(0) });
   assert.equal(model.executionStatus(requeued).tone, 'warn');

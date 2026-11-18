@@ -56,15 +56,25 @@ function stepDuration(execution: ExecutionSummary, index: number): number | unde
   return end === undefined ? undefined : Math.max(0, end - Date.parse(start));
 }
 
+const isIntegrationStage = (execution: ExecutionSummary) =>
+  execution.currentStage === 'Integration' || execution.currentStage === 'Reporting';
+
+/** The Worker reports a definitive remote push refusal with product-owned text (nothing was integrated). */
+const isPushRejected = (execution: ExecutionSummary) => /rejected the push/i.test(execution.completionSummary ?? '');
+
 /** Plain-language explanation of a finished execution that needs a decision. */
 export function explain(execution: ExecutionSummary): { what: TranslationKey; todo: TranslationKey } | undefined {
   if (execution.state !== 'Failed') return undefined;
   if (execution.recoveryState === 'RebaseConflictRequeued') return { what: 'explain.conflict.what', todo: 'explain.conflictRetried.todo' };
   if (execution.recoveryState === 'LeaseExpiredRequeued') return { what: 'explain.workerLost.what', todo: 'explain.workerLostRetried.todo' };
-  if (execution.recoveryState === 'LeaseExpiredUncertain') return { what: 'explain.workerLost.what', todo: 'explain.uncertain.todo' };
+  if (execution.recoveryState === 'LeaseExpiredUncertain') return isIntegrationStage(execution)
+    ? { what: 'explain.integrationUncertain.what', todo: 'explain.uncertain.todo' }
+    : { what: 'explain.workerLost.what', todo: 'explain.uncertain.todo' };
   if (isConflict(execution)) return execution.integrationResult === 'rebase-conflict'
     ? { what: 'explain.conflict.what', todo: 'explain.conflict.todo' }
-    : { what: 'explain.integration.what', todo: 'explain.conflict.todo' };
+    : isPushRejected(execution)
+      ? { what: 'explain.pushRejected.what', todo: 'explain.pushRejected.todo' }
+      : { what: 'explain.integration.what', todo: 'explain.conflict.todo' };
   if (execution.failureClassification === 'CodexInterruption') return { what: 'explain.interrupted.what', todo: 'explain.interrupted.todo' };
   if (execution.failureClassification === 'Blocked') return { what: 'explain.blocked.what', todo: 'explain.blocked.todo' };
   return { what: 'explain.failed.what', todo: 'explain.failed.todo' };

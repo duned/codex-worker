@@ -288,6 +288,28 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         catch (SqliteException ex) { throw PersistenceFailure("quarantine managed completion", ex); }
     }
 
+    /// <summary>Withdraws a prepared completion whose push the remote definitively rejected. Only an
+    /// unconfirmed, unfinished checkpoint is removed; anything else stays for reconciliation.</summary>
+    internal async Task WithdrawUnconfirmedCompletionAsync(Guid executionId, CancellationToken ct)
+    {
+        var entry = await ReadExecutionAsync(executionId, ct);
+        if (entry?.CompletionJson is not { } json) return;
+        var completion = ExecutionCompletion.Read(entry);
+        if (completion.RemoteConfirmed || completion.Finished)
+            throw new WorkerInfrastructureException("A confirmed integration completion cannot be withdrawn; reconciliation is required.");
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE executions SET completion_json=NULL, commit_sha=NULL, integration_branch=NULL WHERE execution_id=$id AND completion_json=$completion";
+        command.Parameters.AddWithValue("$id", executionId.ToString());
+        command.Parameters.AddWithValue("$completion", json);
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(ct) != 1)
+                throw new WorkerInfrastructureException($"Completion history changed while withdrawing a rejected integration for {executionId}.");
+        }
+        catch (SqliteException ex) { throw PersistenceFailure("withdraw rejected integration completion", ex); }
+    }
+
     /// <summary>Records an operator-confirmed completion of already-integrated work.</summary>
     internal async Task MarkManuallyCompletedAsync(Guid executionId, CancellationToken ct)
     {

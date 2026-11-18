@@ -223,7 +223,7 @@ public sealed partial class ExecutionRunner(WorkerConfiguration config, IGitRepo
                         throw new WorkerInfrastructureException("Validated base integration succeeded; completed-branch archival is pending reconciliation.", ex);
                     var recovery = await git.PreserveIntegrationConflictAsync(ct);
                     var report = new IssueExecutionReport(implementationSummary, repairs, Failure: ex.Message,
-                        FailureCategory: ex is PostRebaseValidationException ? "Post-rebase validation failed" : "Integration conflict", RecoveryBranch: recovery?.Branch,
+                        FailureCategory: ex is PostRebaseValidationException ? "Post-rebase validation failed" : ex.InnerException is GitPushRejectedException ? "Push rejected by GitHub" : "Integration conflict", RecoveryBranch: recovery?.Branch,
                         RebaseConflict: ex.RebaseAborted,
                         WorkspacePreserved: recovery is not null, RetryAvailable: recovery is not null,
                         FinalValidationFailure: (ex as PostRebaseValidationException)?.Failure?.Command,
