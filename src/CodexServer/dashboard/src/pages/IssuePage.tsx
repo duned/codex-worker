@@ -6,7 +6,7 @@ import { issue as validateIssue, project as validateProject } from '../shared/ap
 import { projectExecutionsPath, useExecutions, useNames } from '../shared/data';
 import { Markdown } from '../shared/Markdown';
 import { t, useLanguage } from '../shared/i18n';
-import { executionStatus, explain, isActive, issueStatus } from '../shared/model';
+import { executionActions, executionStatus, explain, isActive, issueStatus } from '../shared/model';
 import { Ago, Card, Empty, Explanation, KeyValues, PageHeader, ReadState, RowLink, Rows, StatusPill, Steps } from '../shared/ui';
 
 export function IssuePage() {
@@ -23,7 +23,10 @@ export function IssuePage() {
   const actions: { label: Parameters<typeof t>[0]; run?: () => unknown; href?: string; tone?: 'primary' | 'secondary' | 'secondary-destructive' }[] =
     latest?.state === 'Queued' ? [{ label: 'actions.removeFromQueue', run: cancel, tone: 'secondary-destructive' }]
     : latest && isActive(latest) ? [{ label: 'actions.viewExecution', href: `/executions/${encodeURIComponent(latest.id)}`, tone: 'primary' }]
-    : latest?.state === 'Failed' ? [{ label: 'actions.retryFresh', run: () => enqueue('actions.queued'), tone: 'primary' }, { label: 'actions.viewExecution', href: `/executions/${encodeURIComponent(latest.id)}` }]
+    : latest?.state === 'Failed' ? executionActions(latest, false)[0] === 'retryFresh'
+      ? [{ label: 'actions.retryFresh', run: () => enqueue('actions.queued'), tone: 'primary' }, { label: 'actions.viewExecution', href: `/executions/${encodeURIComponent(latest.id)}` }]
+      // Its execution page offers the action that resolves it (retry only the integration, resolve an uncertain result...).
+      : [{ label: executionActions(latest, false).length ? 'actions.resolve' : 'actions.viewExecution', href: `/executions/${encodeURIComponent(latest.id)}`, tone: 'primary' }]
     : [{ label: latest ? 'actions.runAgain' : 'issues.enqueue', run: () => enqueue('actions.queued'), tone: 'primary' }];
   const labels = issue.data?.labels ?? [], selection = issue.data?.selection;
 

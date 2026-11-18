@@ -92,3 +92,20 @@ test('tool progress shows a request until the Worker records it, then the comman
   assert.deepEqual(model.toolProgress(running, undefined, undefined), { kind: 'running', action: 'login' });
   assert.equal(model.toolActionCommand('login'), 'Login');
 });
+
+test('execution actions offer only what can resolve the current state', () => {
+  const failed = values => execution({ state: 'Failed', workReference: { type: 'github-issue', id: '60' }, ...values });
+  assert.deepEqual(model.executionActions(execution({ state: 'Queued' }), false), ['cancel']);
+  assert.deepEqual(model.executionActions(execution({ state: 'Running' }), false), []);
+  assert.deepEqual(model.executionActions(execution({ state: 'Completed' }), false), []);
+  assert.deepEqual(model.executionActions(failed({ recoveryState: 'LeaseExpiredUncertain' }), false), ['resolveUncertain']);
+  assert.deepEqual(model.executionActions(failed({ failureClassification: 'IntegrationConflict', recoverable: true }), false), ['retryIntegration', 'retryFresh']);
+  assert.deepEqual(model.executionActions(failed({ failureClassification: 'IntegrationConflict', recoverable: false }), false), ['retryFresh']);
+  assert.deepEqual(model.executionActions(failed({ failureClassification: 'InfrastructureFailure', validationResult: 'passed' }), false), ['retryFresh', 'manualCompletion']);
+  assert.deepEqual(model.executionActions(failed({ failureClassification: 'Failed' }), false), ['retryFresh']);
+  assert.deepEqual(model.executionActions(failed({ recoveryState: 'RebaseConflictRequeued' }), false), []);
+  assert.deepEqual(model.executionActions(failed({ failureClassification: 'Failed' }), true), []);
+  const first = failed({ id: 'a', createdAtUtc: at(0) }), second = failed({ id: 'b', createdAtUtc: at(5), attemptNumber: 2 });
+  assert.equal(model.newerAttempt(first, [first, second])?.id, 'b');
+  assert.equal(model.newerAttempt(second, [first, second]), undefined);
+});

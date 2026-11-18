@@ -5,10 +5,10 @@ import { useAction, useArchive } from '../shared/actions';
 import { useApiRead, useRuntime } from '../shared/api/session';
 import type { Validator } from '../shared/api/client';
 import { execution as validateExecution, record } from '../shared/api/validation';
-import { useNames, useProjects } from '../shared/data';
+import { projectExecutionsPath, recentExecutionsPath, useExecutions, useNames, useProjects } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { canArchive, dateTime, duration, executionStatus, explain, isActive, issueNumber, stepProgress } from '../shared/model';
-import { Ago, Card, Explanation, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps } from '../shared/ui';
+import { canArchive, dateTime, duration, executionActions, executionStatus, explain, isActive, issueNumber, newerAttempt, stepProgress, type ExecutionAction } from '../shared/model';
+import { Ago, Card, Check, Explanation, Field, inputClass, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps } from '../shared/ui';
 import { executionLabel } from './ExecutionRow';
 
 interface ConflictPreview { executionId: string; workerId?: string; candidate?: Record<string, unknown>; eligible: boolean; reason: string }
@@ -23,18 +23,46 @@ export function ExecutionPage() {
   const language = useLanguage(), { executionId = '' } = useParams(), runtime = useRuntime(), action = useAction(), archive = useArchive(), names = useNames();
   const path = `/api/v1/executions/${encodeURIComponent(executionId)}`;
   const read = useApiRead(path, validateExecution), projects = useProjects();
-  const [preview, setPreview] = useState<ConflictPreview>(), [checking, setChecking] = useState(false), [confirmReconcile, setConfirmReconcile] = useState(false);
+  const [conflictReason, setConflictReason] = useState<string>(), [panel, setPanel] = useState<'manualCompletion' | 'resolveUncertain'>();
+  const [disposition, setDisposition] = useState<'NotIntegrated' | 'Integrated'>('NotIntegrated'), [evidence, setEvidence] = useState(''), [commit, setCommit] = useState('');
   const item = read.data;
+  const attempts = useExecutions(item ? projectExecutionsPath(item.projectId, issueNumber(item) ?? undefined) : recentExecutionsPath);
   if (!item) return <><PageHeader title={t('executions.detail')} crumbs={[{ label: t('nav.executions'), to: '/executions' }]} /><Card flush><ReadState read={read}>{null}</ReadState></Card></>;
   const project = projects.data?.find(entry => entry.id === item.projectId), number = issueNumber(item), status = executionStatus(item), reason = explain(item);
   const issuePath = number ? `/projects/${encodeURIComponent(item.projectId)}/issues/${number}` : undefined;
   const enqueue = () => number && action.run(`enqueue-${item.projectId}-${number}`, `/api/v1/projects/${encodeURIComponent(item.projectId)}/github/issues/${number}/enqueue`, 'POST', {}, 'actions.queued');
-  async function inspectConflict() {
-    setChecking(true);
-    try { setPreview(await runtime.read(`${path}/conflict-recovery`, new AbortController().signal, conflictPreview)); }
-    catch (error) { setPreview({ executionId, eligible: false, reason: error instanceof Error ? error.message : t('common.loadFailed') }); }
-    finally { setChecking(false); }
+  const newer = newerAttempt(item, attempts.data ?? []);
+  const available = executionActions(item, !!newer);
+  const operationId = () => crypto.randomUUID().replaceAll('-', '');
+  // One click: ask the Server whether only the integration can be retried and, if so, request it.
+  async function retryIntegration() {
+    setConflictReason(undefined);
+    let preview: ConflictPreview;
+    try { preview = await runtime.read(`${path}/conflict-recovery`, new AbortController().signal, conflictPreview); }
+    catch (error) { setConflictReason(error instanceof Error ? error.message : t('common.loadFailed')); return; }
+    if (!preview.eligible) { setConflictReason(preview.reason); return; }
+    await action.run(`${path}/conflict-recovery`, `${path}/conflict-recovery`, 'POST',
+      { operationId: operationId(), workerId: preview.workerId, candidate: preview.candidate }, 'actions.integrationRetryQueued');
   }
+  function closePanel() { setPanel(undefined); setEvidence(''); setCommit(''); setDisposition('NotIntegrated'); }
+  async function resolveUncertain() {
+    const body = disposition === 'Integrated' ? { disposition, evidence: evidence.trim(), integrationCommit: commit.trim() } : { disposition, evidence: evidence.trim() };
+    if (await action.run(`${path}/reconcile`, `${path}/reconcile`, 'POST', body,
+      disposition === 'Integrated' ? 'actions.uncertainIntegrated' : 'actions.uncertainRequeued')) closePanel();
+  }
+  const evidenceValid = evidence.trim().length > 0 && evidence.trim().length <= 1000 && !/[\u0000-\u001f]/.test(evidence)
+    && (disposition === 'NotIntegrated' || /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(commit.trim()));
+  const actionButton = (kind: ExecutionAction, primary: boolean) => {
+    const color = primary ? 'primary' : 'secondary', busy = !!action.busy;
+    switch (kind) {
+      case 'cancel': return <Button key={kind} color="secondary-destructive" isDisabled={busy}
+        onClick={() => void action.run(`cancel-${item.id}`, `${path}/cancel`, 'POST', {}, 'actions.cancelled')}>{t('actions.cancelQueued')}</Button>;
+      case 'retryIntegration': return <Button key={kind} color={color} isDisabled={busy} onClick={() => void retryIntegration()}>{t('actions.retryIntegration')}</Button>;
+      case 'retryFresh': return number ? <Button key={kind} color={color} isDisabled={busy} onClick={() => void enqueue()}>{t('actions.retryFresh')}</Button> : null;
+      case 'resolveUncertain': return <Button key={kind} color={color} isDisabled={busy || !!panel} onClick={() => setPanel('resolveUncertain')}>{t('actions.resolveUncertain')}</Button>;
+      case 'manualCompletion': return <Button key={kind} color={color} isDisabled={busy || !!panel} onClick={() => setPanel('manualCompletion')}>{t('actions.reconcileManually')}</Button>;
+    }
+  };
   const integrationText = item.state === 'Completed' ? t('executions.integratedInto', { branch: project?.defaultBranch ?? 'main' })
     : item.integrationResult === 'rebase-conflict' || item.failureClassification === 'IntegrationConflict' ? t('executions.notIntegratedConflict')
     : item.currentStage === 'Integration' && isActive(item) ? t('executions.integrating') : t('executions.pending');
@@ -47,11 +75,7 @@ export function ExecutionPage() {
         {item.archivedAtUtc && <Pill tone="idle">{t('executions.archived')}</Pill>}
         {t('executions.attemptOn', { n: item.attemptNumber ?? 1, worker: names.worker(item.assignedWorkerId) })} · {t('executions.startedAgo')} <Ago value={item.startedAtUtc ?? item.createdAtUtc} /></span>}
       actions={<>
-        {item.state === 'Queued' && <Button color="secondary-destructive" isDisabled={!!action.busy}
-          onClick={() => void action.run(`cancel-${item.id}`, `${path}/cancel`, 'POST', {}, 'actions.cancelled')}>{t('actions.cancelQueued')}</Button>}
-        {item.state === 'Failed' && number && <Button color="primary" isDisabled={!!action.busy} onClick={() => void enqueue()}>{t('actions.retryFresh')}</Button>}
-        {item.state === 'Failed' && number && !item.archivedAtUtc && !confirmReconcile &&
-          <Button color="secondary" isDisabled={!!action.busy} onClick={() => setConfirmReconcile(true)}>{t('actions.reconcileManually')}</Button>}
+        {available.map((kind, index) => actionButton(kind, index === 0))}
         {(canArchive(item) || item.archivedAtUtc) && <Button color="secondary" isDisabled={archive.busy}
           onClick={() => void archive.run([item.id], !item.archivedAtUtc)}>{t(item.archivedAtUtc ? 'actions.restore' : 'actions.archive')}</Button>}
         {item.workReference?.url && <Button color="secondary" href={item.workReference.url} target="_blank" rel="noreferrer">{t('actions.openGitHub')}</Button>}
@@ -59,27 +83,43 @@ export function ExecutionPage() {
 
     <Card><Steps execution={item} /></Card>
 
-    {confirmReconcile && item.state === 'Failed' && <Notice>
+    {newer && item.state === 'Failed' && <Notice>{t('executions.newerAttempt')} <a className="font-semibold underline" href={`/executions/${newer.id}`}>{t('executions.openNewerAttempt', { n: newer.attemptNumber ?? '' })}</a></Notice>}
+    {conflictReason && <Notice tone="warn">{t('actions.integrationRetryUnavailable')} {conflictReason}</Notice>}
+
+    {panel === 'manualCompletion' && <Notice>
       <div className="flex flex-col gap-3">
         <span>{t('actions.reconcileHint')}</span>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" color="primary" isDisabled={!!action.busy} onClick={() => void action.run(`${path}/manual-completion`, `${path}/manual-completion`, 'POST',
-            { operationId: crypto.randomUUID().replaceAll('-', '') }, 'actions.manualCompletionRequested').then(() => setConfirmReconcile(false))}>{t('actions.confirmReconcile')}</Button>
-          <Button size="sm" color="secondary" isDisabled={!!action.busy} onClick={() => setConfirmReconcile(false)}>{t('actions.cancel')}</Button>
+            { operationId: operationId() }, 'actions.manualCompletionRequested').then(closePanel)}>{t('actions.confirmReconcile')}</Button>
+          <Button size="sm" color="secondary" isDisabled={!!action.busy} onClick={closePanel}>{t('actions.cancel')}</Button>
         </div>
       </div>
     </Notice>}
 
+    {panel === 'resolveUncertain' && <Card title={t('actions.resolveUncertain')}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-secondary">{t('actions.resolveUncertainHint')}</p>
+        <div className="flex flex-col gap-2">
+          <Check checked={disposition === 'NotIntegrated'} onChange={value => value && setDisposition('NotIntegrated')}>{t('actions.uncertainNotIntegrated')}</Check>
+          <Check checked={disposition === 'Integrated'} onChange={value => value && setDisposition('Integrated')}>{t('actions.uncertainIsIntegrated')}</Check>
+        </div>
+        <Field label={t('actions.uncertainEvidence')} hint={t('actions.uncertainEvidenceHint')}>
+          <textarea className={inputClass} rows={2} maxLength={1000} value={evidence} onChange={event => setEvidence(event.target.value)} />
+        </Field>
+        {disposition === 'Integrated' && <Field label={t('actions.uncertainCommit')} hint={t('actions.uncertainCommitHint')}>
+          <input className={`${inputClass} font-mono`} value={commit} onChange={event => setCommit(event.target.value)} />
+        </Field>}
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" color="primary" isDisabled={!!action.busy || !evidenceValid} onClick={() => void resolveUncertain()}>
+            {t(disposition === 'Integrated' ? 'actions.uncertainConfirmIntegrated' : 'actions.uncertainConfirmRequeue')}</Button>
+          <Button size="sm" color="secondary" isDisabled={!!action.busy} onClick={closePanel}>{t('actions.cancel')}</Button>
+        </div>
+      </div>
+    </Card>}
+
     {reason && <Card>
-      <Explanation what={t(reason.what)} todo={t(reason.todo)}>
-        {item.failureClassification === 'IntegrationConflict' && item.recoverable && <div className="flex flex-wrap items-center gap-2">
-          {!preview?.eligible && <Button size="sm" color="secondary" isDisabled={checking} onClick={() => void inspectConflict()}>{t('actions.checkIntegrationRetry')}</Button>}
-          {preview?.eligible && <Button size="sm" color="secondary" isDisabled={!!action.busy} onClick={() => void action.run(`${path}/conflict-recovery`, `${path}/conflict-recovery`, 'POST',
-            { operationId: crypto.randomUUID().replaceAll('-', ''), workerId: preview.workerId, candidate: preview.candidate }, 'actions.integrationRetryQueued').then(done => { if (done) setPreview(undefined); })}>
-            {t('actions.retryIntegration')}</Button>}
-          {preview && !preview.eligible && <span className="text-sm text-tertiary">{preview.reason}</span>}
-        </div>}
-      </Explanation>
+      <Explanation what={t(reason.what)} todo={t(reason.todo)} />
       {item.completionSummary && <details className="mt-4 border-t border-secondary pt-3"><summary className="cursor-pointer text-sm font-medium text-secondary">{t('executions.technicalDetail')}</summary>
         <pre className="mt-2 overflow-x-auto rounded-lg bg-secondary p-3 font-mono text-xs whitespace-pre-wrap text-secondary">{item.completionSummary}</pre></details>}
     </Card>}

@@ -28,3 +28,13 @@ test('node command history accepts failure details as the Server serializes them
   assert.equal(parsed[1].loginInstructions.userCode, 'ABCD-1234');
   assert.throws(() => validation.commands([{ ...failed, failureDetail: { code: 3, description: 'x' } }]));
 });
+
+const runtimeBundle = await build({ entryPoints: [new URL('../src/shared/api/runtime.ts', import.meta.url).pathname], bundle: true, write: false, format: 'esm', platform: 'node' });
+const runtime = await import('data:text/javascript;base64,' + Buffer.from(runtimeBundle.outputFiles[0].text).toString('base64'));
+test('Server markers refresh on-screen collection and detail reads, never GitHub-backed ones', () => {
+  assert.equal(runtime.markerRefreshed('/api/v1/executions?limit=100&offset=0'), true);
+  assert.equal(runtime.markerRefreshed('/api/v1/executions/abc'), true);
+  assert.equal(runtime.markerRefreshed('/api/v1/workers/w1/diagnostics'), true);
+  assert.equal(runtime.markerRefreshed('/api/v1/projects/p/github/issues'), false);
+  assert.equal(runtime.markerRefreshed('/api/v1/nodes'), false);
+});

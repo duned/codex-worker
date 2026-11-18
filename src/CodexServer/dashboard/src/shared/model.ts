@@ -74,7 +74,7 @@ export function explain(execution: ExecutionSummary): { what: TranslationKey; to
     ? { what: 'explain.conflict.what', todo: 'explain.conflict.todo' }
     : isPushRejected(execution)
       ? { what: 'explain.pushRejected.what', todo: 'explain.pushRejected.todo' }
-      : { what: 'explain.integration.what', todo: 'explain.conflict.todo' };
+      : { what: 'explain.integration.what', todo: 'explain.integration.todo' };
   if (execution.failureClassification === 'CodexInterruption') return { what: 'explain.interrupted.what', todo: 'explain.interrupted.todo' };
   if (execution.failureClassification === 'Blocked') return { what: 'explain.blocked.what', todo: 'explain.blocked.todo' };
   return { what: 'explain.failed.what', todo: 'explain.failed.todo' };
@@ -210,3 +210,23 @@ export const toolInFlight = (progress: ToolProgress) =>
 /** Maps a node operation name (e.g. "login", "refresh") to the typed command it reports as. */
 export const toolActionCommand = (operation: string): string =>
   (toolActions as Record<string, { command: string }>)[operation.toLowerCase()]?.command ?? operation;
+
+/** The actions that can resolve an execution in its current state, best first. A finished execution with a newer
+ * attempt for the same Issue has none: the newer attempt is the one to act on. */
+export type ExecutionAction = 'cancel' | 'retryIntegration' | 'retryFresh' | 'resolveUncertain' | 'manualCompletion';
+const settledRecovery = ['RebaseConflictRequeued', 'LeaseExpiredRequeued', 'OperatorRetryQueued', 'OperatorVerifiedIntegrated'];
+export function executionActions(execution: ExecutionSummary, superseded: boolean): ExecutionAction[] {
+  if (execution.state === 'Queued') return ['cancel'];
+  if (execution.state !== 'Failed' || superseded || settledRecovery.includes(execution.recoveryState ?? '')) return [];
+  // The Server keeps an uncertain attempt reserved until an operator records whether it reached the base branch.
+  if (execution.recoveryState === 'LeaseExpiredUncertain') return ['resolveUncertain'];
+  const actions: ExecutionAction[] = [];
+  if (isConflict(execution) && execution.recoverable) actions.push('retryIntegration');
+  actions.push('retryFresh');
+  if (execution.validationResult === 'passed' && execution.failureClassification === 'InfrastructureFailure') actions.push('manualCompletion');
+  return actions;
+}
+/** A newer attempt for the same work supersedes this one. */
+export const newerAttempt = (execution: ExecutionSummary, attempts: ExecutionSummary[]) => attempts
+  .filter(other => other.id !== execution.id && other.workReference?.id === execution.workReference?.id && Date.parse(other.createdAtUtc) > Date.parse(execution.createdAtUtc))
+  .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc))[0];

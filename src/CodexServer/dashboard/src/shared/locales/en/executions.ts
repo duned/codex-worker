@@ -6,6 +6,8 @@ export const executions = {
   "executions.integrating": "Integrating", "executions.pending": "Pending", "executions.technicalDetail": "Technical detail", "executions.result": "Result",
   "executions.implementation": "Implementation", "executions.done": "Done", "executions.inProgress": "In progress", "executions.validation": "Validation",
   "executions.integration": "Integration", "executions.duration": "Duration", "executions.summary": "Summary", "executions.engine": "Engine",
+  "executions.newerAttempt": "There is a newer attempt for this Issue; act on that one.",
+  "executions.openNewerAttempt": "Open attempt {n}",
   "executions.created": "Queued", "executions.finished": "Finished", "executions.id": "Identifier", "executions.retryOf": "Retry of",
   "executions.view": "View", "executions.viewCurrent": "Current", "executions.viewArchived": "Archived", "executions.archived": "Archived",
   "executions.archivedAt": "Archived", "executions.archivedDescription": "Finished executions hidden from the lists. Restore one to show it again.",
