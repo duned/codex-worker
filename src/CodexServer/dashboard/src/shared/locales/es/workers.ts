@@ -20,6 +20,7 @@ export const workers = {
   "tools.confirm": "¿{action} {tool} en este Worker?",
   "tools.confirmLogin": "¿Iniciar una nueva sesión de {tool} en este Worker? Aquí aparecerá un código de dispositivo; apruébalo en el navegador solo si lo has iniciado tú.",
   "tools.confirmLoginGitHub": "El inicio de sesión de GitHub también concede el permiso de workflows necesario para publicar ficheros de GitHub Actions.",
+  "tools.historyUnavailable": "No se pudo cargar el historial de acciones. {error} Aún puedes ejecutar acciones; el Server rechaza las que choquen con otra en curso.",
   "tools.elevation": "Permitir privilegios de administrador para esta acción",
   "tools.run": "Ejecutar",
   "tools.requested": "Solicitado. El Worker lo recoge en unos segundos.",
