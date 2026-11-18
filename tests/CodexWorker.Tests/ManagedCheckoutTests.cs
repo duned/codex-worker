@@ -299,7 +299,7 @@ public sealed class ManagedCheckoutTests
         Assert.Contains("clone", calls);
         Assert.Contains("ls-remote", calls);
         Assert.Contains("push --dry-run --porcelain", calls);
-        Assert.Contains("pull", calls);
+        Assert.Contains("fetch", calls);
     }
 
     [Trait("TestType", "Integration")]

@@ -18,7 +18,7 @@ internal static class GitHubDeviceLogin
             UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
             RedirectStandardError = true, CreateNoWindow = true
         };
-        foreach (var argument in new[] { "auth", "login", "--hostname", "github.com", "--web", "--git-protocol", "https", "--insecure-storage" })
+        foreach (var argument in new[] { "auth", "login", "--hostname", "github.com", "--web", "--git-protocol", "https", "--insecure-storage", "--scopes", "workflow" })
             start.ArgumentList.Add(argument);
         start.Environment["GH_CONFIG_DIR"] = configurationDirectory;
         start.Environment["GH_PROMPT_DISABLED"] = "1";

@@ -58,7 +58,11 @@ public sealed partial class GitWorktreeTests
         {
             Assert.True(Directory.Exists(restarted.RecoveryWorkspacePath(entry)));
             File.Delete(hook);
-            await fixture.Git("push", "origin", "main"); // Operator retries only the exact original base push.
+            // A rejected push leaves the remote unchanged and realigns local main; the validated commit stays
+            // preserved by its feature branch. The operator retries only the exact original base push.
+            Assert.Equal(await fixture.Git("rev-parse", "origin/main"), await fixture.Git("rev-parse", "main"));
+            await fixture.Git("push", "origin", $"{result.CommitSha}:refs/heads/main");
+            await fixture.Git("merge", "--ff-only", result.CommitSha!);
         }
         Assert.True(await restarted.VerifyRemoteIntegrationAsync(entry, CancellationToken.None));
         // Independently advancing base HEAD still contains the exact validated ancestor.

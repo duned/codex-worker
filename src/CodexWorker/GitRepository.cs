@@ -188,8 +188,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             var startupBranch = await GetCurrentBranchAsync(ct);
             if (startupBranch != settings.BaseBranch)
                 throw new WorkerInfrastructureException($"Checkout is on '{startupBranch}' at startup, not configured base branch '{settings.BaseBranch}'; inspect it before restarting the worker.");
-            await GitAsync(["switch", "--", settings.BaseBranch], ct);
-            await GitAsync(["pull", "--ff-only", "origin", $"refs/heads/{settings.BaseBranch}"], ct);
+            await SyncBaseWithRemoteAsync(ct);
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely initialize the configured checkout: {ex.Message}", ex); }
@@ -205,8 +204,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             await EnsureOriginAsync(ct);
             await EnsureCleanAsync($"before Issue #{issue.Number}", ct);
             await ValidateBranchRefAsync(FeatureBranchName(settings, issue), ct);
-            await GitAsync(["switch", "--", settings.BaseBranch], ct);
-            await GitAsync(["pull", "--ff-only", "origin", $"refs/heads/{settings.BaseBranch}"], ct);
+            await SyncBaseWithRemoteAsync(ct);
             _startingCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             _executionId = executionId;
             _resourceExecutionId = executionId;
@@ -345,9 +343,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             await EnsureOriginAsync(ct);
             await EnsureCleanAsync("before integration recovery", ct);
             await ValidateBranchRefAsync(settings.BaseBranch, ct);
-            await GitAsync(["switch", "--", settings.BaseBranch], ct);
-            await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
-            await GitAsync(["merge", "--ff-only", $"refs/remotes/origin/{settings.BaseBranch}"], ct);
+            await SyncBaseWithRemoteAsync(ct);
             var sourcePath = RecoveryWorkspacePath(source);
             await ValidateRecoveryWorkspaceAsync(sourcePath, source, ct);
             _executionDirectory = sourcePath;
@@ -731,13 +727,13 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 var implementationCommit = commit;
                 // A remote integrator may advance the base while Codex is repairing. Refresh
                 // before fast-forwarding and reconcile again, with a bounded handoff count.
+                GitIntegrationResult? prepared = null;
                 for (var handoff = 1; ; handoff++)
                 {
                     ct.ThrowIfCancellationRequested();
                     if (ensureAuthority is not null) await ensureAuthority(ct);
-                    await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
-                    await GitAsync(["switch", "--", settings.BaseBranch], ct);
-                    await GitAsync(["merge", "--ff-only", $"refs/remotes/origin/{settings.BaseBranch}"], ct);
+                    // Always rebase onto the authoritative remote base, never onto unpublished local commits.
+                    await SyncBaseWithRemoteAsync(ct);
                     var featureContainsBase = await GitAtAsync(ExecutionDirectory,
                         ["merge-base", "--is-ancestor", settings.BaseBranch, $"refs/heads/{_featureBranch}"], ct, [0, 1]);
                     if (featureContainsBase.ExitCode != 0)
@@ -757,21 +753,35 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                     var remoteBase = (await GitAsync(["rev-parse", $"refs/remotes/origin/{settings.BaseBranch}"], ct)).StandardOutput.Trim();
                     var containsCurrentBase = await GitAtAsync(ExecutionDirectory,
                         ["merge-base", "--is-ancestor", localBase, "HEAD"], ct, [0, 1]);
-                    if (localBase == remoteBase && containsCurrentBase.ExitCode == 0) break;
+                    if (localBase == remoteBase && containsCurrentBase.ExitCode == 0)
+                    {
+                        commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+                        prepared = new GitIntegrationResult(true,
+                            $"Committed as `{commit[..12]}`. Merged into `{settings.BaseBranch}`.", commit, settings.BaseBranch,
+                            settings.PushCompletedBranch ? _completedBranch : settings.DeleteLocalFeatureBranch ? null : _featureBranch,
+                            _resourceExecutionId, _resourceAttemptNumber);
+                        if (_integrationObserver is not null) await _integrationObserver(prepared, false, ct);
+                        if (ensureAuthority is not null) await ensureAuthority(ct);
+                        var prePush = (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
+                        await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
+                        try
+                        {
+                            await PushVerifiedAsync(settings.BaseBranch, commit, prePush, ct, ensureAuthority);
+                            break;
+                        }
+                        catch (GitPushRejectedException rejection)
+                        {
+                            // The remote ref is unchanged. Never leave the local base ahead with unpublished
+                            // work: the feature branch preserves the commit, so realign to the remote base.
+                            await SyncBaseWithRemoteAsync(ct);
+                            if (rejection.Reason != GitPushRejection.NonFastForward) throw;
+                            // Another integrator won the race: rebase, resolve and revalidate on the new base.
+                        }
+                    }
                     if (handoff >= 5)
                         throw new GitIntegrationConflictException($"The integration base kept advancing for Issue #{issue.Number}; bounded reconciliation stopped and the implementation was preserved.");
                 }
-                commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
-                var prepared = new GitIntegrationResult(true,
-                    $"Committed as `{commit[..12]}`. Merged into `{settings.BaseBranch}`.", commit, settings.BaseBranch,
-                    settings.PushCompletedBranch ? _completedBranch : settings.DeleteLocalFeatureBranch ? null : _featureBranch,
-                    _resourceExecutionId, _resourceAttemptNumber);
-                if (_integrationObserver is not null) await _integrationObserver(prepared, false, ct);
-                if (ensureAuthority is not null) await ensureAuthority(ct);
-                var prePush = (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
-                await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
-                await PushVerifiedAsync(settings.BaseBranch, commit, prePush, ct, ensureAuthority);
-                if (_integrationObserver is not null) await _integrationObserver(prepared, true, ct);
+                if (_integrationObserver is not null && prepared is not null) await _integrationObserver(prepared, true, ct);
                 if (settings.PushCompletedBranch)
                 {
                     try
@@ -1155,6 +1165,11 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 environment: environment);
             if (result.ExitCode != 0 && !(allowExitCodes?.Contains(result.ExitCode) ?? false))
             {
+                // An explicit remote rejection is safe to classify from fixed phrases without exposing raw output.
+                if (args.FirstOrDefault() == "push" && !args.Contains("--dry-run") &&
+                    ClassifyPushRejection(result.StandardError + "\n" + result.StandardOutput,
+                        args.LastOrDefault()?.Split(":refs/heads/").LastOrDefault() ?? settings.BaseBranch) is { } rejection)
+                    throw rejection;
                 var detail = managedCredentials && credentialOperation ? "Managed Git remote command failed; raw credential-helper diagnostics are withheld."
                     : string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
                 var transient = credentialOperation && GitHubClient.ClassifyFailure(result.StandardError) == GitHubFailureKind.TransientProvider;
