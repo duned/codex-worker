@@ -64,3 +64,16 @@ test('issue status prefers its latest execution, then dependencies and labels', 
   const latest = model.latestByIssue([execution({ id: 'old', createdAtUtc: at(0), state: 'Failed' }), execution({ id: 'new', createdAtUtc: at(5), state: 'Completed' })]);
   assert.equal(latest.get(7).id, 'new');
 });
+
+test('tool actions follow what the node advertises and one active command blocks the tool', () => {
+  const capability = { definition: { id: 'github-cli', displayName: 'GitHub CLI', requiresAuthentication: true, requiresConfiguration: false },
+    state: { installation: 'Installed', health: 'Healthy' }, availableActions: ['refresh', 'login', 'logout', 'uninstall', 'checkauthentication'] };
+  assert.deepEqual(model.offeredToolActions(capability), ['login', 'checkauthentication', 'refresh']);
+  const command = (id, status, createdAtUtc, capabilityId = 'github-cli') => ({ id, status, createdAtUtc, request: { nodeId: 'n', capabilityId, action: 'Login' } });
+  const commands = [command('old', 'Failed', at(1)), command('new', 'Running', at(2)), command('other', 'Running', at(3), 'codex-cli')];
+  assert.equal(model.toolCommand(commands, 'n', 'github-cli').latest.id, 'new');
+  assert.equal(model.toolCommand(commands, 'n', 'github-cli').busy, true);
+  assert.equal(model.toolCommand([command('done', 'Succeeded', at(1))], 'n', 'github-cli').busy, false);
+  assert.equal(model.deviceLoginUrl('https://github.com/login/device'), 'https://github.com/login/device');
+  assert.equal(model.deviceLoginUrl('https://evil.example/login'), undefined);
+});
