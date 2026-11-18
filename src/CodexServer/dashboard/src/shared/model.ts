@@ -1,4 +1,4 @@
-import type { Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerUpdate } from './api/contracts';
+import type { ArchivedBranch, BranchTarget, Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
 /** Visual tone of a status. Semantic colours are fixed: ok, bad, warn, run (animated) and idle. */
@@ -268,3 +268,11 @@ export function deniedPolicyHint(command: NodeCommandSummary): PolicyHint | unde
   if (['Login', 'Logout', 'PrepareAuthentication', 'GenerateSshKey', 'RemoveSshKey'].includes(action)) return { kind: 'setting', setting: 'allowCredentials', exact: false };
   return { kind: 'setting', setting: 'allowNonPrivileged', exact: false };
 }
+
+// Archived branch cleanup: the Worker decides which branches are provably integrated; the Server decides which Worker may act.
+/** A branch the Worker reported as deletable, with the exact tip it inspected (deletion is refused if the tip moves). */
+export const deletableBranch = (branch: ArchivedBranch) => branch.decision === 'eligible' && /^[a-f0-9]{40}([a-f0-9]{24})?$/i.test(branch.tip ?? '');
+/** Default Worker for cleanup: one that can delete right away, otherwise one that can at least inspect. */
+export const defaultBranchTarget = (targets: BranchTarget[]) => targets.find(target => target.canApply) ?? targets.find(target => target.eligible);
+/** Branch operations still in flight on the Worker. */
+export const branchOperationPending = (status: string) => status === 'pending' || status === 'running';

@@ -54,7 +54,7 @@ export class HttpClient {
   }
 }
 
-/** Reads the bounded `{ error, reasons }` body the Server attaches to rejected requests, if any. */
+/** Reads the bounded `{ error, reason, reasons }` body the Server attaches to rejected requests, if any. */
 async function errorDetail(response: Response): Promise<string | undefined> {
   try {
     if (!(response.headers.get('Content-Type') ?? '').includes('json')) { await response.body?.cancel(); return undefined; }
@@ -62,8 +62,8 @@ async function errorDetail(response: Response): Promise<string | undefined> {
     if (text.length > 16384) return undefined;
     const value: unknown = JSON.parse(text);
     if (typeof value !== 'object' || value === null) return undefined;
-    const { error, reasons } = value as { error?: unknown; reasons?: unknown };
-    const parts = [typeof error === 'string' ? error.trim() : '',
+    const { error, reason, reasons } = value as { error?: unknown; reason?: unknown; reasons?: unknown };
+    const parts = [typeof error === 'string' ? error.trim() : '', typeof reason === 'string' ? reason.trim() : '',
       ...(Array.isArray(reasons) ? reasons.filter((reason): reason is string => typeof reason === 'string').slice(0, 10) : [])]
       .map(part => part.replace(/[\r\n]+/g, ' ').slice(0, 500)).filter(Boolean);
     return parts.length ? parts.join(' ') : undefined;

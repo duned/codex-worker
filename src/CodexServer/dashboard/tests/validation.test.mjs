@@ -38,3 +38,24 @@ test('Server markers refresh on-screen collection and detail reads, never GitHub
   assert.equal(runtime.markerRefreshed('/api/v1/projects/p/github/issues'), false);
   assert.equal(runtime.markerRefreshed('/api/v1/nodes'), false);
 });
+
+test('branch cleanup targets follow the Server projection and reject inconsistent eligibility', () => {
+  const target = { workerId: 'a'.repeat(32), displayName: 'w1', mode: 'managed', eligible: true, reason: null, canApply: false, applyReason: 'worker-drain-required' };
+  const targets = { projectId: 'p', revision: 3, project: 'demo', repository: 'o/r', targets: [target] };
+  assert.equal(validation.branchTargets(targets).targets.length, 1);
+  assert.throws(() => validation.branchTargets({ ...targets, targets: [{ ...target, canApply: true }] }));
+  assert.throws(() => validation.branchTargets({ ...targets, targets: [{ ...target, workerId: 'obs_x' }] }));
+  assert.throws(() => validation.branchTargets({ ...targets, targets: [target, target] }));
+});
+
+test('branch operations must echo the request and list only archived branches that were selected', () => {
+  const request = { operationId: 'b'.repeat(32), workerId: 'a'.repeat(32), project: 'demo', repository: 'o/r', projectId: 'p', projectRevision: 3,
+    action: 'archived-branches', apply: true, olderThanDays: 30, limit: 100, offset: 0, timeoutSeconds: 300, branches: [{ branch: 'done/feature/1-x', expectedTip: 'c'.repeat(40) }] };
+  const operation = { status: 'succeeded', request, report: { outcome: 'succeeded', branches: [{ branch: 'done/feature/1-x', decision: 'deleted', reason: 'Removed.' }] } };
+  const validate = validation.branchOperation(request);
+  assert.equal(validate({ operation }).status, 'succeeded');
+  assert.throws(() => validate({ operation: { ...operation, request: { ...request, olderThanDays: 1 } } }));
+  assert.throws(() => validate({ operation: { ...operation, request: { ...request, branches: [] } } }));
+  assert.throws(() => validate({ operation: { ...operation, report: { branches: [{ branch: 'main', decision: 'deleted', reason: '' }] } } }));
+  assert.throws(() => validate({ operation: { ...operation, report: { branches: [{ branch: 'done/feature/2-y', decision: 'deleted', reason: '' }] } } }));
+});

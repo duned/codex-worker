@@ -137,3 +137,20 @@ export interface WorkerUpdate {
   requestedAtUtc?: string; diagnostic?: string; drainReleasedAtUtc?: string; expectedVersion?: string; originalVersion?: string; restart?: boolean;
   recovery?: WorkerUpdateRecovery;
 }
+
+/** Workers that can inspect (eligible) and delete (canApply) this project's archived branches, as the Server decides. */
+export interface BranchTarget {
+  workerId: string; displayName: string; mode: 'managed' | 'standalone-observer';
+  eligible: boolean; reason: string | null; canApply: boolean; applyReason: string | null;
+}
+export interface BranchTargets { projectId: string; revision: number; project: string; repository: string; targets: BranchTarget[] }
+export interface ArchivedBranch { branch: string; decision: 'eligible' | 'skipped' | 'review' | 'deleted'; reason: string; tip?: string; completedAtUtc?: string }
+export interface BranchSelection { branch: string; expectedTip: string }
+export interface BranchRequest {
+  operationId: string; workerId: string; project: string; repository: string; projectId: string; projectRevision: number;
+  action: 'archived-branches'; apply: boolean; olderThanDays: number; limit: number; offset: number; timeoutSeconds: number; branches?: BranchSelection[];
+}
+export interface BranchOperation {
+  status: string; request: BranchRequest;
+  report?: { outcome?: string; reason?: string; branches?: ArchivedBranch[] };
+}
