@@ -390,7 +390,16 @@ public sealed class ProvisioningCommandTests
             handler.Operation = Running(new(workerId, "git", ProvisioningCommandAction.Uninstall, AllowElevation: true));
             Assert.True(await registration.ExecuteProvisioningCommandAsync(settings, new(), CancellationToken.None));
             Assert.Equal(ProvisioningDiagnostic.Denied, handler.Report!.Diagnostic);
+            Assert.Equal(ProvisioningFailureCode.PolicyProvisioningDisabled, handler.Report.FailureDetail?.Code);
             Assert.Equal(0, probes);
+            // An older Server rejects the unknown typed reason; the Worker then reports the plain refusal.
+            handler.RejectFailureDetail = true;
+            handler.Operation = Running(new(workerId, "git", ProvisioningCommandAction.Uninstall, AllowElevation: true));
+            Assert.True(await registration.ExecuteProvisioningCommandAsync(settings, new(), CancellationToken.None));
+            Assert.Equal(ProvisioningDiagnostic.Denied, handler.Report!.Diagnostic);
+            Assert.Null(handler.Report.FailureDetail);
+            Assert.Equal(1, handler.RejectedReports);
+            handler.RejectFailureDetail = false;
             foreach (var action in new[] { ProvisioningCommandAction.GenerateSshKey, ProvisioningCommandAction.PrepareAuthentication })
             {
                 handler.Operation = Running(new(workerId, action == ProvisioningCommandAction.GenerateSshKey ? "git" : "github-cli", action));
@@ -410,13 +419,21 @@ public sealed class ProvisioningCommandTests
     {
         public ProvisioningCommand Operation { get; set; } = operation;
         public ProvisioningCommandReport? Report { get; private set; }
+        public bool RejectFailureDetail { get; set; }
+        public int RejectedReports { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Assert.Equal(token, request.Headers.Authorization!.Parameter);
             if (request.RequestUri!.AbsolutePath.EndsWith("/request", StringComparison.Ordinal))
                 return new(HttpStatusCode.OK) { Content = JsonContent.Create(Operation) };
             Assert.EndsWith($"/{Operation.Id}/report", request.RequestUri.AbsolutePath, StringComparison.Ordinal);
-            Report = await request.Content!.ReadFromJsonAsync<ProvisioningCommandReport>(cancellationToken);
+            var report = await request.Content!.ReadFromJsonAsync<ProvisioningCommandReport>(cancellationToken);
+            if (RejectFailureDetail && report?.FailureDetail is not null)
+            {
+                RejectedReports++;
+                return new(HttpStatusCode.BadRequest);
+            }
+            Report = report;
             return new(HttpStatusCode.OK);
         }
     }

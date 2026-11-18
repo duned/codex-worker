@@ -11,7 +11,8 @@ public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Can
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
-public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied, ProviderConfigurationFailed, RegistryUnavailable, CachePreparationFailed, DockerDaemonUnavailable, DockerServiceRestartRequired, ManualVendorCliCompletionRequired }
+public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied, ProviderConfigurationFailed, RegistryUnavailable, CachePreparationFailed, DockerDaemonUnavailable, DockerServiceRestartRequired, ManualVendorCliCompletionRequired,
+    PolicyProvisioningDisabled, PolicyActionDenied, PolicyActionNotAllowlisted, PolicyCredentialsDisabled, PolicyNonPrivilegedDisabled, ElevationNotRequested }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningProviderStep>))]
 public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions, DockerDaemonConfiguration, ClaudePackageInstall }
 
@@ -40,6 +41,13 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningFailureCode.DockerDaemonUnavailable => "Docker is installed but the local daemon is unavailable or unhealthy. Restore the Docker service, then rerun the configuration check.",
         ProvisioningFailureCode.DockerServiceRestartRequired => "Docker daemon access is configured, but the running Worker needs a fresh service context. Drain active work, restart codex-worker.service with 'sudo systemctl restart codex-worker', then run 'codex-worker provision check-configuration docker'.",
         ProvisioningFailureCode.TimedOut => "Provisioning exceeded its configured timeout.",
+        // Policy denials name the Worker setting; the exact action key is derived from the request (type:capability:action).
+        ProvisioningFailureCode.PolicyProvisioningDisabled => "Local provisioning is disabled on this Worker. Set worker.provisioning.enabled to true and restart the Worker.",
+        ProvisioningFailureCode.PolicyActionDenied => "This action is listed in the Worker's worker.provisioning.deniedActions. Remove it there and restart the Worker.",
+        ProvisioningFailureCode.PolicyActionNotAllowlisted => "This privileged action is not in the Worker's worker.provisioning.allowedPrivilegedActions. Add its key there and restart the Worker.",
+        ProvisioningFailureCode.PolicyCredentialsDisabled => "Credential operations are disabled on this Worker. Set worker.provisioning.allowCredentials to true and restart the Worker.",
+        ProvisioningFailureCode.PolicyNonPrivilegedDisabled => "Non-privileged provisioning is disabled on this Worker. Set worker.provisioning.allowNonPrivileged to true and restart the Worker.",
+        ProvisioningFailureCode.ElevationNotRequested => "This privileged action needs explicit elevation consent. Request it again with elevation allowed.",
         _ => "Provisioning failed."
     } + (ProviderStep is ProvisioningProviderStep.Unknown ? string.Empty : $" Provider step: {ProviderStepDescription}.");
 
@@ -56,6 +64,11 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningProviderStep.ExecutablePermissions => "set managed tool permissions",
         _ => "run the managed provider command"
     };
+
+    /// <summary>Codes that explain a Worker-local policy refusal; they belong only to Denied reports.</summary>
+    public bool IsPolicyDenial => Code is ProvisioningFailureCode.PolicyProvisioningDisabled or ProvisioningFailureCode.PolicyActionDenied or
+        ProvisioningFailureCode.PolicyActionNotAllowlisted or ProvisioningFailureCode.PolicyCredentialsDisabled or
+        ProvisioningFailureCode.PolicyNonPrivilegedDisabled or ProvisioningFailureCode.ElevationNotRequested;
 
     public bool IsValid => Enum.IsDefined(Code) && (ProcessExitCode is null or >= 0) &&
         Enum.IsDefined(ProviderStep) && (Code == ProvisioningFailureCode.ProcessExited || ProcessExitCode is null) &&
@@ -120,6 +133,7 @@ public static class ProvisioningCommandProtocol
         (report.ClaudeLogin is null || report.Status == ProvisioningCommandStatus.Running &&
             report.LoginInstructions is null && ClaudeNativeLogin.Valid(report.ClaudeLogin)) && (report.FailureDetail is null ||
         report.Status is ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.TimedOut && report.FailureDetail.IsValid &&
+        report.FailureDetail.IsPolicyDenial == (report.Diagnostic == ProvisioningDiagnostic.Denied) &&
         ((report.Status == ProvisioningCommandStatus.TimedOut) == (report.FailureDetail.Code == ProvisioningFailureCode.TimedOut))) && (report.PublicIdentity is null ||
         report.Status == ProvisioningCommandStatus.Succeeded && NodeGitHubSetup.ValidIdentity(report.PublicIdentity)) && (report.LoginInstructions is null ||
         report.Status == ProvisioningCommandStatus.Running && CodexDeviceLogin.Valid(report.LoginInstructions)) && (report.Status, report.Diagnostic) switch
@@ -137,6 +151,11 @@ public static class ProvisioningCommandProtocol
 /// <summary>Product-owned commands only. Output is drained; bounded stderr is classified transiently and never returned or logged.</summary>
 public sealed partial class NodeProvisioningCommandExecutor
 {
+    /// <summary>A policy refusal. Its typed reason names the Worker setting, never caller-controlled text.</summary>
+    internal static ProvisioningCommandReport Denied(ProvisioningFailureCode? reason) =>
+        new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied,
+            FailureDetail: reason is { } code ? new ProvisioningFailureDetail(code) : null);
+
     private readonly NodeCapabilityDiscovery _discovery;
     private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<ProvisioningProcessResult>> _run;
     private readonly Func<bool> _supportsApt;
@@ -177,11 +196,12 @@ public sealed partial class NodeProvisioningCommandExecutor
 
     public async Task<ProvisioningCommandReport> ExecuteAsync(ProvisioningCommand command, bool permitted,
         CancellationToken cancellationToken = default,
-        Func<ProvisioningCommandReport, CancellationToken, Task>? reportProgress = null)
+        Func<ProvisioningCommandReport, CancellationToken, Task>? reportProgress = null,
+        ProvisioningFailureCode? deniedBecause = null)
     {
         if (!ProvisioningCommandProtocol.Valid(command.Request) || !ProvisioningCommandProtocol.Supported(command.Request))
             return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
-        if (!permitted) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
+        if (!permitted) return Denied(deniedBecause);
         if (command.DeadlineUtc is null) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
         var remaining = command.DeadlineUtc.Value - _timeProvider.GetUtcNow();
         if (remaining <= TimeSpan.Zero) return new(ProvisioningCommandStatus.TimedOut, ProvisioningDiagnostic.TimedOut,
@@ -260,7 +280,7 @@ public sealed partial class NodeProvisioningCommandExecutor
             if (request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure)
             {
                 if (request.CapabilityId == "claude-cli" ? !OperatingSystem.IsLinux() : !_supportsApt()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
-                if (!request.AllowElevation) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
+                if (!request.AllowElevation) return Denied(ProvisioningFailureCode.ElevationNotRequested);
                 var before = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
                 if (request.CapabilityId == "codex-cli" && request.Action == ProvisioningCommandAction.Uninstall &&
                     !_npmAvailable() && before.Single(state => state.Id == request.CapabilityId).Installation == InstallationState.Missing)

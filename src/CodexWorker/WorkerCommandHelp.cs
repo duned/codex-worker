@@ -77,6 +77,15 @@ public static class WorkerCommandHelp
                 writer.WriteLine("Options: --json  Write the versioned update result as JSON.");
                 writer.WriteLine("A service restart is required for the change to take effect.");
                 break;
+            case "config-add":
+            case "config-remove":
+                writer.WriteLine($"Usage: codex-worker config {command[7..]} <setting> <keys> [--config <path>] [--json]");
+                writer.WriteLine(command == "config-add"
+                    ? "Adds comma-separated action keys to worker.provisioning.allowedPrivilegedActions or deniedActions, keeping the current entries."
+                    : "Removes comma-separated action keys from worker.provisioning.allowedPrivilegedActions or deniedActions.");
+                writer.WriteLine("Example: codex-worker config add worker.provisioning.allowedPrivilegedActions tool:dotnet-sdk:update");
+                writer.WriteLine("The complete candidate configuration is validated before it is written. A service restart is required for the change to take effect.");
+                break;
             case "capabilities-list":
             case "capabilities-refresh":
                 writer.WriteLine($"Usage: codex-worker capabilities {command[13..]} {configOption} [--json]");

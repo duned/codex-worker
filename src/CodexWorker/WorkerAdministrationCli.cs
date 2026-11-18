@@ -78,11 +78,14 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
                         output.InfrastructureFailure("Configuration validation failed:\n- " + string.Join("\n- ", validation.Diagnostics.Select(diagnostic => diagnostic.Message)));
                     return validation.IsValid ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
                 }
-                case "set":
+                case "set" or "add" or "remove":
                     var outputJson = arguments.Count == 4 && arguments[3] == "--json";
                     if (arguments.Count != (outputJson ? 4 : 3))
-                        throw new ArgumentException("Usage: codex-worker config set <setting> <value> [--config <path>] [--json]");
-                    var update = configurationService.Set(path, arguments[1], arguments[2]);
+                        throw new ArgumentException(operation == "set"
+                            ? "Usage: codex-worker config set <setting> <value> [--config <path>] [--json]"
+                            : $"Usage: codex-worker config {operation} <setting> <keys> [--config <path>] [--json]");
+                    var change = operation switch { "add" => WorkerConfigurationChange.Add, "remove" => WorkerConfigurationChange.Remove, _ => WorkerConfigurationChange.Set };
+                    var update = configurationService.Set(path, arguments[1], arguments[2], change);
                     if (outputJson)
                         _writer.WriteLine(JsonSerializer.Serialize(update,
                             new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
@@ -93,7 +96,12 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
                         return ProcessExitCodes.StartupFailure;
                     }
                     if (!outputJson)
-                        _writer.WriteLine($"Updated {update.Setting} in {update.ConfigurationPath}. Restart the Worker service for the change to take effect.");
+                        _writer.WriteLine((change switch
+                        {
+                            WorkerConfigurationChange.Add => $"Added {arguments[2]} to {update.Setting}",
+                            WorkerConfigurationChange.Remove => $"Removed {arguments[2]} from {update.Setting}",
+                            _ => $"Updated {update.Setting}"
+                        }) + $" in {update.ConfigurationPath}. Restart the Worker service for the change to take effect.");
                     return ProcessExitCodes.Success;
                 default:
                     throw new ArgumentException($"Unknown config command '{operation}'. Use 'codex-worker config --help' for usage.");
