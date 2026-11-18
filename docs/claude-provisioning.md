@@ -45,9 +45,12 @@ Workers retain the existing management restrictions.
 
 An authorized operator can submit the existing typed provisioning request with
 `CapabilityId: claude-cli` and `Action: Login` for an online Worker. The capability
-catalog advertises `login`. In the dashboard, open the Worker's node provisioning
-panel and select **Sign in to Claude**. The dialog explains the required local
-terminal completion and links to vendor guidance; it does not accept browser codes.
+catalog advertises `login` for API and CLI callers. The dashboard (Worker →
+Diagnostics → Tools) does not offer a Claude sign-in button, because it can never
+finish remotely; instead it shows the terminal steps below with the exact command to
+copy, and keeps **Check sign-in** available. It does not accept browser codes. A
+retained `ManualVendorCliCompletionRequired` result is shown as "finish on the
+Worker", not as a tool error.
 Node-local `enabled`,
 `allowCredentials`, and `allowNonPrivileged` must all permit it; denied action
 `authentication:claude-cli:login` takes precedence. Login never invokes sudo.
@@ -77,7 +80,10 @@ finishes without requesting paste-code input, success still requires an observed
 trusted challenge, native exit zero and a valid authenticated `auth status` result.
 
 To finish, open a secure terminal **as the Worker service user**, with that user's
-configured HOME, and run `~/.local/bin/claude auth login`. Open the URL printed in
+configured HOME, and run `~/.local/bin/claude auth login`. The packaged service
+account (`codex-worker`) has a `nologin` shell, so `sudo -iu` does not work; run the
+CLI directly with that account's HOME instead:
+`sudo -u codex-worker -H sh -c '"$HOME/.local/bin/claude" auth login'`. Open the URL printed in
 that terminal, follow the browser instructions, and paste any returned code into
 that **same local CLI**. The stopped managed CLI's challenge cannot be reused.
 Never paste the URL or browser code into Server/dashboard/API requests, Issues or

@@ -109,3 +109,12 @@ test('execution actions offer only what can resolve the current state', () => {
   assert.equal(model.newerAttempt(first, [first, second])?.id, 'b');
   assert.equal(model.newerAttempt(second, [first, second]), undefined);
 });
+
+test('tools signed in from a Worker terminal do not offer a dashboard sign-in that can never finish', () => {
+  const claude = { definition: { id: 'claude-cli', displayName: 'Claude Code CLI' }, state: { installation: 'Installed', health: 'Healthy' }, availableActions: ['refresh', 'login', 'checkauthentication'] };
+  assert.deepEqual(model.offeredToolActions(claude), ['checkauthentication', 'refresh']);
+  assert.match(model.terminalSignIn['claude-cli'], /^sudo -u codex-worker -H sh -c '"\$HOME\/\.local\/bin\/claude" auth login'$/);
+  const manual = { id: 'm', status: 'Failed', createdAtUtc: at(0), failureDetail: { code: 'ManualVendorCliCompletionRequired', description: 'x' }, request: { nodeId: 'n', capabilityId: 'claude-cli', action: 'Login' } };
+  assert.equal(model.needsLocalCompletion(manual), true);
+  assert.equal(model.needsLocalCompletion({ ...manual, failureDetail: { code: 'ProcessExited', description: 'x' } }), false);
+});
