@@ -103,18 +103,16 @@ const requestVisibleMs = 90_000;
 
 /** What to change in the Worker's local policy (it is only editable on the Worker itself). */
 function PolicyFix({ hint }: { hint: PolicyHint }) {
-  const setting = hint.kind === 'privileged' ? 'worker.provisioning.allowedPrivilegedActions'
-    : hint.kind === 'credentials' ? 'worker.provisioning.allowCredentials' : 'worker.provisioning.allowNonPrivileged';
+  const cli = 'sudo codex-worker';
+  const step = (text: string, command?: string) => <li>{text}{command && <div className="mt-1"><CopyValue value={command} /></div>}</li>;
+  const exact = hint.kind === 'deniedList' || hint.kind === 'elevation' || hint.exact;
   return <div className="rounded-lg bg-secondary px-3 py-2 text-sm text-secondary">
-    <p className="font-medium text-utility-red-500">{t('tools.policyDenied')}</p>
-    {hint.kind === 'privileged' ? <ol className="mt-2 list-decimal space-y-1.5 pl-5">
-      <li>{t('tools.policyPrivilegedStep1')}<div className="mt-1"><CopyValue value="sudo /opt/codex-worker/CodexWorker config show" /></div></li>
-      <li>{t('tools.policyPrivilegedStep2', { setting })}<div className="mt-1"><CopyValue value={hint.key} /></div>
-        <div className="mt-1"><CopyValue value={`sudo /opt/codex-worker/CodexWorker config set ${setting} '<${t('tools.policyCurrentList')}>,${hint.key}'`} /></div></li>
-      <li>{t('tools.policyRestart')}</li>
-    </ol> : <ol className="mt-2 list-decimal space-y-1.5 pl-5">
-      <li>{t('tools.policySetTrue', { setting })}<div className="mt-1"><CopyValue value={`sudo /opt/codex-worker/CodexWorker config set ${setting} true`} /></div></li>
-      <li>{t('tools.policyRestart')}</li>
+    <p className="font-medium text-utility-red-500">{t(exact ? 'tools.policyDenied' : 'tools.policyDeniedLikely')}</p>
+    {hint.kind === 'elevation' ? <p className="mt-2">{t('tools.policyElevation')}</p> : <ol className="mt-2 list-decimal space-y-1.5 pl-5">
+      {hint.kind === 'allowlist' && step(t('tools.policyAllowlist', { key: hint.key }), `${cli} config add worker.provisioning.allowedPrivilegedActions ${hint.key}`)}
+      {hint.kind === 'deniedList' && step(t('tools.policyDeniedList', { key: hint.key }), `${cli} config remove worker.provisioning.deniedActions ${hint.key}`)}
+      {hint.kind === 'setting' && step(t('tools.policySetTrue', { setting: `worker.provisioning.${hint.setting}` }), `${cli} config set worker.provisioning.${hint.setting} true`)}
+      {step(t('tools.policyRestart'))}
     </ol>}
   </div>;
 }

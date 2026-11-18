@@ -135,11 +135,29 @@ public static partial class WorkerConfigurationAdministration
         }
     }
 
+    /// <summary>The complete new value of an action-list setting after adding or removing keys, matched
+    /// case-insensitively as the policy does. Adding a present key or removing an absent one changes nothing.</summary>
+    public static string ChangedList(string path, string setting, string keys, WorkerConfigurationChange change)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(setting);
+        if (change == WorkerConfigurationChange.Set || !SupportedSettings.ContainsKey(setting) || !setting.EndsWith("Actions", StringComparison.Ordinal))
+            throw new ArgumentException($"config {change.ToString().ToLowerInvariant()} supports only worker.provisioning.allowedPrivilegedActions and worker.provisioning.deniedActions.");
+        if (string.IsNullOrEmpty(keys)) throw new ArgumentException("Provide at least one action key, for example tool:dotnet-sdk:update.");
+        var requested = (string[])ParseValue(setting, keys);
+        var provisioning = GlobalWorkerConfiguration.Load(Path.GetFullPath(path)).Worker.Provisioning;
+        var current = setting == "worker.provisioning.allowedPrivilegedActions" ? provisioning.AllowedPrivilegedActions : provisioning.DeniedActions;
+        var updated = change == WorkerConfigurationChange.Add
+            ? current.Concat(requested.Where(key => !current.Contains(key, StringComparer.OrdinalIgnoreCase)))
+            : current.Where(key => !requested.Contains(key, StringComparer.OrdinalIgnoreCase));
+        return string.Join(",", updated);
+    }
+
     public static string HelpText =>
-        "Usage: codex-worker config <show|validate|set> [options]" + Environment.NewLine +
+        "Usage: codex-worker config <show|validate|set|add|remove> [options]" + Environment.NewLine +
         "  show [--json]                         Inspect the installed global configuration." + Environment.NewLine +
         "  validate [--json]                     Validate global and project configuration." + Environment.NewLine +
-        "  set <setting> <value> [--json]        Atomically update a supported Worker setting." + Environment.NewLine +
+        "  set <setting> <value> [--json]        Atomically update a supported Worker setting." + Environment.NewLine +        "  add <setting> <keys> [--json]         Add comma-separated keys to an action list, keeping the current ones." + Environment.NewLine +
+        "  remove <setting> <keys> [--json]      Remove comma-separated keys from an action list." + Environment.NewLine +
         "Use --config <path> to select a configuration file; otherwise the installed default is used." + Environment.NewLine +
         "Set supports worker.pollingSeconds, worker.preflightTimeoutSeconds, worker.maxParallelTasks, " +
         "worker.provisioning.enabled, worker.provisioning.allowNonPrivileged, worker.provisioning.allowCredentials, " +

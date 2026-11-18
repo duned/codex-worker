@@ -238,15 +238,33 @@ export const newerAttempt = (execution: ExecutionSummary, attempts: ExecutionSum
   .filter(other => other.id !== execution.id && other.workReference?.id === execution.workReference?.id && Date.parse(other.createdAtUtc) > Date.parse(execution.createdAtUtc))
   .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc))[0];
 
-/** For a command the Worker's local policy denied, the policy setting that most likely blocks it. Mirrors the
- * Worker's key format (WorkerProvisioning.Decide): `<type>:<capability>:<action>`, lower-case. The Worker reports only
- * "Denied", so this is the likely fix, not a diagnosis. */
-export type PolicyHint = { kind: 'privileged'; key: string } | { kind: 'credentials' } | { kind: 'nonPrivileged' };
+/** For a command the Worker's local policy denied, the setting that blocks it. Current Workers report the exact reason
+ * (a typed policy code); for older ones it is inferred with the Worker's own rule. Action keys use the Worker's format
+ * (WorkerProvisioning.Decide): `<type>:<capability>:<action>`, lower-case. */
+export type PolicyHint =
+  | { kind: 'allowlist'; key: string; exact: boolean }
+  | { kind: 'deniedList'; key: string }
+  | { kind: 'setting'; setting: 'enabled' | 'allowCredentials' | 'allowNonPrivileged'; exact: boolean }
+  | { kind: 'elevation' };
+const policyActionKey = (command: NodeCommandSummary) => {
+  const { capabilityId, action } = command.request;
+  // Same as the Worker: GitHub setup/SSH/repository actions and every sign-in action are authentication keys.
+  const authentication = ['Login', 'Logout', 'CheckAuthentication', 'PrepareAuthentication', 'GenerateSshKey', 'InspectSshKey', 'RemoveSshKey', 'VerifyRepositoryAccess'].includes(action);
+  return `${authentication ? 'authentication' : 'tool'}:${capabilityId}:${action}`.toLowerCase();
+};
 export function deniedPolicyHint(command: NodeCommandSummary): PolicyHint | undefined {
   if (command.status !== 'Failed' || command.diagnostic !== 'Denied') return undefined;
+  const key = policyActionKey(command);
+  switch (command.failureDetail?.code) {
+    case 'PolicyActionNotAllowlisted': return { kind: 'allowlist', key, exact: true };
+    case 'PolicyActionDenied': return { kind: 'deniedList', key };
+    case 'PolicyProvisioningDisabled': return { kind: 'setting', setting: 'enabled', exact: true };
+    case 'PolicyCredentialsDisabled': return { kind: 'setting', setting: 'allowCredentials', exact: true };
+    case 'PolicyNonPrivilegedDisabled': return { kind: 'setting', setting: 'allowNonPrivileged', exact: true };
+    case 'ElevationNotRequested': return { kind: 'elevation' };
+  }
   const { capabilityId, action } = command.request;
-  if (['Install', 'Update', 'Uninstall', 'Configure'].includes(action) && capabilityId !== 'claude-cli')
-    return { kind: 'privileged', key: `tool:${capabilityId}:${action}`.toLowerCase() };
-  if (['Login', 'Logout', 'PrepareAuthentication', 'GenerateSshKey', 'RemoveSshKey'].includes(action)) return { kind: 'credentials' };
-  return { kind: 'nonPrivileged' };
+  if (['Install', 'Update', 'Uninstall', 'Configure'].includes(action) && capabilityId !== 'claude-cli') return { kind: 'allowlist', key, exact: false };
+  if (['Login', 'Logout', 'PrepareAuthentication', 'GenerateSshKey', 'RemoveSshKey'].includes(action)) return { kind: 'setting', setting: 'allowCredentials', exact: false };
+  return { kind: 'setting', setting: 'allowNonPrivileged', exact: false };
 }

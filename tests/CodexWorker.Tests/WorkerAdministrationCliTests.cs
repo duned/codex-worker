@@ -216,15 +216,18 @@ public sealed class WorkerAdministrationCliTests
                 new(false, "", 60, null));
         }
 
+        public WorkerConfigurationChange Change { get; private set; }
         public WorkerConfigurationValidationResult Validate(string configurationPath)
         {
             ValidatedPath = configurationPath;
             return new(configurationPath, []);
         }
 
-        public WorkerConfigurationUpdateResult Set(string configurationPath, string setting, string value)
+        public WorkerConfigurationUpdateResult Set(string configurationPath, string setting, string value,
+            WorkerConfigurationChange change = WorkerConfigurationChange.Set)
         {
             Updated = (configurationPath, setting, value);
+            Change = change;
             return new(configurationPath, setting, Succeeded: true, RestartRequired: true, Diagnostic: null);
         }
     }

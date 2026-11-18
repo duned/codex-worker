@@ -119,10 +119,16 @@ test('tools signed in from a Worker terminal do not offer a dashboard sign-in th
   assert.equal(model.needsLocalCompletion({ ...manual, failureDetail: { code: 'ProcessExited', description: 'x' } }), false);
 });
 
-test('a denied tool action points at the local policy setting the Worker checks', () => {
-  const denied = (capabilityId, action) => ({ id: 'd', status: 'Failed', diagnostic: 'Denied', createdAtUtc: at(0), request: { nodeId: 'n', capabilityId, action } });
-  assert.deepEqual(model.deniedPolicyHint(denied('dotnet-sdk', 'Update')), { kind: 'privileged', key: 'tool:dotnet-sdk:update' });
-  assert.deepEqual(model.deniedPolicyHint(denied('github-cli', 'Login')), { kind: 'credentials' });
-  assert.deepEqual(model.deniedPolicyHint(denied('claude-cli', 'Update')), { kind: 'nonPrivileged' });
+test('a denied tool action points at the exact local policy setting', () => {
+  const denied = (capabilityId, action, code) => ({ id: 'd', status: 'Failed', diagnostic: 'Denied', createdAtUtc: at(0), request: { nodeId: 'n', capabilityId, action },
+    ...(code ? { failureDetail: { code, description: 'x' } } : {}) });
+  assert.deepEqual(model.deniedPolicyHint(denied('dotnet-sdk', 'Update', 'PolicyActionNotAllowlisted')), { kind: 'allowlist', key: 'tool:dotnet-sdk:update', exact: true });
+  assert.deepEqual(model.deniedPolicyHint(denied('github-cli', 'Login', 'PolicyActionDenied')), { kind: 'deniedList', key: 'authentication:github-cli:login' });
+  assert.deepEqual(model.deniedPolicyHint(denied('dotnet-sdk', 'Update', 'PolicyProvisioningDisabled')), { kind: 'setting', setting: 'enabled', exact: true });
+  assert.deepEqual(model.deniedPolicyHint(denied('dotnet-sdk', 'Update', 'ElevationNotRequested')), { kind: 'elevation' });
+  assert.deepEqual(model.deniedPolicyHint(denied('git', 'GenerateSshKey', 'PolicyActionDenied')), { kind: 'deniedList', key: 'authentication:git:generatesshkey' });
+  // Older Workers only say Denied: infer with the Worker's own rule.
+  assert.deepEqual(model.deniedPolicyHint(denied('dotnet-sdk', 'Update')), { kind: 'allowlist', key: 'tool:dotnet-sdk:update', exact: false });
+  assert.deepEqual(model.deniedPolicyHint(denied('github-cli', 'Login')), { kind: 'setting', setting: 'allowCredentials', exact: false });
   assert.equal(model.deniedPolicyHint({ ...denied('dotnet-sdk', 'Update'), diagnostic: 'ProcessFailed' }), undefined);
 });

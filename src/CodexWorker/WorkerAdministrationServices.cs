@@ -35,8 +35,12 @@ public interface IWorkerConfigurationAdministrationService
 {
     WorkerConfigurationDocument Show(string configurationPath);
     WorkerConfigurationValidationResult Validate(string configurationPath);
-    WorkerConfigurationUpdateResult Set(string configurationPath, string setting, string value);
+    WorkerConfigurationUpdateResult Set(string configurationPath, string setting, string value,
+        WorkerConfigurationChange change = WorkerConfigurationChange.Set);
 }
+
+/// <summary>How a configuration update applies its value: replace it, or add/remove entries of a list setting.</summary>
+public enum WorkerConfigurationChange { Set, Add, Remove }
 
 public interface IWorkerCapabilityAdministrationService
 {
@@ -78,13 +82,15 @@ public sealed class WorkerConfigurationAdministrationService : IWorkerConfigurat
         return new(fullPath, diagnostics);
     }
 
-    public WorkerConfigurationUpdateResult Set(string configurationPath, string setting, string value)
+    public WorkerConfigurationUpdateResult Set(string configurationPath, string setting, string value,
+        WorkerConfigurationChange change = WorkerConfigurationChange.Set)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(configurationPath);
         var fullPath = Path.GetFullPath(configurationPath);
         try
         {
-            WorkerConfigurationAdministration.Set(fullPath, setting, value);
+            WorkerConfigurationAdministration.Set(fullPath, setting,
+                change == WorkerConfigurationChange.Set ? value : WorkerConfigurationAdministration.ChangedList(fullPath, setting, value, change));
             return new(fullPath, setting, Succeeded: true, RestartRequired: true, Diagnostic: null);
         }
         catch (ArgumentException ex)

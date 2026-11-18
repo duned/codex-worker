@@ -156,6 +156,41 @@ public sealed class WorkerConfigurationAdministrationTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public void AddAndRemoveChangeOnlyTheGivenActionKeysAndKeepTheRest()
+    {
+        using var fixture = new Fixture();
+        fixture.Write("""
+            worker:
+              provisioning:
+                enabled: true
+                allowedPrivilegedActions: [worker:restart, worker:self-update]
+            projects:
+              directory: ./projects
+            """);
+        var service = new WorkerConfigurationAdministrationService();
+        const string setting = "worker.provisioning.allowedPrivilegedActions";
+
+        Assert.True(service.Set(fixture.ConfigPath, setting, "tool:dotnet-sdk:update", WorkerConfigurationChange.Add).Succeeded);
+        // Adding a present key (any case) and several keys at once is idempotent.
+        Assert.True(service.Set(fixture.ConfigPath, setting, "TOOL:DOTNET-SDK:UPDATE,tool:git:update", WorkerConfigurationChange.Add).Succeeded);
+        Assert.Equal(new[] { "worker:restart", "worker:self-update", "tool:dotnet-sdk:update", "tool:git:update" },
+            GlobalWorkerConfiguration.Load(fixture.ConfigPath).Worker.Provisioning.AllowedPrivilegedActions);
+
+        Assert.True(service.Set(fixture.ConfigPath, setting, "tool:git:update,tool:absent:update", WorkerConfigurationChange.Remove).Succeeded);
+        Assert.Equal(new[] { "worker:restart", "worker:self-update", "tool:dotnet-sdk:update" },
+            GlobalWorkerConfiguration.Load(fixture.ConfigPath).Worker.Provisioning.AllowedPrivilegedActions);
+        Assert.True(GlobalWorkerConfiguration.Load(fixture.ConfigPath).Worker.Provisioning.Enabled);
+
+        var scalar = service.Set(fixture.ConfigPath, "worker.provisioning.enabled", "false", WorkerConfigurationChange.Add);
+        Assert.False(scalar.Succeeded);
+        Assert.Equal("configuration-setting-rejected", scalar.Diagnostic?.Code);
+        Assert.False(service.Set(fixture.ConfigPath, setting, "", WorkerConfigurationChange.Add).Succeeded);
+        Assert.Empty(Directory.EnumerateFiles(fixture.Root, "*.tmp", SearchOption.TopDirectoryOnly));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public async Task SetPreservesInstalledUnixAccessModeAndLeavesUpdatedConfigurationReadable()
     {
         if (OperatingSystem.IsWindows()) return;

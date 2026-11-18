@@ -195,6 +195,9 @@ Inspect status, validate or update configuration, and list or refresh capability
 ```sh
 sudo /opt/codex-worker/CodexWorker config set worker.provisioning.enabled true
 sudo /opt/codex-worker/CodexWorker config set worker.provisioning.allowedPrivilegedActions 'tool:git:install,tool:git:update,tool:git:uninstall'
+# Or add/remove single keys without retyping the list (current entries are kept):
+sudo /opt/codex-worker/CodexWorker config add worker.provisioning.allowedPrivilegedActions tool:dotnet-sdk:update
+sudo /opt/codex-worker/CodexWorker config remove worker.provisioning.allowedPrivilegedActions tool:git:uninstall
 sudo /opt/codex-worker/CodexWorker config validate
 sudo /opt/codex-worker/CodexWorker provision status --json
 sudo /opt/codex-worker/CodexWorker provision install git --allow-elevation --json
@@ -208,7 +211,7 @@ For Codex, allowlist `tool:codex-cli:install`, `tool:codex-cli:update`, and `too
 
 Worker upgrades replace the helper and validated privilege policy and restore their previous contents on installation failure. Uninstall, including without purge, removes the Worker's privilege policy. The shared Codex helper/cache are removed when neither the Worker nor Server installer privilege policy remains; installed external tools and Codex authentication are retained.
 
-Supported typed actions include capability detection, package install/upgrade/uninstall, Git configuration checks, GitHub CLI authentication setup and checks, and bounded SSH key/repository-access operations. Package operations are available on Debian-based Linux systems; this installer supports Ubuntu 24.04 x86_64. A denied operation reports the controlling Worker policy and a remediation. `--json` writes versioned status, configuration, capability-inventory, and provisioning contracts to standard output; progress for interactive authentication remains separate from the final JSON result. The commands do not expose shell text or caller-selected packages.
+Supported typed actions include capability detection, package install/upgrade/uninstall, Git configuration checks, GitHub CLI authentication setup and checks, and bounded SSH key/repository-access operations. Package operations are available on Debian-based Linux systems; this installer supports Ubuntu 24.04 x86_64. A denied operation reports the controlling Worker policy and a remediation; managed operations also report the typed reason to the Server, so the dashboard names the exact setting or action key (for example `tool:dotnet-sdk:update`) and the `config add` command that allows it. Policy changes take effect after a Worker restart. `--json` writes versioned status, configuration, capability-inventory, and provisioning contracts to standard output; progress for interactive authentication remains separate from the final JSON result. The commands do not expose shell text or caller-selected packages.
 
 Use `credential` to administer the Worker service account's node-local GitHub/Codex authentication through the shared credential handlers:
 

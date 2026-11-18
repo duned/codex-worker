@@ -653,7 +653,8 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             command.DeadlineUtc > command.StartedAtUtc.Value.AddSeconds(command.Request.TimeoutSeconds))
             throw new InvalidDataException("Invalid provisioning command identity or deadline.");
         var action = command.Request.Action;
-        var permitted = WorkerProvisioning.Permitted(command.Request, policy);
+        var decision = WorkerProvisioning.Decide(command.Request, policy);
+        var permitted = decision.Permitted;
         if (permitted && action is not (ProvisioningCommandAction.Detect or ProvisioningCommandAction.CheckAuthentication or
                 ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.VerifyRepositoryAccess) &&
             beforeCapabilityMutation is not null)
@@ -663,13 +664,24 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             using var message = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/{command.Id}/report");
             // Preserve existing providers' mixed-version wire contract. Claude native Login
             // needs its typed manual-completion result on both sides of the managed boundary.
-            message.Content = JsonContent.Create(command.Request is { CapabilityId: "claude-cli", Action: ProvisioningCommandAction.Login }
+            // A policy refusal names the blocking setting. An older Server does not know those codes and rejects the
+            // report; then report the plain refusal it does understand.
+            var policyDetail = report is { Diagnostic: ProvisioningDiagnostic.Denied, FailureDetail: not null };
+            message.Content = JsonContent.Create(command.Request is { CapabilityId: "claude-cli", Action: ProvisioningCommandAction.Login } || policyDetail
                 ? report : report with { FailureDetail = null });
             using var acknowledgement = await SendAsync(message, token);
+            if (policyDetail && acknowledgement.StatusCode == System.Net.HttpStatusCode.BadRequest)
+            {
+                using var plain = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/{command.Id}/report");
+                plain.Content = JsonContent.Create(report with { FailureDetail = null });
+                using var plainAcknowledgement = await SendAsync(plain, token);
+                plainAcknowledgement.EnsureSuccessStatusCode();
+                return;
+            }
             acknowledgement.EnsureSuccessStatusCode();
         }
         var result = await new NodeProvisioningCommandExecutor(InventoryDiscovery)
-            .ExecuteAsync(command, permitted, cancellationToken, ReportAsync);
+            .ExecuteAsync(command, permitted, cancellationToken, ReportAsync, decision.FailureCode);
         // A terminal acknowledgement is safe to resend; execution itself is never retried.
         await ReportAsync(result, cancellationToken);
         return true;

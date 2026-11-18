@@ -65,7 +65,7 @@ public static class Program
         if (args is ["h"] || args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
         {
             var helpCommand = args is ["h"] || (args.Length > 0 && (args[0] is "--help" or "-h")) ? "root" : commandLine.Command;
-            if (helpCommand == "config" && commandLine.Arguments.FirstOrDefault() is "show" or "validate" or "set")
+            if (helpCommand == "config" && commandLine.Arguments.FirstOrDefault() is "show" or "validate" or "set" or "add" or "remove")
                 helpCommand = "config-" + commandLine.Arguments[0];
             if (helpCommand == "capabilities" && commandLine.Arguments.FirstOrDefault() is "list" or "refresh")
                 helpCommand = "capabilities-" + commandLine.Arguments[0];
