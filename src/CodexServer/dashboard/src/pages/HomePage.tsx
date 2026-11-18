@@ -4,7 +4,7 @@ import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
 import { useExecutions, useNames, useWorkers } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { attention, explain, isActive, isOnline, issueNumber, scheduling } from '../shared/model';
+import { attention, executionActions, explain, isActive, isOnline, issueNumber, scheduling } from '../shared/model';
 import { Card, Empty, Filters, matches, Notice, PageHeader, ReadState, Row, Rows } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow, executionLabel } from './ExecutionRow';
 
@@ -37,9 +37,11 @@ export function HomePage() {
             {reason && <div className="text-sm text-secondary">{t(reason.what)}</div>}
           </div>
           <div className="flex flex-wrap gap-2">
-            {number && <Button size="sm" color="primary" isDisabled={!!action.busy} onClick={() => void action.run(`enqueue-${execution.projectId}-${number}`,
-              `/api/v1/projects/${encodeURIComponent(execution.projectId)}/github/issues/${number}/enqueue`, 'POST', {}, 'actions.queued')}>{t('actions.retryFresh')}</Button>}
-            <Button size="sm" color="secondary" href={`/executions/${encodeURIComponent(execution.id)}`}>{t('actions.viewDetail')}</Button>
+            {number && executionActions(execution, false)[0] === 'retryFresh' ? <>
+              <Button size="sm" color="primary" isDisabled={!!action.busy} onClick={() => void action.run(`enqueue-${execution.projectId}-${number}`,
+                `/api/v1/projects/${encodeURIComponent(execution.projectId)}/github/issues/${number}/enqueue`, 'POST', {}, 'actions.queued')}>{t('actions.retryFresh')}</Button>
+              <Button size="sm" color="secondary" href={`/executions/${encodeURIComponent(execution.id)}`}>{t('actions.viewDetail')}</Button></>
+              : <Button size="sm" color="primary" href={`/executions/${encodeURIComponent(execution.id)}`}>{t('actions.resolve')}</Button>}
           </div>
         </Row>;
       })}

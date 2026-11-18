@@ -13,6 +13,12 @@ export function createQueryClient() {
 export interface SessionState { authenticated: boolean; pending: boolean; message: string; generation: number; live: string; logoutAvailable: boolean }
 // One owner for a React root/tab. Cache, requests, status polling and transient
 // mutation fences all share this generation; observations never grant authority.
+/** Server reads whose freshness follows the projects/workers/executions markers. */
+export const markerRefreshed = (path: string) => {
+  const route = path.split('?')[0];
+  return /^\/api\/v1\/(projects|workers|executions)(\/|$)/.test(route) && !route.includes('/github/');
+};
+
 export class DashboardRuntime {
   private controller = new AbortController();
   private csrf = '';
@@ -147,14 +153,17 @@ export class DashboardRuntime {
     this.markers = next;
     for (const [index, category] of ['projects', 'workers', 'executions'].entries()) {
       if (!previous || previous[0] === next[0] && previous[index + 1] === next[index + 1]) continue;
-      // Details become stale for their next navigation, but only collections refresh now.
+      // Mark the category stale; only reads that are on screen refresh below.
       await this.queries.invalidateQueries({ queryKey: queryKeys.session(generation), refetchType: 'none',
         predicate: query => String(query.queryKey[2]).split('?')[0].startsWith(`/api/v1/${category}/`) || String(query.queryKey[2]).split('?')[0] === `/api/v1/${category}` });
     }
     // Retry failed initial loads as well as invalidated refreshes. Both use the
-    // status loop's backoff, even when the Server marker has not changed.
+    // status loop's backoff, even when the Server marker has not changed. Collections
+    // and the detail reads currently on screen refresh (a detail page must not show a
+    // stale state while its execution moves on); unmounted details refresh on next
+    // navigation, and GitHub-backed reads are never refreshed by markers.
     await this.queries.refetchQueries({ queryKey: queryKeys.session(generation), type: 'active',
-      predicate: query => (query.state.isInvalidated || query.state.status === 'error') && /^\/api\/v1\/(projects|workers|executions)$/.test(String(query.queryKey[2]).split('?')[0])
+      predicate: query => (query.state.isInvalidated || query.state.status === 'error') && markerRefreshed(String(query.queryKey[2]))
     }, { cancelRefetch: false, throwOnError: true });
     // Observer freshness can expire without a new write. Refresh only mounted,
     // bounded observer reads in this same visibility/backoff owner; never fan out
