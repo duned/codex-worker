@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from 'react';
 import { Dialog, Modal, ModalOverlay } from 'react-aria-components';
+import { Check as CheckIcon, Copy01 } from '@untitledui/icons';
 import { Link } from 'react-router-dom';
 import { Button } from '../untitled/components/base/buttons/button';
 import { cx } from '../untitled/utils/cx';
@@ -194,4 +195,28 @@ export function SidePanel({ title, open, onClose, children, footer }: { title: s
       </Dialog>
     </Modal>
   </ModalOverlay>;
+}
+
+/** An in-app link (no page reload) styled for text and key/value lists. */
+export function TextLink({ to, children, mono }: { to: string; children: ReactNode; mono?: boolean }) {
+  return <Link to={to} className={cx('font-medium text-brand-secondary underline decoration-1 underline-offset-4 decoration-[color-mix(in_srgb,currentColor_40%,transparent)] hover:decoration-current', mono && 'font-mono text-xs')}>{children}</Link>;
+}
+
+/** A value shown as text with a button that copies it to the clipboard. */
+export function CopyValue({ value, children }: { value: string; children?: ReactNode }) {
+  useLanguage();
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { if (!copied) return; const id = setTimeout(() => setCopied(false), 1500); return () => clearTimeout(id); }, [copied]);
+  async function copy() {
+    try { await navigator.clipboard.writeText(value); setCopied(true); } catch { /* Clipboard unavailable (insecure context); the value stays selectable. */ }
+  }
+  const Icon = copied ? CheckIcon : Copy01;
+  return <span className="inline-flex max-w-full items-start gap-2">
+    {children ?? <span className="font-mono text-xs break-all select-all">{value}</span>}
+    <button type="button" onClick={() => void copy()} title={t(copied ? 'common.copied' : 'common.copy')} aria-label={t(copied ? 'common.copied' : 'common.copy')}
+      className="shrink-0 rounded-md p-0.5 text-fg-quaternary outline-brand hover:bg-primary_hover hover:text-fg-quaternary_hover focus-visible:outline-2">
+      <Icon className={cx('size-4', copied && 'text-utility-green-500')} aria-hidden="true" />
+    </button>
+    <span className="sr-only" aria-live="polite">{copied ? t('common.copied') : ''}</span>
+  </span>;
 }

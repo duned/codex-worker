@@ -8,7 +8,7 @@ import { execution as validateExecution, record } from '../shared/api/validation
 import { projectExecutionsPath, recentExecutionsPath, useExecutions, useNames, useProjects } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
 import { canArchive, dateTime, duration, executionActions, executionStatus, explain, isActive, issueNumber, newerAttempt, stepProgress, type ExecutionAction } from '../shared/model';
-import { Ago, Card, Check, Explanation, Field, inputClass, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps } from '../shared/ui';
+import { Ago, Card, Check, Explanation, Field, inputClass, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps, TextLink, CopyValue } from '../shared/ui';
 import { executionLabel } from './ExecutionRow';
 
 interface ConflictPreview { executionId: string; workerId?: string; candidate?: Record<string, unknown>; eligible: boolean; reason: string }
@@ -83,7 +83,7 @@ export function ExecutionPage() {
 
     <Card><Steps execution={item} /></Card>
 
-    {newer && item.state === 'Failed' && <Notice>{t('executions.newerAttempt')} <a className="font-semibold underline" href={`/executions/${newer.id}`}>{t('executions.openNewerAttempt', { n: newer.attemptNumber ?? '' })}</a></Notice>}
+    {newer && item.state === 'Failed' && <Notice>{t('executions.newerAttempt')} <TextLink to={`/executions/${encodeURIComponent(newer.id)}`}>{t('executions.openNewerAttempt', { n: newer.attemptNumber ?? '' })}</TextLink></Notice>}
     {conflictReason && <Notice tone="warn">{t('actions.integrationRetryUnavailable')} {conflictReason}</Notice>}
 
     {panel === 'manualCompletion' && <Notice>
@@ -134,14 +134,14 @@ export function ExecutionPage() {
         ...(item.state === 'Completed' && item.completionSummary ? [[t('executions.summary'), item.completionSummary] as [string, string]] : [])
       ]} /></Card>
       <Card title={t('common.details')}><KeyValues items={[
-        [t('executions.project'), names.project(item.projectId)],
-        [t('executions.worker'), names.worker(item.assignedWorkerId)],
+        [t('executions.project'), <TextLink to={`/projects/${encodeURIComponent(item.projectId)}`}>{names.project(item.projectId)}</TextLink>],
+        [t('executions.worker'), item.assignedWorkerId ? <TextLink to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{names.worker(item.assignedWorkerId)}</TextLink> : names.worker(item.assignedWorkerId)],
         [t('executions.engine'), item.workReference?.selection?.engine === 'ccc' ? 'Claude Code' : 'Codex'],
         [t('executions.created'), dateTime(item.createdAtUtc, language)],
         [t('executions.finished'), dateTime(item.completedAtUtc, language)],
-        [t('executions.id'), <span className="font-mono text-xs">{item.id}</span>],
+        [t('executions.id'), <CopyValue value={item.id} />],
         ...(item.archivedAtUtc ? [[t('executions.archivedAt'), dateTime(item.archivedAtUtc, language)] as [string, ReactNode]] : []),
-        ...(item.retryOfExecutionId ? [[t('executions.retryOf'), <a className="font-mono text-xs underline" href={`/executions/${item.retryOfExecutionId}`}>{item.retryOfExecutionId.slice(0, 8)}</a>] as [string, ReactNode]] : [])
+        ...(item.retryOfExecutionId ? [[t('executions.retryOf'), <TextLink mono to={`/executions/${encodeURIComponent(item.retryOfExecutionId)}`}>{item.retryOfExecutionId.slice(0, 8)}</TextLink>] as [string, ReactNode]] : [])
       ]} /></Card>
     </div>
   </>;
