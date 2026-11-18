@@ -1,4 +1,4 @@
-import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate } from './contracts';
+import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, BranchTargets, BranchOperation, BranchRequest } from './contracts';
 import type { Validator } from './client';
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid object.');
@@ -233,4 +233,51 @@ export const workerUpdate: Validator<WorkerUpdate | null> = value => {
     recovery.checks.forEach(check => fields(check, ['code', 'description', 'nextStep'], ['satisfied']));
   }
   return item as unknown as WorkerUpdate;
+};
+
+// Branch names stay inside the Worker's archive prefix and are valid Git refs; anything else is refused before display.
+const archivedBranchName = (name: unknown) => typeof name === 'string' && name.length <= 250 && /^(done|complete)\/feature\/.+/.test(name) &&
+  !/[\s\x00-\x1f\x7f~^:?*[\\]/.test(name) && !name.includes('..') && !name.includes('@{') && !name.includes('//') && !/[/.]$/.test(name) &&
+  name.split('/').every(part => !part.startsWith('.') && !part.endsWith('.lock'));
+
+export const branchTargets: Validator<BranchTargets> = value => {
+  const item = fields(value, ['projectId', 'project', 'repository']);
+  if (!Number.isSafeInteger(item.revision) || !Array.isArray(item.targets) || item.targets.length > 200) throw new Error('Invalid branch maintenance targets.');
+  const ids = new Set<string>();
+  item.targets.forEach(value => {
+    const target = fields(value, ['workerId', 'displayName', 'mode'], ['eligible', 'canApply']);
+    const id = String(target.workerId), reasons = [target.reason, target.applyReason];
+    if (ids.has(id) || !(target.mode === 'managed' ? /^[a-f0-9]{32}$/ : target.mode === 'standalone-observer' ? /^obs_[a-f0-9]{32}$/ : /^$/).test(id)
+      || String(target.displayName).length > 200 || target.canApply && !target.eligible
+      || !reasons.every(reason => reason === null || typeof reason === 'string' && /^[a-z0-9-]{1,100}$/.test(reason))
+      || target.eligible !== (target.reason === null) || target.canApply !== (target.applyReason === null)) throw new Error('Invalid branch maintenance target.');
+    ids.add(id);
+  });
+  return item as unknown as BranchTargets;
+};
+
+/** Validates a branch operation and that the Server echoed exactly the request this page sent. */
+export const branchOperation = (request: BranchRequest): Validator<BranchOperation> => value => {
+  const outer = record(value), operation = record(outer.operation ?? outer), echoed = record(operation.request);
+  const keys = ['operationId', 'workerId', 'project', 'repository', 'projectId', 'projectRevision', 'action', 'apply', 'olderThanDays', 'offset', 'limit', 'timeoutSeconds'] as const;
+  if (typeof operation.status !== 'string' || keys.some(key => echoed[key] !== request[key])) throw new Error('Unexpected branch operation.');
+  const selected = request.branches, returned = echoed.branches;
+  if (selected ? !Array.isArray(returned) || returned.length !== selected.length
+    || selected.some((item, index) => record(returned[index]).branch !== item.branch || record(returned[index]).expectedTip !== item.expectedTip)
+    : returned != null) throw new Error('Unexpected branch selection.');
+  if (operation.report != null) {
+    const report = record(operation.report);
+    optional(report, ['outcome', 'reason']);
+    const rows = report.branches ?? [];
+    if (!Array.isArray(rows) || rows.length > request.limit) throw new Error('Invalid branch inventory.');
+    const names = new Set<string>();
+    rows.forEach(value => {
+      const row = fields(value, ['branch', 'decision', 'reason']);
+      optional(row, ['tip', 'completedAtUtc']);
+      if (names.has(String(row.branch)) || !archivedBranchName(row.branch) || !['eligible', 'skipped', 'review', 'deleted'].includes(String(row.decision))
+        || String(row.reason).length > 300 || selected && !selected.some(item => item.branch === row.branch)) throw new Error('Invalid branch inventory.');
+      names.add(String(row.branch));
+    });
+  }
+  return operation as unknown as BranchOperation;
 };

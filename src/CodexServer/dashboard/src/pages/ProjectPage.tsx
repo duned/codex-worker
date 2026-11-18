@@ -8,6 +8,7 @@ import { projectExecutionsPath, useExecutions, useWorkers } from '../shared/data
 import { t, useLanguage } from '../shared/i18n';
 import { issueStatus, latestByIssue, type Tone } from '../shared/model';
 import { Card, Empty, Filters, KeyValues, matches, PageHeader, Pill, ReadState, RowLink, Rows, StatusPill } from '../shared/ui';
+import { BranchCleanup } from './BranchCleanup';
 import { EnqueuePanel } from './EnqueuePanel';
 import { ProjectPanel } from './ProjectPanel';
 
@@ -61,7 +62,7 @@ export function ProjectPage() {
           </RowLink>) : <Empty>{issues.data?.length ? t('common.noMatches') : t('issues.none')}</Empty>}
         </Rows></ReadState>
       </Card>
-      <Card title={t('projects.configuration')}><KeyValues items={[
+      <div className="flex flex-col gap-6"><Card title={t('projects.configuration')}><KeyValues items={[
         [t('projects.baseBranch'), <span className="font-mono text-sm">{item.defaultBranch ?? 'main'}</span>],
         [t('projects.parallel'), t('projects.upTo', { n: item.maxParallelTasks ?? 1 })],
         [t('projects.validation'), item.validationCommands?.length ? <span className="font-mono text-xs">{item.validationCommands.join(' && ')}</span> : t('projects.workerValidation')],
@@ -69,6 +70,7 @@ export function ProjectPage() {
         [t('nav.workers'), managed.length ? managed.map(worker => worker.displayName || worker.workerId.slice(0, 8)).join(', ') : t('projects.anyWorker')],
         ...(item.description ? [[t('projects.descriptionField'), item.description] as [string, string]] : [])
       ]} /></Card>
+      <BranchCleanup project={item} /></div>
     </div>
     <ProjectPanel open={editing} onClose={() => setEditing(false)} project={item} />
     <EnqueuePanel open={enqueue} onClose={() => setEnqueue(false)} project={item} />
