@@ -5,8 +5,8 @@ import { useApiRead } from '../shared/api/session';
 import { commands as validateCommands } from '../shared/api/validation';
 import type { Capability, NodeCommandSummary, NodeSummary } from '../shared/api/contracts';
 import { t, tryT, useLanguage } from '../shared/i18n';
-import { commandActive, deviceLoginUrl, offeredToolActions, toolActionCommand, toolActions, toolCommand, toolInFlight, toolProgress, type ToolAction } from '../shared/model';
-import { Ago, Card, Check, Empty, Notice, Pill, ReadState, Rows, useNow } from '../shared/ui';
+import { commandActive, deviceLoginUrl, needsLocalCompletion, terminalSignIn, offeredToolActions, toolActionCommand, toolActions, toolCommand, toolInFlight, toolProgress, type ToolAction } from '../shared/model';
+import { Ago, Card, Check, Empty, Notice, Pill, ReadState, Rows, useNow, CopyValue } from '../shared/ui';
 
 type Selection = { capabilityId: string; action: ToolAction };
 
@@ -69,6 +69,8 @@ export function WorkerTools({ node, nodes, online, onSettled }: {
         <Pill tone={ok ? 'ok' : missing ? 'idle' : 'bad'}>{t(ok ? 'workers.toolReady' : missing ? 'workers.toolMissing' : capability.state.authentication === 'Required' ? 'workers.toolSignIn' : 'workers.toolProblem')}</Pill>
       </div>
       {progress.kind === 'command' && <CommandState command={progress.command} />}
+      {Object.hasOwn(terminalSignIn, capability.definition.id) && <TerminalSignIn command={terminalSignIn[capability.definition.id]}
+        signedIn={capability.state.authentication === 'Satisfied'} />}
       {progress.kind === 'requested' && <Progress label={t('tools.status.Requested')} action={progress.action} detail={t('tools.requestedDetail')} />}
       {progress.kind === 'running' && <Progress label={t('tools.status.Running')} action={progress.action} detail={t('tools.runningDetail')} />}
       {offered.length > 0 && !choosing && <div className="flex flex-wrap gap-2">
@@ -98,6 +100,19 @@ export function WorkerTools({ node, nodes, online, onSettled }: {
 }
 
 const requestVisibleMs = 90_000;
+
+/** Sign-in that has to be finished in a terminal on the Worker, with the exact command to copy. */
+function TerminalSignIn({ command, signedIn }: { command: string; signedIn: boolean }) {
+  return <details className="rounded-lg bg-secondary px-3 py-2 text-sm" open={!signedIn}>
+    <summary className="cursor-pointer font-medium text-secondary">{t(signedIn ? 'tools.terminalSignInSignedIn' : 'tools.terminalSignInTitle')}</summary>
+    <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-secondary">
+      <li>{t('tools.terminalSignInStep1')}<div className="mt-1"><CopyValue value={command} /></div></li>
+      <li>{t('tools.terminalSignInStep2')}</li>
+      <li>{t('tools.terminalSignInStep3')}</li>
+    </ol>
+    <p className="mt-2 text-xs text-tertiary">{t('tools.terminalSignInNote')}</p>
+  </details>;
+}
 const actionLabel = (action?: string) => action ? tryT(`tools.action.${action}`, tryT(`tools.action.${toolActionCommand(action)}`, action)) : '';
 
 function Progress({ label, action, detail }: { label: string; action?: string; detail: string }) {
@@ -113,11 +128,12 @@ function CommandState({ command }: { command: NodeCommandSummary }) {
   const login = command.loginInstructions, loginUrl = login && deviceLoginUrl(login.verificationUri);
   const deadline = Date.parse(command.deadlineUtc ?? '');
   const showCode = command.status === 'Running' && !!login && (!Number.isFinite(deadline) || deadline > Date.now());
-  const tone = active ? 'run' : command.status === 'Succeeded' ? 'ok' : command.status === 'Cancelled' ? 'idle' : 'bad';
+  const localCompletion = needsLocalCompletion(command);
+  const tone = active ? 'run' : command.status === 'Succeeded' ? 'ok' : command.status === 'Cancelled' || localCompletion ? 'idle' : 'bad';
   const failure = (command.failureDetail ? tryT(`tools.failure.${command.failureDetail.code ?? ''}`, command.failureDetail.description) : undefined) ?? (command.status === 'Failed' || command.status === 'TimedOut'
     ? tryT(`tools.diagnostic.${command.diagnostic ?? ''}`, command.diagnostic ?? '') || undefined : undefined);
   return <div className="flex flex-col gap-2 text-sm" aria-live="polite">
-    <p className="text-secondary"><Pill tone={tone}>{tryT(`tools.status.${command.status}`, command.status)}</Pill>{' '}{label}
+    <p className="text-secondary"><Pill tone={tone}>{localCompletion ? t('tools.status.LocalCompletion') : tryT(`tools.status.${command.status}`, command.status)}</Pill>{' '}{label}
       {' · '}<Ago value={command.completedAtUtc ?? command.startedAtUtc ?? command.createdAtUtc} /></p>
     {showCode && <div className="rounded-lg bg-secondary p-3" aria-live="polite">
       <p className="text-primary">{t('tools.deviceCode')}</p>
@@ -130,6 +146,6 @@ function CommandState({ command }: { command: NodeCommandSummary }) {
     </div>}
     {active && !showCode && <p className="text-tertiary">{t(command.request.action === 'Login' ? 'tools.waitingCode' : command.status === 'Pending' ? 'tools.requestedDetail' : 'tools.runningDetail')}</p>}
     {command.status === 'Succeeded' && <p className="text-tertiary">{t('tools.succeededDetail')}</p>}
-    {failure && <p className="text-utility-red-500">{failure}</p>}
+    {failure && !localCompletion && <p className="text-utility-red-500">{failure}</p>}
   </div>;
 }

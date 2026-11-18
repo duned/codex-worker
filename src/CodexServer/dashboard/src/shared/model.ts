@@ -174,8 +174,15 @@ export const toolActions = {
 } as const satisfies Record<string, { command: string; label: TranslationKey; elevation: boolean; timeoutSeconds: number }>;
 export type ToolAction = keyof typeof toolActions;
 
+/** Tools whose vendor sign-in must be completed in a terminal on the Worker (the service account has no login shell,
+ * so the command runs the CLI directly with that account's HOME): the code the browser returns has to be
+ * pasted into the same CLI, and the product does not relay it through the Server (see docs/claude-provisioning.md). */
+export const terminalSignIn: Record<string, string> = { 'claude-cli': `sudo -u codex-worker -H sh -c '"$HOME/.local/bin/claude" auth login'` };
 export const offeredToolActions = (capability: Capability): ToolAction[] =>
-  (Object.keys(toolActions) as ToolAction[]).filter(action => capability.availableActions.includes(action));
+  (Object.keys(toolActions) as ToolAction[]).filter(action => capability.availableActions.includes(action) &&
+    !(action === 'login' && Object.hasOwn(terminalSignIn, capability.definition.id)));
+/** A failure that only asks the operator to finish something on the Worker, not an error of the tool. */
+export const needsLocalCompletion = (command: NodeCommandSummary) => command.failureDetail?.code === 'ManualVendorCliCompletionRequired';
 
 export const commandActive = (command: NodeCommandSummary) => command.status === 'Pending' || command.status === 'Running';
 
