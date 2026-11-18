@@ -30,6 +30,9 @@ export function WorkerPage() {
   const [log, setLog] = useState<{ state: string; lines: string[] }>(), [loadingLog, setLoadingLog] = useState(false);
   const refetchWorker = read.refetch;
   const refreshWorker = useCallback(() => { void refetchWorker(); }, [refetchWorker]);
+  const refetchDiagnostics = diagnostics.refetch;
+  // A finished tool action can change readiness: re-read the Worker and its diagnostics once.
+  const refreshReadiness = useCallback(() => { void refetchWorker(); void refetchDiagnostics(); }, [refetchWorker, refetchDiagnostics]);
   const worker = read.data;
   if (!worker) return <><PageHeader title={t('workers.title')} crumbs={[{ label: t('nav.workers'), to: '/workers' }]} /><Card flush><ReadState read={read}>{null}</ReadState></Card></>;
   const state = scheduling(worker), use = slots(worker), online = isOnline(worker);
@@ -78,7 +81,7 @@ export function WorkerPage() {
         <ExecutionHead />{recent.length ? recent.map(item => <ExecutionRow key={item.id} execution={item} />) : <Empty>{t('workers.noRecent')}</Empty>}
       </Rows></ReadState></Card>
     </> : <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
-      <WorkerTools node={node} nodes={nodes} online={online} />
+      <WorkerTools node={node} nodes={nodes} online={online} onSettled={refreshReadiness} />
       <div className="flex flex-col gap-6">
         <Card title={t('workers.machine')}><KeyValues items={[
           [t('workers.system'), worker.platform ?? '—'], [t('workers.cpu'), resources?.cpuUsagePercent !== undefined ? `${Math.round(resources.cpuUsagePercent)} %` : '—'],
