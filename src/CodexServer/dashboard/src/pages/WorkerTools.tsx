@@ -6,7 +6,7 @@ import { commands as validateCommands } from '../shared/api/validation';
 import type { Capability, NodeCommandSummary, NodeSummary } from '../shared/api/contracts';
 import { t, tryT, useLanguage } from '../shared/i18n';
 import { commandActive, deviceLoginUrl, offeredToolActions, toolActions, toolCommand, type ToolAction } from '../shared/model';
-import { Ago, Card, Check, Empty, Pill, ReadState, Rows } from '../shared/ui';
+import { Ago, Card, Check, Empty, Notice, Pill, ReadState, Rows } from '../shared/ui';
 
 type Selection = { capabilityId: string; action: ToolAction };
 
@@ -55,7 +55,7 @@ export function WorkerTools({ node, nodes, online }: {
       </div>
       {latest && <CommandState command={latest} />}
       {offered.length > 0 && !choosing && <div className="flex flex-wrap gap-2">
-        {offered.map(name => <Button key={name} size="sm" color="secondary" isDisabled={!online || busy || !!action.busy || !commands.data}
+        {offered.map(name => <Button key={name} size="sm" color="secondary" isDisabled={!online || busy || !!action.busy}
           onClick={() => choose({ capabilityId: capability.definition.id, action: name })}>{t(toolActions[name].label)}</Button>)}
       </div>}
       {choosing && <div className="rounded-lg bg-secondary p-4">
@@ -72,6 +72,7 @@ export function WorkerTools({ node, nodes, online }: {
   }
 
   return <Card title={t('workers.tools')} flush>
+    {node && commands.hasError && <div className="px-5 pt-4"><Notice tone="warn">{t('tools.historyUnavailable', { error: commands.error ?? '' })}</Notice></div>}
     <ReadState read={nodes}><Rows>
       {node?.capabilities.length ? node.capabilities.map(row) : <Empty>{t('workers.noTools')}</Empty>}
     </Rows></ReadState>

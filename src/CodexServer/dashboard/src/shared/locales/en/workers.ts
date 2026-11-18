@@ -19,6 +19,7 @@ export const workers = {
   "tools.confirm": "{action} {tool} on this Worker?",
   "tools.confirmLogin": "Start a new sign-in for {tool} on this Worker? A device code appears here; approve it in the browser only if you started it.",
   "tools.confirmLoginGitHub": "GitHub sign-in also grants the workflow permission needed to push GitHub Actions files.",
+  "tools.historyUnavailable": "Recent tool actions could not be loaded. {error} You can still run actions; the Server rejects one that conflicts with an action already in progress.",
   "tools.elevation": "Allow administrator privileges for this action",
   "tools.run": "Run",
   "tools.requested": "Requested. The Worker picks it up within a few seconds.",

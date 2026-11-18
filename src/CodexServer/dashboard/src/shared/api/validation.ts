@@ -121,7 +121,8 @@ export const worker: Validator<import('./contracts').WorkerAdministration> = val
 export const command: Validator<import('./contracts').NodeCommandSummary> = value => {
   const item = fields(value, ['id', 'createdAtUtc', 'status']);
   const request = fields(item.request, ['nodeId', 'capabilityId', 'action']);
-  optional(item, ['diagnostic', 'startedAtUtc', 'deadlineUtc', 'completedAtUtc', 'claudeLogin']);
+  // claudeLogin is an object validated below, not a string.
+  optional(item, ['diagnostic', 'startedAtUtc', 'deadlineUtc', 'completedAtUtc']);
   if (item.loginInstructions != null) fields(item.loginInstructions, ['verificationUri', 'userCode']);
   let failureDetail;
   if (item.failureDetail != null) {
@@ -131,7 +132,7 @@ export const command: Validator<import('./contracts').NodeCommandSummary> = valu
   }
   let claudeLogin;
   if (item.claudeLogin != null) {
-    const progress = fields(item.claudeLogin, ['provider', 'state', 'instructionsUri', 'requiresBrowserAction', 'requiresLocalCliCodeInput']);
+    const progress = fields(item.claudeLogin, ['provider', 'state', 'instructionsUri'], ['requiresBrowserAction', 'requiresLocalCliCodeInput']);
     if (progress.provider !== 'anthropic' || progress.state !== 'manual-vendor-cli-completion-required' ||
         progress.instructionsUri !== 'https://code.claude.com/docs/en/troubleshoot-install' ||
         progress.requiresBrowserAction !== true || progress.requiresLocalCliCodeInput !== true ||
