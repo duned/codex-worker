@@ -829,7 +829,8 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         Assert.Empty(github.Comments);
         Assert.Equal(1, codex.Calls);
         File.Delete(hook);
-        await fixture.Git("push", "origin", "main"); // Explicit operator retry of only the original push.
+        // A rejected push leaves local main realigned with the remote; the exact validated commit remains preserved.
+        await fixture.Git("push", "origin", $"{pending.CommitSha}:refs/heads/main"); // Explicit operator retry of only the original push.
         github.Labels.Remove("ready");
         var pushBlocked = Assert.Single(await history.ReadAllAsync());
         var pushDiagnostic = JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(

@@ -60,7 +60,7 @@ public sealed class GitHubDeviceLoginTests
     {
         var start = GitHubDeviceLogin.CreateStartInfo("/product/github");
         Assert.Equal("/usr/bin/gh", start.FileName);
-        Assert.Equal(new[] { "auth", "login", "--hostname", "github.com", "--web", "--git-protocol", "https", "--insecure-storage" }, start.ArgumentList);
+        Assert.Equal(new[] { "auth", "login", "--hostname", "github.com", "--web", "--git-protocol", "https", "--insecure-storage", "--scopes", "workflow" }, start.ArgumentList);
         Assert.Equal("/product/github", start.Environment["GH_CONFIG_DIR"]);
         Assert.Equal("/usr/bin/true", start.Environment["GH_BROWSER"]);
         Assert.Equal("1", start.Environment["GH_PROMPT_DISABLED"]);
