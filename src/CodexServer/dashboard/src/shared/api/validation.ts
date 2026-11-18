@@ -126,8 +126,9 @@ export const command: Validator<import('./contracts').NodeCommandSummary> = valu
   if (item.loginInstructions != null) fields(item.loginInstructions, ['verificationUri', 'userCode']);
   let failureDetail;
   if (item.failureDetail != null) {
-    const failure = fields(item.failureDetail, ['description'], ['code']);
-    if (String(failure.description).length > 2048) throw Error('Invalid failure detail.');
+    // code is a string enum name; processExitCode and providerStep are optional context.
+    const failure = fields(item.failureDetail, ['description']);
+    if (failure.code != null && typeof failure.code !== 'string' || String(failure.description).length > 2048) throw Error('Invalid failure detail.');
     failureDetail = { code: typeof failure.code === 'string' ? failure.code : undefined, description: String(failure.description) };
   }
   let claudeLogin;

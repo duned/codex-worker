@@ -189,3 +189,24 @@ export function toolCommand(commands: NodeCommandSummary[], nodeId: string, capa
     .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc))[0];
   return { latest, busy: !!latest && commandActive(latest) };
 }
+
+/** What a tool is doing right now, from the newest evidence: the command history, a request this page just
+ * sent and is waiting to see, or the node's own operation state when the history is unavailable. */
+export type ToolProgress =
+  | { kind: 'command'; command: NodeCommandSummary }
+  | { kind: 'requested'; action: string }
+  | { kind: 'running'; action?: string }
+  | { kind: 'idle' };
+export function toolProgress(capability: Capability, latest: NodeCommandSummary | undefined,
+  requested: { action: string; atUtc: number } | undefined): ToolProgress {
+  if (requested && (!latest || Date.parse(latest.createdAtUtc) < requested.atUtc - 5000)) return { kind: 'requested', action: requested.action };
+  if (latest) return { kind: 'command', command: latest };
+  if (capability.state.operation?.state === 'Running') return { kind: 'running', action: capability.state.operation.action };
+  return { kind: 'idle' };
+}
+/** The page keeps following a tool while anything about it can still change. */
+export const toolInFlight = (progress: ToolProgress) =>
+  progress.kind === 'requested' || progress.kind === 'running' || progress.kind === 'command' && commandActive(progress.command);
+/** Maps a node operation name (e.g. "login", "refresh") to the typed command it reports as. */
+export const toolActionCommand = (operation: string): string =>
+  (toolActions as Record<string, { command: string }>)[operation.toLowerCase()]?.command ?? operation;

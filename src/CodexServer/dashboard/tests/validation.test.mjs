@@ -15,3 +15,16 @@ test('node command history accepts a Worker Claude sign-in in progress and rejec
   assert.equal(validation.commands([login, github]).length, 2);
   assert.throws(() => validation.commands([{ ...login, claudeLogin: { ...claudeLogin, instructionsUri: 'https://evil.example' } }]));
 });
+
+test('node command history accepts failure details as the Server serializes them', () => {
+  const failed = { id: 'c', createdAtUtc: '2026-11-18T10:00:00Z', status: 'Failed', diagnostic: 'ProcessFailed',
+    request: { nodeId: 'n', capabilityId: 'github-cli', action: 'Login', timeoutSeconds: 600, allowElevation: false, repository: null },
+    publicIdentity: null, loginInstructions: null,
+    failureDetail: { code: 'ProcessExited', processExitCode: 1, providerStep: 'Unknown', description: 'The tool process exited with an error.' } };
+  const running = { ...failed, id: 'd', status: 'Running', diagnostic: 'Executing', failureDetail: null,
+    loginInstructions: { verificationUri: 'https://github.com/login/device', userCode: 'ABCD-1234' } };
+  const parsed = validation.commands([failed, running]);
+  assert.equal(parsed[0].failureDetail.code, 'ProcessExited');
+  assert.equal(parsed[1].loginInstructions.userCode, 'ABCD-1234');
+  assert.throws(() => validation.commands([{ ...failed, failureDetail: { code: 3, description: 'x' } }]));
+});

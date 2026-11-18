@@ -1,18 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
 import { useApiRead } from '../shared/api/session';
 import { commands as validateCommands } from '../shared/api/validation';
 import type { Capability, NodeCommandSummary, NodeSummary } from '../shared/api/contracts';
 import { t, tryT, useLanguage } from '../shared/i18n';
-import { commandActive, deviceLoginUrl, offeredToolActions, toolActions, toolCommand, type ToolAction } from '../shared/model';
-import { Ago, Card, Check, Empty, Notice, Pill, ReadState, Rows } from '../shared/ui';
+import { commandActive, deviceLoginUrl, offeredToolActions, toolActionCommand, toolActions, toolCommand, toolInFlight, toolProgress, type ToolAction } from '../shared/model';
+import { Ago, Card, Check, Empty, Notice, Pill, ReadState, Rows, useNow } from '../shared/ui';
 
 type Selection = { capabilityId: string; action: ToolAction };
 
 /** A Worker's tools with the typed provisioning actions its node advertises (sign in, check, install, update). */
-export function WorkerTools({ node, nodes, online }: {
-  node?: NodeSummary; nodes: { loading: boolean; hasError: boolean; error?: string; refetch(): unknown }; online: boolean;
+export function WorkerTools({ node, nodes, online, onSettled }: {
+  node?: NodeSummary; nodes: { loading: boolean; hasError: boolean; error?: string; refetch(): unknown }; online: boolean; onSettled(): void;
 }) {
   useLanguage();
   const nodeId = node?.id ?? '';
@@ -20,15 +20,27 @@ export function WorkerTools({ node, nodes, online }: {
   const commands = useApiRead(commandsPath, validateCommands, !!node);
   const action = useAction();
   const [selected, setSelected] = useState<Selection>(), [elevation, setElevation] = useState(false);
-  const anyActive = (commands.data ?? []).some(commandActive);
+  // Requests this page sent and is waiting to see in the history, by tool.
+  const [requested, setRequested] = useState<Record<string, { action: string; atUtc: number }>>({});
+  const now = useNow(5000);
+  const progressOf = (capability: Capability) => {
+    const pending = requested[capability.definition.id];
+    return toolProgress(capability, toolCommand(commands.data ?? [], nodeId, capability.definition.id).latest,
+      pending && now - pending.atUtc < requestVisibleMs ? pending : undefined);
+  };
+  const inFlight = (node?.capabilities ?? []).some(capability => toolInFlight(progressOf(capability)));
   const refetchCommands = commands.refetch, refetchNodes = nodes.refetch;
 
-  // Command progress (including a device code) is not covered by Server freshness markers; follow it while active.
+  // Command progress (including a device code) is not covered by Server freshness markers: follow it while
+  // anything is in flight, and refresh the Worker's readiness once, when it settles.
+  const wasInFlight = useRef(false);
   useEffect(() => {
-    if (!anyActive) return;
+    if (wasInFlight.current && !inFlight) onSettled();
+    wasInFlight.current = inFlight;
+    if (!inFlight) return;
     const id = setInterval(() => { void refetchCommands(); void refetchNodes(); }, 3000);
     return () => clearInterval(id);
-  }, [anyActive, refetchCommands, refetchNodes]);
+  }, [inFlight, refetchCommands, refetchNodes, onSettled]);
 
   function choose(value?: Selection) { setElevation(false); setSelected(value); }
   async function submit(selection: Selection) {
@@ -37,12 +49,15 @@ export function WorkerTools({ node, nodes, online }: {
       nodeId, capabilityId: selection.capabilityId, action: spec.command, timeoutSeconds: spec.timeoutSeconds,
       allowElevation: spec.elevation && elevation
     }, 'tools.requested');
-    if (done) choose(undefined);
-    await refetchCommands();
+    if (done) {
+      setRequested(current => ({ ...current, [selection.capabilityId]: { action: spec.command, atUtc: Date.now() } }));
+      choose(undefined);
+    }
+    await Promise.all([refetchCommands(), refetchNodes()]);
   }
 
   function row(capability: Capability) {
-    const { latest, busy } = toolCommand(commands.data ?? [], nodeId, capability.definition.id);
+    const progress = progressOf(capability), busy = toolInFlight(progress);
     const ok = capability.state.installation === 'Installed' && capability.state.health === 'Healthy' && capability.state.authentication !== 'Required';
     const missing = capability.state.installation !== 'Installed';
     const offered = offeredToolActions(capability);
@@ -53,7 +68,9 @@ export function WorkerTools({ node, nodes, online }: {
         <span className="text-sm text-tertiary tabular-nums">{capability.state.detectedVersion ?? '—'}</span>
         <Pill tone={ok ? 'ok' : missing ? 'idle' : 'bad'}>{t(ok ? 'workers.toolReady' : missing ? 'workers.toolMissing' : capability.state.authentication === 'Required' ? 'workers.toolSignIn' : 'workers.toolProblem')}</Pill>
       </div>
-      {latest && <CommandState command={latest} />}
+      {progress.kind === 'command' && <CommandState command={progress.command} />}
+      {progress.kind === 'requested' && <Progress label={t('tools.status.Requested')} action={progress.action} detail={t('tools.requestedDetail')} />}
+      {progress.kind === 'running' && <Progress label={t('tools.status.Running')} action={progress.action} detail={t('tools.runningDetail')} />}
       {offered.length > 0 && !choosing && <div className="flex flex-wrap gap-2">
         {offered.map(name => <Button key={name} size="sm" color="secondary" isDisabled={!online || busy || !!action.busy}
           onClick={() => choose({ capabilityId: capability.definition.id, action: name })}>{t(toolActions[name].label)}</Button>)}
@@ -80,16 +97,26 @@ export function WorkerTools({ node, nodes, online }: {
   </Card>;
 }
 
+const requestVisibleMs = 90_000;
+const actionLabel = (action?: string) => action ? tryT(`tools.action.${action}`, tryT(`tools.action.${toolActionCommand(action)}`, action)) : '';
+
+function Progress({ label, action, detail }: { label: string; action?: string; detail: string }) {
+  return <div className="flex flex-col gap-1 text-sm" aria-live="polite">
+    <p className="text-secondary"><Pill tone="run">{label}</Pill>{' '}{actionLabel(action)}</p>
+    <p className="text-tertiary">{detail}</p>
+  </div>;
+}
+
 function CommandState({ command }: { command: NodeCommandSummary }) {
   const active = commandActive(command);
-  const label = tryT(`tools.action.${command.request.action}`, command.request.action);
+  const label = actionLabel(command.request.action);
   const login = command.loginInstructions, loginUrl = login && deviceLoginUrl(login.verificationUri);
   const deadline = Date.parse(command.deadlineUtc ?? '');
   const showCode = command.status === 'Running' && !!login && (!Number.isFinite(deadline) || deadline > Date.now());
   const tone = active ? 'run' : command.status === 'Succeeded' ? 'ok' : command.status === 'Cancelled' ? 'idle' : 'bad';
-  const failure = command.failureDetail?.description ?? (command.status === 'Failed' || command.status === 'TimedOut'
+  const failure = (command.failureDetail ? tryT(`tools.failure.${command.failureDetail.code ?? ''}`, command.failureDetail.description) : undefined) ?? (command.status === 'Failed' || command.status === 'TimedOut'
     ? tryT(`tools.diagnostic.${command.diagnostic ?? ''}`, command.diagnostic ?? '') || undefined : undefined);
-  return <div className="flex flex-col gap-2 text-sm">
+  return <div className="flex flex-col gap-2 text-sm" aria-live="polite">
     <p className="text-secondary"><Pill tone={tone}>{tryT(`tools.status.${command.status}`, command.status)}</Pill>{' '}{label}
       {' · '}<Ago value={command.completedAtUtc ?? command.startedAtUtc ?? command.createdAtUtc} /></p>
     {showCode && <div className="rounded-lg bg-secondary p-3" aria-live="polite">
@@ -101,7 +128,8 @@ function CommandState({ command }: { command: NodeCommandSummary }) {
       </p>
       {Number.isFinite(deadline) && <p className="mt-2 text-xs text-tertiary">{t('tools.deviceCodeExpires', { time: new Date(deadline).toLocaleTimeString() })}</p>}
     </div>}
-    {active && !showCode && command.request.action === 'Login' && <p className="text-tertiary">{t('tools.waitingCode')}</p>}
+    {active && !showCode && <p className="text-tertiary">{t(command.request.action === 'Login' ? 'tools.waitingCode' : command.status === 'Pending' ? 'tools.requestedDetail' : 'tools.runningDetail')}</p>}
+    {command.status === 'Succeeded' && <p className="text-tertiary">{t('tools.succeededDetail')}</p>}
     {failure && <p className="text-utility-red-500">{failure}</p>}
   </div>;
 }

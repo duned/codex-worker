@@ -77,3 +77,18 @@ test('tool actions follow what the node advertises and one active command blocks
   assert.equal(model.deviceLoginUrl('https://github.com/login/device'), 'https://github.com/login/device');
   assert.equal(model.deviceLoginUrl('https://evil.example/login'), undefined);
 });
+
+test('tool progress shows a request until the Worker records it, then the command, then the node operation', () => {
+  const capability = { definition: { id: 'github-cli', displayName: 'GitHub CLI' }, state: { installation: 'Installed', health: 'Healthy' }, availableActions: [] };
+  const sent = Date.parse(at(10));
+  const old = { id: 'o', status: 'Failed', createdAtUtc: at(1), request: { nodeId: 'n', capabilityId: 'github-cli', action: 'Login' } };
+  const fresh = { ...old, id: 'f', status: 'Running', createdAtUtc: at(10) };
+  assert.equal(model.toolProgress(capability, old, { action: 'Login', atUtc: sent }).kind, 'requested');
+  const shown = model.toolProgress(capability, fresh, { action: 'Login', atUtc: sent });
+  assert.equal(shown.kind, 'command');
+  assert.equal(model.toolInFlight(shown), true);
+  assert.equal(model.toolInFlight(model.toolProgress(capability, { ...fresh, status: 'Succeeded' }, undefined)), false);
+  const running = { ...capability, state: { ...capability.state, operation: { state: 'Running', action: 'login' } } };
+  assert.deepEqual(model.toolProgress(running, undefined, undefined), { kind: 'running', action: 'login' });
+  assert.equal(model.toolActionCommand('login'), 'Login');
+});
