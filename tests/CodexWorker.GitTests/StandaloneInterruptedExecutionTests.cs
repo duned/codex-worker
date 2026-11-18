@@ -777,6 +777,40 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
     [Fact]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    public async Task RejectedPushIsReportedAsPreservedIntegrationOutcomeWithoutPendingCompletion()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
+        using var git = fixture.CreateRepository(config.Git);
+        using var telegram = new TelegramNotifier(false);
+        var github = new GitHub(fixture.Issue);
+        var codex = new Codex(path => File.WriteAllTextAsync(Path.Combine(path, "implementation.txt"), "once"));
+        var hook = Path.Combine(fixture._root, "origin.git", "hooks", "pre-receive");
+        await File.WriteAllTextAsync(hook,
+            "#!/bin/sh\necho 'refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope' >&2\nexit 1\n");
+        File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var worker = new Worker(config, github, git, codex, new Validation(), telegram, history: history);
+        await worker.PrepareForHostAsync(CancellationToken.None);
+
+        var result = await worker.ProcessOneAsync(CancellationToken.None);
+
+        Assert.Equal(IssueOutcomeKind.IntegrationConflict, result?.Kind);
+        Assert.Equal("Push rejected by GitHub", result?.Report.FailureCategory);
+        Assert.Contains("'workflow' scope", result?.Report.Failure);
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("IntegrationConflict", entry.State);
+        Assert.Null(entry.CompletionJson);
+        Assert.Equal("integration-conflict", entry.RecoveryState);
+        Assert.True(Directory.Exists(git.RecoveryWorkspacePath(entry)));
+        Assert.Equal(await fixture.Git("rev-parse", "origin/main"), await fixture.Git("rev-parse", "main"));
+        Assert.Equal(1, codex.Calls);
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     public async Task UnconfirmedValidatedPushIsReadOnlyReconciledWithoutReplayOrRetirement()
     {
         if (!OperatingSystem.IsLinux()) return;
@@ -788,7 +822,8 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         var github = new GitHub(fixture.Issue);
         var codex = new Codex(path => File.WriteAllTextAsync(Path.Combine(path, "implementation.txt"), "once"));
         var hook = Path.Combine(fixture._root, "origin.git", "hooks", "pre-receive");
-        await File.WriteAllTextAsync(hook, "#!/bin/sh\nexit 1\n");
+        // Drop the connection mid-push: the outcome is uncertain, unlike an explicit remote rejection.
+        await File.WriteAllTextAsync(hook, "#!/bin/sh\nkill -9 $PPID\nsleep 1\nexit 1\n");
         File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var worker = new Worker(config, github, git, codex, new Validation(), telegram, history: history);
         await worker.PrepareForHostAsync(CancellationToken.None);
@@ -829,7 +864,6 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         Assert.Empty(github.Comments);
         Assert.Equal(1, codex.Calls);
         File.Delete(hook);
-        // A rejected push leaves local main realigned with the remote; the exact validated commit remains preserved.
         await fixture.Git("push", "origin", $"{pending.CommitSha}:refs/heads/main"); // Explicit operator retry of only the original push.
         github.Labels.Remove("ready");
         var pushBlocked = Assert.Single(await history.ReadAllAsync());

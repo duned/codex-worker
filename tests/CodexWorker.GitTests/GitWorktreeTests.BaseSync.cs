@@ -28,7 +28,7 @@ public sealed partial class GitWorktreeTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
-    public async Task RejectedPushRealignsLocalBaseAndReportsWorkflowScope()
+    public async Task RejectedPushIsContainedRealignsLocalBaseAndReportsWorkflowScope()
     {
         if (OperatingSystem.IsWindows()) return;
         using var fixture = await seed.CreateAsync();
@@ -40,8 +40,13 @@ public sealed partial class GitWorktreeTests
         await InstallRejectingHookAsync(fixture,
             "refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope");
 
-        var rejection = await Assert.ThrowsAsync<GitPushRejectedException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+        var withdrawn = 0;
+        git.WithIntegrationWithdrawnObserver(_ => { withdrawn++; return Task.CompletedTask; });
+        var conflict = await Assert.ThrowsAsync<GitIntegrationConflictException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
             _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
+        var rejection = Assert.IsType<GitPushRejectedException>(conflict.InnerException);
+        Assert.Equal(1, withdrawn);
+        Assert.False(conflict.RebaseAborted);
 
         Assert.Equal(GitPushRejection.WorkflowScope, rejection.Reason);
         Assert.Contains("'workflow' scope", rejection.Message);

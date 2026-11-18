@@ -53,6 +53,8 @@ public interface IGitRepository : IDisposable
 
     string ExecutionDirectory { get; }
     IGitRepository WithIntegrationObserver(Func<GitIntegrationResult, bool, CancellationToken, Task> observer) => this;
+    /// <summary>Called when a prepared integration was definitively not pushed (the remote rejected it).</summary>
+    IGitRepository WithIntegrationWithdrawnObserver(Func<CancellationToken, Task> observer) => this;
     Task<bool> VerifyRemoteIntegrationAsync(ExecutionHistoryEntry entry, CancellationToken ct) => Task.FromResult(false);
     Task FinishIntegratedExecutionAsync(ExecutionHistoryEntry entry, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This Git repository cannot verify completion cleanup.");

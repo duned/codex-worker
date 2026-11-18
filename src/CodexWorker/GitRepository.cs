@@ -48,6 +48,13 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
         return this;
     }
 
+    private Func<CancellationToken, Task>? _integrationWithdrawn;
+    public IGitRepository WithIntegrationWithdrawnObserver(Func<CancellationToken, Task> observer)
+    {
+        _integrationWithdrawn = observer;
+        return this;
+    }
+
     public void Dispose() => _workerLock?.Dispose();
     public string ExecutionDirectory => _executionDirectory ?? directory;
 
@@ -774,7 +781,13 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                             // The remote ref is unchanged. Never leave the local base ahead with unpublished
                             // work: the feature branch preserves the commit, so realign to the remote base.
                             await SyncBaseWithRemoteAsync(ct);
-                            if (rejection.Reason != GitPushRejection.NonFastForward) throw;
+                            // Nothing was integrated, so the prepared completion is withdrawn rather than
+                            // left for uncertain-push reconciliation.
+                            if (_integrationWithdrawn is not null) await _integrationWithdrawn(ct);
+                            prepared = null;
+                            // A definitive refusal is a contained integration outcome with the work preserved.
+                            if (rejection.Reason != GitPushRejection.NonFastForward)
+                                throw new GitIntegrationConflictException(rejection.Message, rejection);
                             // Another integrator won the race: rebase, resolve and revalidate on the new base.
                         }
                     }

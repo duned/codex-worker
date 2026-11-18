@@ -24,6 +24,19 @@ test('a failed execution marks the step it failed at, using timings when the sta
   assert.equal(model.explain(failed).todo, 'explain.conflict.todo');
 });
 
+test('a rejected push and an integration lost mid-flight get specific explanations', () => {
+  const rejected = execution({ state: 'Failed', failureClassification: 'IntegrationConflict', currentStage: 'Integration',
+    completionSummary: "GitHub rejected the push to 'main' because the change creates or updates GitHub Actions workflow files." });
+  assert.equal(model.explain(rejected).what, 'explain.pushRejected.what');
+  assert.equal(model.explain(rejected).todo, 'explain.pushRejected.todo');
+  const conflict = execution({ state: 'Failed', failureClassification: 'IntegrationConflict', completionSummary: 'The integration base kept advancing.' });
+  assert.equal(model.explain(conflict).what, 'explain.integration.what');
+  const lostIntegrating = execution({ state: 'Failed', recoveryState: 'LeaseExpiredUncertain', currentStage: 'Integration' });
+  assert.equal(model.explain(lostIntegrating).what, 'explain.integrationUncertain.what');
+  const lostEarlier = execution({ state: 'Failed', recoveryState: 'LeaseExpiredUncertain', currentStage: 'Validation' });
+  assert.equal(model.explain(lostEarlier).what, 'explain.workerLost.what');
+});
+
 test('automatically requeued failures do not need attention, and newer attempts supersede older failures', () => {
   const requeued = execution({ id: 'a', state: 'Failed', failureClassification: 'IntegrationConflict', recoveryState: 'RebaseConflictRequeued', createdAtUtc: at(0) });
   assert.equal(model.executionStatus(requeued).tone, 'warn');
@@ -50,4 +63,17 @@ test('issue status prefers its latest execution, then dependencies and labels', 
   assert.equal(model.issueStatus(issue, execution({ state: 'Queued' })).label, 'status.queued');
   const latest = model.latestByIssue([execution({ id: 'old', createdAtUtc: at(0), state: 'Failed' }), execution({ id: 'new', createdAtUtc: at(5), state: 'Completed' })]);
   assert.equal(latest.get(7).id, 'new');
+});
+
+test('tool actions follow what the node advertises and one active command blocks the tool', () => {
+  const capability = { definition: { id: 'github-cli', displayName: 'GitHub CLI', requiresAuthentication: true, requiresConfiguration: false },
+    state: { installation: 'Installed', health: 'Healthy' }, availableActions: ['refresh', 'login', 'logout', 'uninstall', 'checkauthentication'] };
+  assert.deepEqual(model.offeredToolActions(capability), ['login', 'checkauthentication', 'refresh']);
+  const command = (id, status, createdAtUtc, capabilityId = 'github-cli') => ({ id, status, createdAtUtc, request: { nodeId: 'n', capabilityId, action: 'Login' } });
+  const commands = [command('old', 'Failed', at(1)), command('new', 'Running', at(2)), command('other', 'Running', at(3), 'codex-cli')];
+  assert.equal(model.toolCommand(commands, 'n', 'github-cli').latest.id, 'new');
+  assert.equal(model.toolCommand(commands, 'n', 'github-cli').busy, true);
+  assert.equal(model.toolCommand([command('done', 'Succeeded', at(1))], 'n', 'github-cli').busy, false);
+  assert.equal(model.deviceLoginUrl('https://github.com/login/device'), 'https://github.com/login/device');
+  assert.equal(model.deviceLoginUrl('https://evil.example/login'), undefined);
 });

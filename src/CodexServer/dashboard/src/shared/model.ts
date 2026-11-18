@@ -1,4 +1,4 @@
-import type { ExecutionSummary, GitHubIssue, WorkerObservation, WorkerUpdate } from './api/contracts';
+import type { Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
 /** Visual tone of a status. Semantic colours are fixed: ok, bad, warn, run (animated) and idle. */
@@ -56,15 +56,25 @@ function stepDuration(execution: ExecutionSummary, index: number): number | unde
   return end === undefined ? undefined : Math.max(0, end - Date.parse(start));
 }
 
+const isIntegrationStage = (execution: ExecutionSummary) =>
+  execution.currentStage === 'Integration' || execution.currentStage === 'Reporting';
+
+/** The Worker reports a definitive remote push refusal with product-owned text (nothing was integrated). */
+const isPushRejected = (execution: ExecutionSummary) => /rejected the push/i.test(execution.completionSummary ?? '');
+
 /** Plain-language explanation of a finished execution that needs a decision. */
 export function explain(execution: ExecutionSummary): { what: TranslationKey; todo: TranslationKey } | undefined {
   if (execution.state !== 'Failed') return undefined;
   if (execution.recoveryState === 'RebaseConflictRequeued') return { what: 'explain.conflict.what', todo: 'explain.conflictRetried.todo' };
   if (execution.recoveryState === 'LeaseExpiredRequeued') return { what: 'explain.workerLost.what', todo: 'explain.workerLostRetried.todo' };
-  if (execution.recoveryState === 'LeaseExpiredUncertain') return { what: 'explain.workerLost.what', todo: 'explain.uncertain.todo' };
+  if (execution.recoveryState === 'LeaseExpiredUncertain') return isIntegrationStage(execution)
+    ? { what: 'explain.integrationUncertain.what', todo: 'explain.uncertain.todo' }
+    : { what: 'explain.workerLost.what', todo: 'explain.uncertain.todo' };
   if (isConflict(execution)) return execution.integrationResult === 'rebase-conflict'
     ? { what: 'explain.conflict.what', todo: 'explain.conflict.todo' }
-    : { what: 'explain.integration.what', todo: 'explain.conflict.todo' };
+    : isPushRejected(execution)
+      ? { what: 'explain.pushRejected.what', todo: 'explain.pushRejected.todo' }
+      : { what: 'explain.integration.what', todo: 'explain.conflict.todo' };
   if (execution.failureClassification === 'CodexInterruption') return { what: 'explain.interrupted.what', todo: 'explain.interrupted.todo' };
   if (execution.failureClassification === 'Blocked') return { what: 'explain.blocked.what', todo: 'explain.blocked.todo' };
   return { what: 'explain.failed.what', todo: 'explain.failed.todo' };
@@ -151,4 +161,31 @@ export function maintenanceMessage(operation: WorkerUpdate): TranslationKey {
   if (operation.state === 'failed') return operation.diagnostic === refusedByWorker ? `maintenance.${kind}.refused`
     : operation.drainReleasedAtUtc ? `maintenance.${kind}.released` : `maintenance.${kind}.failed`;
   return `maintenance.${kind}.${operation.state}`;
+}
+
+/** Typed provisioning actions the dashboard offers for a Worker's tools. The node decides which are available
+ * (`availableActions`) and its local policy still authorizes each one; elevated actions need explicit consent. */
+export const toolActions = {
+  login: { command: 'Login', label: 'tools.login', elevation: false, timeoutSeconds: 600 },
+  checkauthentication: { command: 'CheckAuthentication', label: 'tools.checkAuthentication', elevation: false, timeoutSeconds: 120 },
+  refresh: { command: 'Detect', label: 'tools.refresh', elevation: false, timeoutSeconds: 120 },
+  install: { command: 'Install', label: 'tools.install', elevation: true, timeoutSeconds: 600 },
+  update: { command: 'Update', label: 'tools.update', elevation: true, timeoutSeconds: 600 }
+} as const satisfies Record<string, { command: string; label: TranslationKey; elevation: boolean; timeoutSeconds: number }>;
+export type ToolAction = keyof typeof toolActions;
+
+export const offeredToolActions = (capability: Capability): ToolAction[] =>
+  (Object.keys(toolActions) as ToolAction[]).filter(action => capability.availableActions.includes(action));
+
+export const commandActive = (command: NodeCommandSummary) => command.status === 'Pending' || command.status === 'Running';
+
+/** Only the vendors' own device-login pages are linked; anything else is shown as text. */
+export const deviceLoginUrl = (uri: string) =>
+  ['https://github.com/login/device', 'https://auth.openai.com/codex/device'].includes(uri) ? uri : undefined;
+
+/** The newest command for one tool, and whether it still blocks another action on that tool. */
+export function toolCommand(commands: NodeCommandSummary[], nodeId: string, capabilityId: string) {
+  const latest = commands.filter(item => item.request.nodeId === nodeId && item.request.capabilityId === capabilityId)
+    .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc))[0];
+  return { latest, busy: !!latest && commandActive(latest) };
 }

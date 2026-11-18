@@ -26,7 +26,8 @@ public sealed partial class GitWorktreeTests
         var hook = Path.GetFullPath(Path.Combine(fixture.Checkout, "../origin.git/hooks/pre-receive"));
         if (!pushReachedRemote)
         {
-            await File.WriteAllTextAsync(hook, "#!/bin/sh\nexit 1\n");
+            // Drop the connection mid-push: the outcome is uncertain, unlike an explicit remote rejection.
+            await File.WriteAllTextAsync(hook, "#!/bin/sh\nkill -9 $PPID\nsleep 1\nexit 1\n");
             File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
         using (var integrating = fixture.CreateRepository(settings))
@@ -58,9 +59,7 @@ public sealed partial class GitWorktreeTests
         {
             Assert.True(Directory.Exists(restarted.RecoveryWorkspacePath(entry)));
             File.Delete(hook);
-            // A rejected push leaves the remote unchanged and realigns local main; the validated commit stays
-            // preserved by its feature branch. The operator retries only the exact original base push.
-            Assert.Equal(await fixture.Git("rev-parse", "origin/main"), await fixture.Git("rev-parse", "main"));
+            // The operator retries only the exact original base push.
             await fixture.Git("push", "origin", $"{result.CommitSha}:refs/heads/main");
             await fixture.Git("merge", "--ff-only", result.CommitSha!);
         }

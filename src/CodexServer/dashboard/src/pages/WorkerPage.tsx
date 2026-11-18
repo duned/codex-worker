@@ -12,6 +12,7 @@ import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Ti
 import { ActiveExecution, ExecutionHead, ExecutionRow } from './ExecutionRow';
 import { WorkerMaintenance } from './WorkerMaintenance';
 import { WorkerPanel } from './WorkerPanel';
+import { WorkerTools } from './WorkerTools';
 
 const journal: Validator<{ state: string; lines: string[] }> = value => {
   const item = record(value);
@@ -77,17 +78,7 @@ export function WorkerPage() {
         <ExecutionHead />{recent.length ? recent.map(item => <ExecutionRow key={item.id} execution={item} />) : <Empty>{t('workers.noRecent')}</Empty>}
       </Rows></ReadState></Card>
     </> : <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
-      <Card title={t('workers.tools')} flush><ReadState read={nodes}><Rows>
-        {node?.capabilities.length ? node.capabilities.map(capability => {
-          const ok = capability.state.installation === 'Installed' && capability.state.health === 'Healthy' && capability.state.authentication !== 'Required';
-          const missing = capability.state.installation !== 'Installed';
-          return <Row key={capability.definition.id} className="grid-cols-[minmax(0,1fr)_auto_auto]">
-            <span className="font-medium text-primary">{capability.definition.displayName}</span>
-            <span className="text-sm text-tertiary tabular-nums">{capability.state.detectedVersion ?? '—'}</span>
-            <Pill tone={ok ? 'ok' : missing ? 'idle' : 'bad'}>{t(ok ? 'workers.toolReady' : missing ? 'workers.toolMissing' : capability.state.authentication === 'Required' ? 'workers.toolSignIn' : 'workers.toolProblem')}</Pill>
-          </Row>;
-        }) : <Empty>{t('workers.noTools')}</Empty>}
-      </Rows></ReadState></Card>
+      <WorkerTools node={node} nodes={nodes} online={online} />
       <div className="flex flex-col gap-6">
         <Card title={t('workers.machine')}><KeyValues items={[
           [t('workers.system'), worker.platform ?? '—'], [t('workers.cpu'), resources?.cpuUsagePercent !== undefined ? `${Math.round(resources.cpuUsagePercent)} %` : '—'],

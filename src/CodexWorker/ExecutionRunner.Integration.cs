@@ -19,6 +19,7 @@ public sealed partial class ExecutionRunner
             await history.SaveCompletionAsync(execution.ExecutionId,
                 new ExecutionCompletion(report, ExecutionCompletion.IssueIntent(issue), ExecutionCompletion.Policy(config), confirmed), false, token);
         });
+        git.WithIntegrationWithdrawnObserver(token => history.WithdrawUnconfirmedCompletionAsync(execution.ExecutionId, token));
     }
 
     private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, IImplementationEngine engine, CancellationToken ct)
@@ -137,7 +138,7 @@ public sealed partial class ExecutionRunner
                 await history.UpdateIntegrationRecoverySnapshotAsync(source.ExecutionId, recovery.BaseCommit,
                     recovery.StatusSummary, DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays), ct, recovery.IntegrationBase);
             var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} did not complete.", repairs,
-                Failure: ex.Message, FailureCategory: ex is PostRebaseValidationException ? "Post-rebase validation failed" : "Integration recovery conflict", RecoveryBranch: recovery?.Branch,
+                Failure: ex.Message, FailureCategory: ex is PostRebaseValidationException ? "Post-rebase validation failed" : ex.InnerException is GitPushRejectedException ? "Push rejected by GitHub" : "Integration recovery conflict", RecoveryBranch: recovery?.Branch,
                 WorkspacePreserved: recovery is not null, RetryAvailable: recovery is not null,
                 FinalValidationFailure: (ex as PostRebaseValidationException)?.Failure?.Command,
                 FinalValidationDiagnostics: (ex as PostRebaseValidationException)?.Failure?.ToSummary(),
