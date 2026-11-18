@@ -237,3 +237,16 @@ export function executionActions(execution: ExecutionSummary, superseded: boolea
 export const newerAttempt = (execution: ExecutionSummary, attempts: ExecutionSummary[]) => attempts
   .filter(other => other.id !== execution.id && other.workReference?.id === execution.workReference?.id && Date.parse(other.createdAtUtc) > Date.parse(execution.createdAtUtc))
   .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc))[0];
+
+/** For a command the Worker's local policy denied, the policy setting that most likely blocks it. Mirrors the
+ * Worker's key format (WorkerProvisioning.Decide): `<type>:<capability>:<action>`, lower-case. The Worker reports only
+ * "Denied", so this is the likely fix, not a diagnosis. */
+export type PolicyHint = { kind: 'privileged'; key: string } | { kind: 'credentials' } | { kind: 'nonPrivileged' };
+export function deniedPolicyHint(command: NodeCommandSummary): PolicyHint | undefined {
+  if (command.status !== 'Failed' || command.diagnostic !== 'Denied') return undefined;
+  const { capabilityId, action } = command.request;
+  if (['Install', 'Update', 'Uninstall', 'Configure'].includes(action) && capabilityId !== 'claude-cli')
+    return { kind: 'privileged', key: `tool:${capabilityId}:${action}`.toLowerCase() };
+  if (['Login', 'Logout', 'PrepareAuthentication', 'GenerateSshKey', 'RemoveSshKey'].includes(action)) return { kind: 'credentials' };
+  return { kind: 'nonPrivileged' };
+}

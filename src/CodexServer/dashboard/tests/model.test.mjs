@@ -118,3 +118,11 @@ test('tools signed in from a Worker terminal do not offer a dashboard sign-in th
   assert.equal(model.needsLocalCompletion(manual), true);
   assert.equal(model.needsLocalCompletion({ ...manual, failureDetail: { code: 'ProcessExited', description: 'x' } }), false);
 });
+
+test('a denied tool action points at the local policy setting the Worker checks', () => {
+  const denied = (capabilityId, action) => ({ id: 'd', status: 'Failed', diagnostic: 'Denied', createdAtUtc: at(0), request: { nodeId: 'n', capabilityId, action } });
+  assert.deepEqual(model.deniedPolicyHint(denied('dotnet-sdk', 'Update')), { kind: 'privileged', key: 'tool:dotnet-sdk:update' });
+  assert.deepEqual(model.deniedPolicyHint(denied('github-cli', 'Login')), { kind: 'credentials' });
+  assert.deepEqual(model.deniedPolicyHint(denied('claude-cli', 'Update')), { kind: 'nonPrivileged' });
+  assert.equal(model.deniedPolicyHint({ ...denied('dotnet-sdk', 'Update'), diagnostic: 'ProcessFailed' }), undefined);
+});
