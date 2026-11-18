@@ -7,7 +7,7 @@ import { projectExecutionsPath, useExecutions, useNames } from '../shared/data';
 import { Markdown } from '../shared/Markdown';
 import { t, useLanguage } from '../shared/i18n';
 import { executionActions, executionStatus, explain, isActive, issueStatus } from '../shared/model';
-import { Ago, Card, Empty, Explanation, KeyValues, PageHeader, ReadState, RowLink, Rows, StatusPill, Steps } from '../shared/ui';
+import { Ago, Card, Empty, Explanation, KeyValues, PageHeader, ReadState, RowLink, Rows, StatusPill, Steps, TextLink } from '../shared/ui';
 
 export function IssuePage() {
   useLanguage();
@@ -62,7 +62,7 @@ export function IssuePage() {
       <div className="flex min-w-0 flex-col gap-6">
         <Card title={t('issues.status')} actions={<StatusPill status={status} />}><KeyValues items={[
           [t('executions.project'), project.data?.name ?? projectId],
-          [t('executions.worker'), latest ? names.worker(latest.assignedWorkerId) : t('issues.unassigned')],
+          [t('executions.worker'), latest?.assignedWorkerId ? <TextLink to={`/workers/${encodeURIComponent(latest.assignedWorkerId)}`}>{names.worker(latest.assignedWorkerId)}</TextLink> : latest ? names.worker(undefined) : t('issues.unassigned')],
           [t('issues.dependsOn'), issue.data?.blockedBy.length ? issue.data.blockedBy.map(blocker => `#${blocker.number}`).join(', ') : t('issues.nothing')],
           [t('executions.engine'), `${selection?.engine === 'ccc' ? 'Claude Code' : 'Codex'}${selection?.effort ? ` · ${selection.effort}` : ''}${selection?.model ? ` · ${selection.model}` : ''}`],
           [t('issues.eligible'), issue.data ? (issue.data.isEligible ? t('issues.yes') : issue.data.eligibilityReasons.join(' · ') || t('issues.no')) : '—']

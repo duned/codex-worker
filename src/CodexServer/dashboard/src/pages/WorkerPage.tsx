@@ -8,7 +8,7 @@ import { diagnostics as validateDiagnostics, record, worker as validateWorker } 
 import { useExecutions, useNodes } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
 import { isActive, isOnline, scheduling, schedulingTone, slots } from '../shared/model';
-import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Tile } from '../shared/ui';
+import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Tile, CopyValue } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow } from './ExecutionRow';
 import { WorkerMaintenance } from './WorkerMaintenance';
 import { WorkerPanel } from './WorkerPanel';
@@ -87,7 +87,7 @@ export function WorkerPage() {
           [t('workers.system'), worker.platform ?? '—'], [t('workers.cpu'), resources?.cpuUsagePercent !== undefined ? `${Math.round(resources.cpuUsagePercent)} %` : '—'],
           [t('workers.memory'), resources?.totalMemoryBytes ? `${gigabytes(resources.usedMemoryBytes)} / ${gigabytes(resources.totalMemoryBytes)}` : '—'],
           [t('workers.disk'), gigabytes(resources?.diskAvailableBytes)], [t('workers.cores'), resources?.logicalCpuCount ?? '—'],
-          [t('workers.identifier'), <span className="font-mono text-xs">{worker.workerId}</span>]
+          [t('workers.identifier'), <CopyValue value={worker.workerId} />]
         ]} /></Card>
         <Card title={t('workers.projects')} flush><ReadState read={diagnostics}><Rows>
           {diagnostics.data?.projects?.length ? diagnostics.data.projects.map(project => <Row key={project.projectId} className="grid-cols-[minmax(0,1fr)_auto]">
