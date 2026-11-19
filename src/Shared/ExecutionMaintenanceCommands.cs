@@ -38,9 +38,12 @@ public static class ExecutionMaintenanceProtocol
 
     public const string Capability = "execution-maintenance-v1";
     public const string BranchCapability = "archived-feature-maintenance-v1";
-    public static bool ArchivedBranch(string branch) => branch is { Length: > 0 and <= 250 } &&
+    public static bool ArchivedBranch(string branch) =>
         (branch.StartsWith("done/feature/", StringComparison.Ordinal) || branch.StartsWith("complete/feature/", StringComparison.Ordinal)) &&
-        !branch.Any(c => char.IsControl(c) || char.IsWhiteSpace(c) || "~^:?*[\\".Contains(c)) &&
+        SafeBranchName(branch);
+    /// <summary>A bounded Git branch name without characters Git or ref-path APIs treat specially.</summary>
+    public static bool SafeBranchName(string branch) => branch is { Length: > 0 and <= 250 } &&
+        !branch.Any(c => char.IsControl(c) || char.IsWhiteSpace(c) || "~^:?*[\\%#&".Contains(c)) &&
         !branch.Contains("..", StringComparison.Ordinal) && !branch.Contains("@{", StringComparison.Ordinal) &&
         !branch.Contains("//", StringComparison.Ordinal) && !branch.EndsWith('/') && !branch.EndsWith('.') &&
         branch.Split('/').All(part => !part.StartsWith('.') && !part.EndsWith(".lock", StringComparison.Ordinal));

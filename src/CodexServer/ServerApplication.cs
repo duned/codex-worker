@@ -106,6 +106,8 @@ public static partial class ServerApplication
             issueWriter: githubIssueWriteService, cacheDatabasePath: databasePath,
             logger: services.GetRequiredService<ILogger<ServerGitHubAdministrationService>>()));
         builder.Services.AddSingleton<IServerGitHubAdministrationService>(services => services.GetRequiredService<ServerGitHubAdministrationService>());
+        builder.Services.AddSingleton(services => new ServerArchivedBranchService(clock: services.GetRequiredService<TimeProvider>(),
+            logger: services.GetRequiredService<ILogger<ServerArchivedBranchService>>()));
         builder.Services.AddHostedService<AutomaticIssueDiscoveryService>();
         builder.Services.AddSingleton<IRegistryStore>(services => new SqliteRegistryStore(databasePath, configuration.WorkerStaleAfterSeconds,
             timeProvider: services.GetRequiredService<TimeProvider>(),
@@ -1186,6 +1188,7 @@ public static partial class ServerApplication
             catch (InvalidOperationException ex) { return Results.Conflict(new { reason = ex.Message }); }
         });
         MapExecutionMaintenance(app);
+        MapArchivedBranches(app);
         MapWorkerUpdates(app);
         MapWorkerRelease(app);
         MapWorkerJournal(app);

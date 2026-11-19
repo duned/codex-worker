@@ -133,15 +133,14 @@ test('a denied tool action points at the exact local policy setting', () => {
   assert.equal(model.deniedPolicyHint({ ...denied('dotnet-sdk', 'Update'), diagnostic: 'ProcessFailed' }), undefined);
 });
 
-test('only inspected, integrated branches with an exact tip are offered for deletion', () => {
-  assert.equal(model.deletableBranch({ branch: 'done/feature/1', decision: 'eligible', reason: '', tip: 'a'.repeat(40) }), true);
-  assert.equal(model.deletableBranch({ branch: 'done/feature/1', decision: 'eligible', reason: '' }), false);
-  assert.equal(model.deletableBranch({ branch: 'done/feature/1', decision: 'review', reason: '', tip: 'a'.repeat(40) }), false);
+test('only integrated branches with an exact tip are offered for deletion', () => {
+  assert.equal(model.deletableBranch({ branch: 'done/feature/1', decision: 'eligible', reason: 'integrated', tip: 'a'.repeat(40) }), true);
+  assert.equal(model.deletableBranch({ branch: 'done/feature/1', decision: 'eligible', reason: 'integrated', tip: 'short' }), false);
+  assert.equal(model.deletableBranch({ branch: 'done/feature/1', decision: 'recent', reason: 'newer-than-threshold', tip: 'a'.repeat(40) }), false);
 });
 
-test('branch cleanup prefers a Worker that can delete now', () => {
-  const inspect = { workerId: '1', eligible: true, canApply: false }, apply = { workerId: '2', eligible: true, canApply: true };
-  assert.equal(model.defaultBranchTarget([inspect, apply]).workerId, '2');
-  assert.equal(model.defaultBranchTarget([inspect]).workerId, '1');
-  assert.equal(model.defaultBranchTarget([{ ...inspect, eligible: false }]), undefined);
+test('branch deletions are split into Server-sized requests', () => {
+  const items = Array.from({ length: 205 }, (_, index) => index);
+  assert.deepEqual(model.branchBatches(items).map(batch => batch.length), [100, 100, 5]);
+  assert.deepEqual(model.branchBatches([]), []);
 });
