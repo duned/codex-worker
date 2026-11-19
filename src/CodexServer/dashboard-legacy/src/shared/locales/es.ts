@@ -1,6 +1,5 @@
 import type { TranslationKey } from './en';
 import { api } from './es/api';
-import { branches } from './es/branches';
 import { conflicts } from './es/conflicts';
 import { executions } from './es/executions';
 import { home } from './es/home';
@@ -15,4 +14,4 @@ import { settings } from './es/settings';
 import { shared } from './es/shared';
 import { status } from './es/status';
 import { workers } from './es/workers';
-export const es = { ...api, ...branches, ...conflicts, ...executions, ...home, ...issues, ...maintenance, ...nodes, ...observers, ...projects, ...provisioning, ...server, ...settings, ...shared, ...status, ...workers } satisfies Record<TranslationKey, string>;
+export const es = { ...api, ...conflicts, ...executions, ...home, ...issues, ...maintenance, ...nodes, ...observers, ...projects, ...provisioning, ...server, ...settings, ...shared, ...status, ...workers } satisfies Record<TranslationKey, string>;

@@ -1,4 +1,4 @@
-import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, BranchTargets, BranchOperation, BranchRequest } from './contracts';
+import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, ArchivedBranchPage, ArchivedBranchDeleteResult, BranchSelection } from './contracts';
 import type { Validator } from './client';
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid object.');
@@ -235,49 +235,38 @@ export const workerUpdate: Validator<WorkerUpdate | null> = value => {
   return item as unknown as WorkerUpdate;
 };
 
-// Branch names stay inside the Worker's archive prefix and are valid Git refs; anything else is refused before display.
-const archivedBranchName = (name: unknown) => typeof name === 'string' && name.length <= 250 && /^(done|complete)\/feature\/.+/.test(name) &&
-  !/[\s\x00-\x1f\x7f~^:?*[\\]/.test(name) && !name.includes('..') && !name.includes('@{') && !name.includes('//') && !/[/.]$/.test(name) &&
+// Branch names stay inside the archive prefixes Workers use and are valid Git refs; anything else is refused before display.
+const archivedBranchName = (name: unknown) => typeof name === 'string' && name.length <= 250 && /^(done\/feature|complete\/feature|completed)\/.+/.test(name) &&
+  !/[\s\x00-\x1f\x7f~^:?*[\\%#&]/.test(name) && !name.includes('..') && !name.includes('@{') && !name.includes('//') && !/[/.]$/.test(name) &&
   name.split('/').every(part => !part.startsWith('.') && !part.endsWith('.lock'));
+const commitId = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{40}([a-f0-9]{24})?$/i.test(value);
+const reasonCode = (value: unknown) => typeof value === 'string' && /^[a-z0-9-]{1,60}$/.test(value);
 
-export const branchTargets: Validator<BranchTargets> = value => {
-  const item = fields(value, ['projectId', 'project', 'repository']);
-  if (!Number.isSafeInteger(item.revision) || !Array.isArray(item.targets) || item.targets.length > 200) throw new Error('Invalid branch maintenance targets.');
-  const ids = new Set<string>();
-  item.targets.forEach(value => {
-    const target = fields(value, ['workerId', 'displayName', 'mode'], ['eligible', 'canApply']);
-    const id = String(target.workerId), reasons = [target.reason, target.applyReason];
-    if (ids.has(id) || !(target.mode === 'managed' ? /^[a-f0-9]{32}$/ : target.mode === 'standalone-observer' ? /^obs_[a-f0-9]{32}$/ : /^$/).test(id)
-      || String(target.displayName).length > 200 || target.canApply && !target.eligible
-      || !reasons.every(reason => reason === null || typeof reason === 'string' && /^[a-z0-9-]{1,100}$/.test(reason))
-      || target.eligible !== (target.reason === null) || target.canApply !== (target.applyReason === null)) throw new Error('Invalid branch maintenance target.');
-    ids.add(id);
+/** One page of the Server's archived branch inventory for the project and age this page asked about. */
+export const archivedBranchPage = (projectId: string, olderThanDays: number, offset: number): Validator<ArchivedBranchPage> => value => {
+  const page = fields(value, ['projectId', 'repository', 'baseBranch']);
+  if (page.projectId !== projectId || page.olderThanDays !== olderThanDays || page.offset !== offset || !Number.isSafeInteger(page.total)
+    || Number(page.total) < 0 || !Array.isArray(page.branches) || page.branches.length > 100 || offset + page.branches.length > Number(page.total)) throw new Error('Invalid branch inventory.');
+  const names = new Set<string>();
+  page.branches.forEach(value => {
+    const row = fields(value, ['branch', 'tip', 'decision', 'reason']);
+    if (names.has(String(row.branch)) || !archivedBranchName(row.branch) || !commitId(row.tip) || !reasonCode(row.reason)
+      || !['eligible', 'recent', 'not-integrated', 'unknown'].includes(String(row.decision))
+      || (row.committedAtUtc != null && !Number.isFinite(Date.parse(String(row.committedAtUtc))))
+      || (['eligible', 'recent'].includes(String(row.decision)) && row.committedAtUtc == null)) throw new Error('Invalid branch inventory.');
+    names.add(String(row.branch));
   });
-  return item as unknown as BranchTargets;
+  return page as unknown as ArchivedBranchPage;
 };
 
-/** Validates a branch operation and that the Server echoed exactly the request this page sent. */
-export const branchOperation = (request: BranchRequest): Validator<BranchOperation> => value => {
-  const outer = record(value), operation = record(outer.operation ?? outer), echoed = record(operation.request);
-  const keys = ['operationId', 'workerId', 'project', 'repository', 'projectId', 'projectRevision', 'action', 'apply', 'olderThanDays', 'offset', 'limit', 'timeoutSeconds'] as const;
-  if (typeof operation.status !== 'string' || keys.some(key => echoed[key] !== request[key])) throw new Error('Unexpected branch operation.');
-  const selected = request.branches, returned = echoed.branches;
-  if (selected ? !Array.isArray(returned) || returned.length !== selected.length
-    || selected.some((item, index) => record(returned[index]).branch !== item.branch || record(returned[index]).expectedTip !== item.expectedTip)
-    : returned != null) throw new Error('Unexpected branch selection.');
-  if (operation.report != null) {
-    const report = record(operation.report);
-    optional(report, ['outcome', 'reason']);
-    const rows = report.branches ?? [];
-    if (!Array.isArray(rows) || rows.length > request.limit) throw new Error('Invalid branch inventory.');
-    const names = new Set<string>();
-    rows.forEach(value => {
-      const row = fields(value, ['branch', 'decision', 'reason']);
-      optional(row, ['tip', 'completedAtUtc']);
-      if (names.has(String(row.branch)) || !archivedBranchName(row.branch) || !['eligible', 'skipped', 'review', 'deleted'].includes(String(row.decision))
-        || String(row.reason).length > 300 || selected && !selected.some(item => item.branch === row.branch)) throw new Error('Invalid branch inventory.');
-      names.add(String(row.branch));
-    });
-  }
-  return operation as unknown as BranchOperation;
+/** A deletion result must answer exactly the branches this page selected, in order. */
+export const archivedBranchDeletion = (projectId: string, selected: BranchSelection[]): Validator<ArchivedBranchDeleteResult> => value => {
+  const result = fields(value, ['projectId', 'repository']);
+  if (result.projectId !== projectId || !Array.isArray(result.branches) || result.branches.length !== selected.length) throw new Error('Unexpected branch deletion result.');
+  result.branches.forEach((value, index) => {
+    const row = fields(value, ['branch', 'outcome', 'reason']);
+    if (row.branch !== selected[index].branch || !reasonCode(row.reason)
+      || !['deleted', 'missing', 'changed', 'retained', 'failed', 'not-attempted'].includes(String(row.outcome))) throw new Error('Unexpected branch deletion result.');
+  });
+  return result as unknown as ArchivedBranchDeleteResult;
 };

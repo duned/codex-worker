@@ -39,23 +39,27 @@ test('Server markers refresh on-screen collection and detail reads, never GitHub
   assert.equal(runtime.markerRefreshed('/api/v1/nodes'), false);
 });
 
-test('branch cleanup targets follow the Server projection and reject inconsistent eligibility', () => {
-  const target = { workerId: 'a'.repeat(32), displayName: 'w1', mode: 'managed', eligible: true, reason: null, canApply: false, applyReason: 'worker-drain-required' };
-  const targets = { projectId: 'p', revision: 3, project: 'demo', repository: 'o/r', targets: [target] };
-  assert.equal(validation.branchTargets(targets).targets.length, 1);
-  assert.throws(() => validation.branchTargets({ ...targets, targets: [{ ...target, canApply: true }] }));
-  assert.throws(() => validation.branchTargets({ ...targets, targets: [{ ...target, workerId: 'obs_x' }] }));
-  assert.throws(() => validation.branchTargets({ ...targets, targets: [target, target] }));
+test('archived branch pages must answer the project, age and offset this page asked for', () => {
+  const row = { branch: 'done/feature/1-x', tip: 'c'.repeat(40), committedAtUtc: '2026-09-30T08:45:43Z', decision: 'eligible', reason: 'integrated' };
+  const page = { projectId: 'p', repository: 'o/r', baseBranch: 'main', olderThanDays: 30, offset: 0, total: 1, branches: [row] };
+  const validate = validation.archivedBranchPage('p', 30, 0);
+  assert.equal(validate(page).branches.length, 1);
+  assert.equal(validate({ ...page, branches: [{ ...row, branch: 'completed/2-y', decision: 'not-integrated', reason: 'not-in-base', committedAtUtc: null }] }).branches.length, 1);
+  assert.throws(() => validate({ ...page, olderThanDays: 7 }));
+  assert.throws(() => validate({ ...page, projectId: 'other' }));
+  assert.throws(() => validate({ ...page, total: 0 }));
+  assert.throws(() => validate({ ...page, branches: [{ ...row, branch: 'main' }] }));
+  assert.throws(() => validate({ ...page, branches: [{ ...row, tip: 'xyz' }] }));
+  assert.throws(() => validate({ ...page, branches: [{ ...row, committedAtUtc: null }] }));
+  assert.throws(() => validate({ ...page, branches: [row, row], total: 2 }));
 });
 
-test('branch operations must echo the request and list only archived branches that were selected', () => {
-  const request = { operationId: 'b'.repeat(32), workerId: 'a'.repeat(32), project: 'demo', repository: 'o/r', projectId: 'p', projectRevision: 3,
-    action: 'archived-branches', apply: true, olderThanDays: 30, limit: 100, offset: 0, timeoutSeconds: 300, branches: [{ branch: 'done/feature/1-x', expectedTip: 'c'.repeat(40) }] };
-  const operation = { status: 'succeeded', request, report: { outcome: 'succeeded', branches: [{ branch: 'done/feature/1-x', decision: 'deleted', reason: 'Removed.' }] } };
-  const validate = validation.branchOperation(request);
-  assert.equal(validate({ operation }).status, 'succeeded');
-  assert.throws(() => validate({ operation: { ...operation, request: { ...request, olderThanDays: 1 } } }));
-  assert.throws(() => validate({ operation: { ...operation, request: { ...request, branches: [] } } }));
-  assert.throws(() => validate({ operation: { ...operation, report: { branches: [{ branch: 'main', decision: 'deleted', reason: '' }] } } }));
-  assert.throws(() => validate({ operation: { ...operation, report: { branches: [{ branch: 'done/feature/2-y', decision: 'deleted', reason: '' }] } } }));
+test('archived branch deletions must answer exactly the selected branches', () => {
+  const selected = [{ branch: 'done/feature/1-x', expectedTip: 'c'.repeat(40) }];
+  const result = { projectId: 'p', repository: 'o/r', branches: [{ branch: 'done/feature/1-x', outcome: 'deleted', reason: 'deleted' }] };
+  const validate = validation.archivedBranchDeletion('p', selected);
+  assert.equal(validate(result).branches[0].outcome, 'deleted');
+  assert.throws(() => validate({ ...result, branches: [] }));
+  assert.throws(() => validate({ ...result, branches: [{ branch: 'done/feature/2-y', outcome: 'deleted', reason: 'deleted' }] }));
+  assert.throws(() => validate({ ...result, branches: [{ branch: 'done/feature/1-x', outcome: 'gone', reason: 'deleted' }] }));
 });

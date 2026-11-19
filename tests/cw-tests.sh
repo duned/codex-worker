@@ -37,9 +37,7 @@ MOCK
 cat > "$bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$CW_TEST_ROOT/curl.args"
-if [[ $* == *maintenance/completed-branches* ]]; then
-  cat "$CW_TEST_ROOT/maintenance.json"
-elif [[ $* == *cleanup-inspection* ]]; then
+if [[ $* == *cleanup-inspection* ]]; then
   cat "$CW_TEST_ROOT/inspection.json"
 else
   cat "$CW_TEST_ROOT/projects.json"
@@ -828,38 +826,12 @@ if "$repo_root/cw" execution inspect invalid > /dev/null 2>&1; then
   echo 'execution inspect accepted invalid ID' >&2; exit 1
 fi
 
-printf '%s\n' '{"applied":false,"deleted":0,"skipped":1,"reviewRequired":1,"eligible":1,"branches":[{"branch":"done/example","decision":"eligible","reason":"Integrated","localDeleted":false,"remoteDeleted":false}]}' > "$test_root/maintenance.json"
 export CW_REPO_DIR="$repo_root"
-preview=$("$repo_root/cw" maintenance completed-branches --older-than 30)
-[[ $preview == *'Preview: 0 deleted, 1 skipped, 1 review required, 1 eligible'* ]]
-[[ $(cat "$test_root/curl.args") == *'/api/maintenance/completed-branches'* ]]
-[[ $(cat "$test_root/curl.args") == *'"apply": false'* ]]
-"$repo_root/cw" maintenance completed-branches --older-than 30 --apply > /dev/null
-[[ $(cat "$test_root/curl.args") == *'"apply": true'* ]]
-[[ $(cat "$test_root/curl.args") == *"$repo_root"* ]]
-for args in 'completed-branches' 'completed-branches --older-than 0' 'completed-branches --older-than -1' 'completed-branches --older-than 36501' 'completed-branches --older-than invalid' 'completed-branches --force' 'completed-branches --older-than 30 --limit 0' 'completed-branches --older-than 30 --limit 101' 'unknown'; do
-  if "$repo_root/cw" maintenance $args > /dev/null 2>&1; then
-    echo "maintenance accepted invalid arguments: $args" >&2; exit 1
-  fi
-done
+if "$repo_root/cw" maintenance completed-branches --older-than 30 > /dev/null 2>&1; then
+  echo 'removed maintenance command is still accepted' >&2; exit 1
+fi
 
 echo 'cw tests passed'
 
 bash "$repo_root/tests/cw-cleanup-tests.sh"
 
-"$repo_root/cw" maintenance completed-branches --older-than 30 --limit 1 --json > "$test_root/maintenance-output.json"
-python3 - "$test_root/maintenance-output.json" <<'PYTEST'
-import json,sys
-assert json.load(open(sys.argv[1]))["eligible"] == 1
-PYTEST
-[[ $(cat "$test_root/curl.args") == *'"limit": 1'* ]]
-
-printf '%s\n' '{"applied":true,"deleted":0,"skipped":0,"reviewRequired":1,"eligible":0,"branches":[]}' > "$test_root/maintenance.json"
-if "$repo_root/cw" maintenance completed-branches --older-than 30 --apply --json > "$test_root/maintenance-output.json" 2> "$test_root/maintenance-error"; then
-  echo 'maintenance review result should fail apply' >&2; exit 1
-fi
-grep -Fq 'Some branches require manual review' "$test_root/maintenance-error"
-python3 - "$test_root/maintenance-output.json" <<'PYTEST'
-import json,sys
-assert json.load(open(sys.argv[1]))["reviewRequired"] == 1
-PYTEST

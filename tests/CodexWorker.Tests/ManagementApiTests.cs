@@ -102,12 +102,6 @@ public sealed class ManagementApiTests
             Assert.Equal("[]", await dryRun.Content.ReadAsStringAsync());
             using var undrained = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
             Assert.Equal(HttpStatusCode.Conflict, undrained.StatusCode);
-            using var branchTooBroad = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
-                new CompletedBranchCleanupRequest(directory, 30, Limit: 101));
-            Assert.Equal(HttpStatusCode.BadRequest, branchTooBroad.StatusCode);
-            using var branchUndrained = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
-                new CompletedBranchCleanupRequest(directory, 30, Apply: true));
-            Assert.Equal(HttpStatusCode.Conflict, branchUndrained.StatusCode);
             // A presentation string cannot authorize destructive maintenance.
             model.State = "drained";
             using var falseDrain = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
@@ -115,9 +109,6 @@ public sealed class ManagementApiTests
             model.State = "running";
             using var drain = await client.PostAsync("/api/worker/drain", null);
             Assert.Equal(HttpStatusCode.OK, drain.StatusCode);
-            using var branchWithoutProject = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
-                new CompletedBranchCleanupRequest(directory, 30, Apply: true));
-            Assert.Equal(HttpStatusCode.NotFound, branchWithoutProject.StatusCode);
             Assert.Equal("drained", model.State);
             using var applied = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
             Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
@@ -157,8 +148,6 @@ public sealed class ManagementApiTests
             await AssertStatusAsync("drain-requested", 2, false);
             using var rejected = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
             Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
-            using var branchRejected = await client.PostAsJsonAsync("/api/maintenance/completed-branches", new CompletedBranchCleanupRequest(directory, 1, Apply: true));
-            Assert.Equal(HttpStatusCode.Conflict, branchRejected.StatusCode);
             model.Registry.Release("sample");
             await AssertStatusAsync("drain-requested", 1, false);
             model.Registry.Release("sample");

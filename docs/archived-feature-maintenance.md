@@ -1,36 +1,45 @@
 # Archived feature branch maintenance
 
-Use the authenticated Server `POST /api/v1/maintenance/executions` command endpoint
-with action `archived-branches`. The existing command polling, cancellation, deadline,
-Worker authentication and audit lifecycle applies. Workers must advertise
-`archived-feature-maintenance-v1`.
+Workers preserve integrated work on archived branches (`done/feature/`, `complete/feature/`
+and `completed/`). The Server cleans them up directly on GitHub with its own GitHub login;
+no Worker takes part, so Workers do not need to be drained, online or running the project.
 
-Supply a fresh `operationId`, the configured `workerId`, exact configured project
-name in `project`, exact configured `repository`, `olderThanDays` (1–36500), and
-`limit` (1–100). Execution/assignment identity fields are null. A preview has
-`apply: false` and no `branches`. Poll the operation to read `report.branches`.
-Each item includes its observed tip, correlated completion timestamp, decision and
-retention reason. Only `eligible` items are age-based deletion candidates. Unknown,
-ambiguous, changed or unintegrated history is retained. Inventory is bounded to the
-`limit` archive refs in ordinal order starting at `offset` (0–10000). Preview subsequent
-pages to obtain further eligible refs; inventory is not a repository count. Ref changes
-between pages can change page membership, and every deletion rechecks eligibility.
+## Server cleanup (dashboard)
 
-To delete one or several previewed refs, submit a new command with `apply: true`
-and `branches: [{ "branch": "done/feature/example-17", "expectedTip": "<preview tip>" }]`.
-The selection must fit `limit`. Only `done/feature/` and `complete/feature/` refs
-are accepted. The same age threshold and safety assessment runs again. The Worker
-must be drained with no active executions; Server authority is checked inside the
-repository gate. The operation never accepts executable names, shell text or Git
-arguments. Per-ref results include retained/missing/changed refs and partial
-remote/local deletion outcomes. An uncertain deletion stops further mutations.
+The project page includes **Old branches**. Choose a minimum age, select **Find branches**,
+review the list and confirm the deletion. The Server's GitHub login needs permission to
+delete branches in the project repository (`contents: write`); protected branches are refused
+by GitHub and reported as such.
 
-The project detail dashboard includes **Completed feature branches**. Select a capable
-online Worker, set the minimum completion age, then load an inventory page. Only
-API-eligible archived refs with observed tips can be selected. Deletion requires the
-Worker to be drained with no active assignments and confirmation naming the project
-and selected refs. The dashboard submits one bounded command and displays per-ref
-results before refreshing the inventory. If a command response is lost, check the
-retained operation before starting another action; leaving the project does not
-cancel a Server-owned command. Previous/next controls select an inventory window;
-load it explicitly. Unknown completion ages remain visibly unknown and unselectable.
+A branch is offered for deletion only when GitHub proves its exact tip is already contained in
+the project's base branch (`compare/{base}...{tip}` is `behind` or `identical`), so deleting it
+cannot lose a commit. Age is the tip commit's committer date. Branches with commits that are not
+in the base, newer than the chosen age, or that GitHub could not compare are kept and listed
+with the reason.
+
+API (management authorization required):
+
+- `GET /api/v1/projects/{projectId}/archived-branches?olderThanDays=30&offset=0` returns one
+  page (up to 100) of the archived branches in ordinal order with `total`, and for each one its
+  `tip`, `committedAtUtc`, `decision` (`eligible`, `recent`, `not-integrated`, `unknown`) and a
+  `reason` code. The dashboard pages until `offset` reaches `total`.
+- `POST /api/v1/projects/{projectId}/archived-branches/delete` with
+  `{ "olderThanDays": 30, "branches": [{ "branch": "done/feature/example-17", "expectedTip": "<tip>" }] }`
+  (1–100 branches). Each branch is re-read and re-assessed immediately before deletion: a moved
+  tip is reported as `changed`, a branch that no longer qualifies as `retained`, a missing one as
+  `missing`. The first deletion GitHub refuses stops the remaining ones (`not-attempted`).
+
+GitHub has no compare-and-delete for refs, so a tip that moves between the re-read and the
+delete request is not detected. Workers never move archived branches after creating them, and
+even then the commit that was checked is already in the base branch.
+
+## Upgrading from Worker-run cleanup
+
+Earlier builds asked a Worker to delete archived branches (`archived-branches` maintenance
+commands, the `archived-feature-maintenance-v1` capability, observer branch grants and
+`cw maintenance completed-branches`). That flow is removed: a Worker could only prove branches
+from its own execution history, so most branches were kept for review. On start, the Server
+drops retained `archived-branches` commands and observer grants, and Workers drop their receipts
+for them; other maintenance history is kept. Update the Server before its Workers: a newer Worker
+does not read maintenance commands from an older Server. `reporting.allowBranchMaintenance` is
+still accepted in Worker configuration and ignored.

@@ -87,6 +87,8 @@ public sealed record ObserverExecution(string LocalExecutionId, string Project, 
         value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.');
 }
 
+/// <summary>Obsolete: standalone Workers before Server-side branch cleanup advertised these bindings.
+/// Still accepted from those Workers and from their stored pending snapshots; never acted on.</summary>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ObserverBranchMaintenanceBinding(string Project, string Repository)
 {

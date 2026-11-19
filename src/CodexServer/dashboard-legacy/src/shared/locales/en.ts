@@ -1,6 +1,5 @@
 // One file per screen area keeps unrelated changes from touching the same file.
 import { api } from './en/api';
-import { branches } from './en/branches';
 import { conflicts } from './en/conflicts';
 import { executions } from './en/executions';
 import { home } from './en/home';
@@ -15,5 +14,5 @@ import { settings } from './en/settings';
 import { shared } from './en/shared';
 import { status } from './en/status';
 import { workers } from './en/workers';
-export const en = { ...api, ...branches, ...conflicts, ...executions, ...home, ...issues, ...maintenance, ...nodes, ...observers, ...projects, ...provisioning, ...server, ...settings, ...shared, ...status, ...workers } as const;
+export const en = { ...api, ...conflicts, ...executions, ...home, ...issues, ...maintenance, ...nodes, ...observers, ...projects, ...provisioning, ...server, ...settings, ...shared, ...status, ...workers } as const;
 export type TranslationKey = keyof typeof en;
