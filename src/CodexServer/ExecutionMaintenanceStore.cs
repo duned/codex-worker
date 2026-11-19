@@ -19,43 +19,25 @@ public sealed class ExecutionMaintenanceStore(string databasePath, TimeProvider?
     {
         await using var connection = await OpenAsync(ct);
         using var command = connection.CreateCommand();
+        // Archived branch cleanup moved from Workers to the Server (ServerArchivedBranchService).
+        // Its retained Worker commands and observer grants are dropped, and the obsolete null members
+        // every other retained command carries are removed so it still reads under the strict contract.
         command.CommandText = """
-            CREATE TABLE IF NOT EXISTS observer_branch_maintenance_grants
-                (observer TEXT PRIMARY KEY, project TEXT NOT NULL, repository TEXT NOT NULL);
+            DROP TABLE IF EXISTS observer_branch_maintenance_grants;
             CREATE TABLE IF NOT EXISTS execution_maintenance_commands
                 (id TEXT PRIMARY KEY, worker TEXT NOT NULL, active INTEGER NOT NULL, body TEXT NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS ix_execution_maintenance_active
                 ON execution_maintenance_commands(worker) WHERE active=1;
+            DELETE FROM execution_maintenance_commands
+                WHERE json_valid(body) AND json_extract(body, '$.Request.Action') = 'archived-branches';
+            UPDATE execution_maintenance_commands SET body = json_remove(body,
+                '$.Request.OlderThanDays', '$.Request.Branches', '$.Request.Repository',
+                '$.Request.ProjectId', '$.Request.ProjectRevision', '$.Report.Branches')
+                WHERE json_valid(body) AND (json_type(body, '$.Request.OlderThanDays') IS NOT NULL
+                    OR json_type(body, '$.Request.Branches') IS NOT NULL OR json_type(body, '$.Request.Repository') IS NOT NULL
+                    OR json_type(body, '$.Report.Branches') IS NOT NULL);
             """;
         await command.ExecuteNonQueryAsync(ct);
-    }
-
-    public async Task SetObserverBranchGrantAsync(string observer, ObserverBranchMaintenanceBinding? binding, CancellationToken ct = default)
-    {
-        if (!ObserverProtocol.ValidIdentity(observer) || binding is not null && !binding.IsValid())
-            throw new InvalidDataException("Invalid observer branch maintenance grant.");
-        await using var connection = await OpenAsync(ct);
-        using var command = connection.CreateCommand();
-        command.CommandText = binding is null ? "DELETE FROM observer_branch_maintenance_grants WHERE observer=$observer" :
-            "INSERT INTO observer_branch_maintenance_grants VALUES($observer,$project,$repository) ON CONFLICT(observer) DO UPDATE SET project=excluded.project,repository=excluded.repository";
-        command.Parameters.AddWithValue("$observer", observer);
-        if (binding is not null)
-        {
-            command.Parameters.AddWithValue("$project", binding.Project);
-            command.Parameters.AddWithValue("$repository", binding.Repository);
-        }
-        await command.ExecuteNonQueryAsync(ct);
-    }
-
-    public async Task<bool> HasObserverBranchGrantAsync(ExecutionMaintenanceRequest request, CancellationToken ct = default)
-    {
-        await using var connection = await OpenAsync(ct);
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM observer_branch_maintenance_grants WHERE observer=$observer AND project=$project AND repository=$repository";
-        command.Parameters.AddWithValue("$observer", request.WorkerId);
-        command.Parameters.AddWithValue("$project", (object?)request.Project ?? DBNull.Value);
-        command.Parameters.AddWithValue("$repository", (object?)request.Repository ?? DBNull.Value);
-        return Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     public async Task<ExecutionMaintenanceCommand> CreateAsync(ExecutionMaintenanceRequest request, string actor, CancellationToken ct = default)
@@ -94,7 +76,7 @@ public sealed class ExecutionMaintenanceStore(string databasePath, TimeProvider?
 
     public async Task<IReadOnlyList<ExecutionMaintenanceCommand>> ListAsync(string? worker, int limit, int offset, CancellationToken ct = default)
     {
-        if (limit is < 1 or > 100 || offset is < 0 or > 10_000 || worker is not null && !Guid.TryParseExact(worker, "N", out _) && !ObserverProtocol.ValidIdentity(worker))
+        if (limit is < 1 or > 100 || offset is < 0 or > 10_000 || worker is not null && !Guid.TryParseExact(worker, "N", out _))
             throw new InvalidDataException("Invalid maintenance inventory bounds or Worker identity.");
         await using var connection = await OpenAsync(ct);
         using var command = connection.CreateCommand();
@@ -160,10 +142,6 @@ public sealed class ExecutionMaintenanceStore(string databasePath, TimeProvider?
             return Visible(operation);
         }
         if (operation.Status != "running") throw new InvalidOperationException("Maintenance was not dispatched.");
-        if (report.Branches is not null && (operation.Request.Action != "archived-branches" ||
-            report.Branches.Count > operation.Request.Limit || report.Branches.Select(b => b.Branch).Distinct(StringComparer.Ordinal).Count() != report.Branches.Count ||
-            operation.Request.Branches is { } selected && report.Branches.Any(b => !selected.Any(s => s.Branch == b.Branch))))
-            throw new InvalidDataException("Invalid archived branch report scope.");
         if (report.Observations.Count > operation.Request.Limit || operation.Request.Action != "inventory" && report.Observations.Count > 1)
             throw new InvalidDataException("Observation exceeds the requested maintenance bound.");
         if (operation.Request.Action != "inventory" && report.Observations.Any(o => o.ExecutionId != operation.Request.WorkerExecutionId ||

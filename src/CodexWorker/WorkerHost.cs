@@ -213,7 +213,6 @@ public sealed class WorkerHost
             {
                 var project = CreateRuntime(path, config, telegram, history, repositoryGates, ct,
                     engine => Volatile.Read(ref heartbeatCapabilities).Any(capability => capability.Type == "agent-provider" && capability.Name == engine));
-                runtimeReadModel.CompletedBranchMaintenance.Register(config, project.Git, project.RepositoryGate);
                 runtimes.Add(project);
                 allRuntimes.Add(project);
             }
@@ -538,7 +537,6 @@ public sealed class WorkerHost
                         {
                             var project = CreateRuntime(path, configuration, telegram, history, repositoryGates, ct,
                                 engine => Volatile.Read(ref heartbeatCapabilities).Any(capability => capability.Type == "agent-provider" && capability.Name == engine));
-                            runtimeReadModel.CompletedBranchMaintenance.Register(configuration, project.Git, project.RepositoryGate);
                             replacement.Add(project);
                             allRuntimes.Add(project);
                         }

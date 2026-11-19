@@ -76,40 +76,12 @@ A Server outage or reporting rejection never changes local scheduling, execution
 
 The optional `reporting` block in [worker.example.yml](../config/worker.example.yml) configures only interval and credential location; adding it alone does not enable reporting. Changing those YAML settings requires the usual Worker restart. Connect/disconnect does not.
 
-### Authorized standalone branch maintenance
+### Archived branch cleanup
 
-The project dashboard's completed-branch picker uses
-`GET /api/v1/projects/{projectId}/branch-maintenance-targets`. This bounded projection includes
-up to 100 managed Workers and 100 standalone entries, identifies their ownership mode, and returns
-separate inventory/deletion eligibility and refusal reasons. Standalone eligibility uses the same
-explicit grant, advertised project/repository capability and freshness checks as maintenance dispatch.
-Dashboard requests retain the chosen Worker, project ID/revision and repository through confirmation;
-changed project revisions or bindings are rejected by Server before dispatch. Refresh targets and
-preview again after a refusal. An uncertain operation must be inspected before starting another.
-
-Observers remain read-only by default. To enable only completed feature branch maintenance, set
-`reporting.allowBranchMaintenance: true` locally and restart the standalone Worker. This advertises
-up to 100 configured project/repository pairs in snapshots; it does not enable managed scheduling.
-A Server administrator must separately `PUT /api/v1/observers/{observerId}/branch-maintenance` with
-`{"project":"<configured project name>","repository":"<owner/repository>"}` using management authentication.
-Each observer has one grant; another PUT replaces it. DELETE on that route revokes the grant.
-Pairing and status reporting alone never grant maintenance authority.
-
-Use the existing `/api/v1/maintenance/executions` contract with `workerId` set to the exact observer ID,
-`action: "archived-branches"`, matching `project` and `repository`, `olderThanDays`, and bounded
-`limit`/`offset` to inventory/preview. Apply requires explicit `branches` entries containing `branch`
-and the preview's `expectedTip`; only the existing `done/feature/` and `complete/feature/` classification
-is supported. Locally drain the Worker and wait for zero active executions before requesting apply.
-The Server requires a fresh capability snapshot, and the Worker checks its current configuration,
-local drain and repository gate before confirming Server authorization. Other maintenance actions
-remain unavailable to observers. No local paths or Git credentials are part of this contract.
-
-Inspect the retained operation after cancellation, timeout or lost responses. Undispatched requests
-can be cancelled through the existing cancel route. Dispatched effects are never automatically replayed;
-the Worker durably retains and resends its report, including per-branch partial results. Interrupted
-operations require inspection of current refs before a new preview/apply. An outage never reroutes the
-operation to another Worker or repository. Disabling the local opt-in stops polling; retain local
-history and reconnect to deliver outstanding receipts before abandoning an observer identity.
+Workers no longer delete archived branches. The Server cleans them up on GitHub with its own login,
+for managed and standalone projects alike; see [archived feature branch maintenance](archived-feature-maintenance.md).
+Observers stay read-only. Older standalone Workers may still send `reporting.allowBranchMaintenance`
+bindings in their snapshots; the Server accepts and ignores them.
 
 ## Communication and connectivity loss
 

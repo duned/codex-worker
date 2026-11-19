@@ -1181,7 +1181,7 @@ public static partial class ServerApplication
             var maintenance = new CodexProvisioning.ExecutionMaintenanceRequest(request.OperationId, execution.AssignedWorkerId, execution.Id,
                 workerExecutionId, execution.AssignmentId, execution.Lease?.Generation, CodexProvisioning.ExecutionMaintenanceProtocol.ManualCompletion, Apply: true);
             if (!CodexProvisioning.ExecutionMaintenanceProtocol.Valid(maintenance)) return Results.Conflict(new { reason = "invalid-maintenance-scope" });
-            var reason = await MaintenanceAuthorityReasonAsync(maintenance, registry, context.RequestAborted, clock, commands, settings.WorkerStaleAfterSeconds);
+            var reason = await MaintenanceAuthorityReasonAsync(maintenance, registry, context.RequestAborted, clock);
             if (reason is not null) return Results.Conflict(new { reason });
             try { return Results.Accepted($"/api/v1/maintenance/executions/{request.OperationId}",
                 await commands.CreateAsync(maintenance, $"server-management:{context.TraceIdentifier}", context.RequestAborted)); }

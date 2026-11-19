@@ -7,6 +7,8 @@ using System.Text.Json.Serialization;
 public sealed class StandaloneReportingSettings
 {
     public string CredentialFile { get; set; } = "~/.codex-worker/observer.json";
+    /// <summary>Obsolete and ignored: the Server now cleans up archived branches itself.
+    /// Kept so existing configuration files that still set it continue to load.</summary>
     public bool AllowBranchMaintenance { get; set; }
     public int IntervalSeconds { get; set; } = 30;
     internal void ResolveAndValidate(string configurationPath)

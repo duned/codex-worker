@@ -33,12 +33,13 @@ GitHub has no compare-and-delete for refs, so a tip that moves between the re-re
 delete request is not detected. Workers never move archived branches after creating them, and
 even then the commit that was checked is already in the base branch.
 
-## Worker-run cleanup (legacy)
+## Upgrading from Worker-run cleanup
 
-The previous flow, kept for the legacy dashboard under `/old/` and for local Worker
-administration, dispatched an `archived-branches` command through
-`POST /api/v1/maintenance/executions` to a Worker advertising `archived-feature-maintenance-v1`.
-That Worker only deletes branches it can match to a single completed entry of its **own**
-execution history with the exact commit, so branches created by other Workers, before a
-reinstall, or under a renamed Issue are always kept for review. It also requires a drained
-Worker. Prefer the Server cleanup above.
+Earlier builds asked a Worker to delete archived branches (`archived-branches` maintenance
+commands, the `archived-feature-maintenance-v1` capability, observer branch grants and
+`cw maintenance completed-branches`). That flow is removed: a Worker could only prove branches
+from its own execution history, so most branches were kept for review. On start, the Server
+drops retained `archived-branches` commands and observer grants, and Workers drop their receipts
+for them; other maintenance history is kept. Update the Server before its Workers: a newer Worker
+does not read maintenance commands from an older Server. `reporting.allowBranchMaintenance` is
+still accepted in Worker configuration and ignored.

@@ -795,6 +795,26 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 migration.ExecuteNonQuery();
             }
 
+            {
+                // Every migration above has run, so the receipts table exists.
+                // Archived branch cleanup moved to the Server. Drop its receipts and the obsolete null
+                // members other receipts carry, so they still read under the strict command contract.
+                // Idempotent and schema-neutral: an older Worker reads the result unchanged.
+                using var cleanup = connection.CreateCommand();
+                cleanup.Transaction = transaction;
+                cleanup.CommandText = """
+                    DELETE FROM execution_maintenance_receipts
+                        WHERE json_valid(body) AND json_extract(body, '$.Command.Request.Action') = 'archived-branches';
+                    UPDATE execution_maintenance_receipts SET body = json_remove(body,
+                        '$.Command.Request.OlderThanDays', '$.Command.Request.Branches', '$.Command.Request.Repository',
+                        '$.Command.Request.ProjectId', '$.Command.Request.ProjectRevision', '$.Command.Report.Branches', '$.Report.Branches')
+                        WHERE json_valid(body) AND (json_type(body, '$.Command.Request.OlderThanDays') IS NOT NULL
+                            OR json_type(body, '$.Command.Request.Branches') IS NOT NULL OR json_type(body, '$.Command.Request.Repository') IS NOT NULL
+                            OR json_type(body, '$.Command.Report.Branches') IS NOT NULL OR json_type(body, '$.Report.Branches') IS NOT NULL);
+                    """;
+                cleanup.ExecuteNonQuery();
+            }
+
             transaction.Commit();
         }
         catch (WorkerInfrastructureException) { throw; }

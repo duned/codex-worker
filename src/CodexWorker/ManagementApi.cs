@@ -121,12 +121,10 @@ public sealed class WorkerRuntimeReadModel
         _repositoryGates = repositoryGates ?? new(StringComparer.OrdinalIgnoreCase);
         Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
         _registry = new ProjectRuntimeRegistry(projects, Events, _lifecycle);
-        CompletedBranchMaintenance = new CompletedBranchMaintenanceService(_registry, history);
         StandaloneMaintenance = new(history, _registry, ExecutionCleanup, global.Server.Enabled || global.Projects.Ownership == "managed");
     }
 
     internal StandaloneExecutionMaintenance StandaloneMaintenance { get; }
-    public CompletedBranchMaintenanceService CompletedBranchMaintenance { get; }
     public RuntimeEventLog Events { get; }
     public ProjectRuntimeRegistry Registry => _registry;
     public WorkerLifecycle Lifecycle => _lifecycle;
@@ -400,24 +398,6 @@ public static class ManagementApi
                 catch (InvalidDataException ex) { return (IResult)Results.BadRequest(new { error = ex.Message }); }
             });
         }
-        app.MapPost("/api/maintenance/completed-branches", async (CompletedBranchCleanupRequest request, WorkerRuntimeReadModel model, HttpContext context) =>
-        {
-            if (request.Apply && !model.Registry.WorkerDrainComplete)
-                return (IResult)Results.Conflict(new { error = "Wait for the running Worker to complete its drain before applying cleanup." });
-            try
-            {
-                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, app.Lifetime.ApplicationStopping);
-                deadline.CancelAfter(TimeSpan.FromMinutes(10));
-                return await model.CompletedBranchMaintenance.CleanupAsync(request, deadline.Token) is { } result
-                    ? (IResult)Results.Ok(result) : Results.NotFound(new { error = "No unique current Worker project matches this checkout." });
-            }
-            catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
-            { return Results.BadRequest(new { error = "Invalid maintenance request or unverifiable Git refs; cleanup refused." }); }
-            catch (InvalidOperationException ex)
-            { return Results.Conflict(new { error = ex.Message }); }
-            catch (WorkerInfrastructureException)
-            { return Results.Conflict(new { error = "Repository refresh or verification failed; cleanup could not complete. Inspect repository state before retrying." }); }
-        });
         app.MapGet("/api/executions", async (int? limit, WorkerRuntimeReadModel model, HttpContext context) =>
             Results.Ok(await model.ExecutionsAsync(limit ?? 100, context.RequestAborted)));
         app.MapGet("/api/recovery/blocked", async (int? issueNumber, Guid? executionId, string? reasonCode, int? limit, int? offset,

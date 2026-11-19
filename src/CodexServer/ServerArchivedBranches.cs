@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 public sealed record ArchivedBranchItem(string Branch, string Tip, DateTimeOffset? CommittedAtUtc, string Decision, string Reason);
 public sealed record ArchivedBranchInventory(string ProjectId, string Repository, string BaseBranch, int OlderThanDays,
     int Offset, int Total, IReadOnlyList<ArchivedBranchItem> Branches);
+public sealed record ArchivedBranchSelection(string Branch, string ExpectedTip);
 public sealed record ArchivedBranchDeleteRequest(int OlderThanDays, IReadOnlyList<ArchivedBranchSelection>? Branches);
 /// <summary>Outcome is deleted, missing, changed, retained, failed or not-attempted.</summary>
 public sealed record ArchivedBranchDeleteItem(string Branch, string Outcome, string Reason);
