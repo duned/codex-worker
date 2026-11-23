@@ -610,7 +610,7 @@ public sealed class WorkerUpdateTests
     [Fact]
     public void RequiredCapabilitiesIgnoreScopeChangesButNameMissingCapabilities()
     {
-        string[] required = ["agent-readiness/ccc/ready", "authentication/git-repository/owner/repo", "tool/codex-cli/", "agent-provider/ccc/"];
+        string[] required = ["protocol/archived-feature-maintenance-v1/", "agent-readiness/ccc/ready", "authentication/git-repository/owner/repo", "tool/codex-cli/", "agent-provider/ccc/"];
         WorkerCapability[] current = [new("agent-readiness", "ccc", Scope: "absent"), new("authentication", "git-repository", Scope: "owner/other"),
             new("tool", "codex-cli", Version: "0.99.0")];
         Assert.Equal(["agent-provider/ccc"], SqliteRegistryStore.MissingCapabilities(required, current));
