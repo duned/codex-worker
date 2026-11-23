@@ -532,7 +532,15 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
                 if (add >= 0) intendedLabels.Add(arguments[add + 1]);
                 var intendedOpen = arguments[1] == "close" ? false : before.IsOpen;
                 if (current.IsOpen == intendedOpen && intendedLabels.SetEquals(current.Labels)) return true;
-                if (current.IsOpen == before.IsOpen && before.Labels.ToHashSet(StringComparer.Ordinal).SetEquals(current.Labels)) return false;
+                // GitHub applies label removal and addition as separate writes, so a failed edit can leave
+                // only part of this transition applied. Any state between "before" and "intended" that
+                // changes nothing else is safe to replay: both label operations are idempotent.
+                var unchangedLabels = before.Labels.ToHashSet(StringComparer.Ordinal);
+                unchangedLabels.IntersectWith(intendedLabels);
+                var touchedLabels = before.Labels.ToHashSet(StringComparer.Ordinal);
+                touchedLabels.SymmetricExceptWith(intendedLabels);
+                if (current.IsOpen == before.IsOpen && unchangedLabels.IsSubsetOf(current.Labels) &&
+                    current.Labels.All(label => unchangedLabels.Contains(label) || touchedLabels.Contains(label))) return false;
                 throw new GitHubOperationException(DescribeOperation(arguments), number, true,
                     GitHubFailureKind.Unknown, GitHubRemoteState.Uncertain,
                     "Unexpected remote Issue state; manual reconciliation is required.");
