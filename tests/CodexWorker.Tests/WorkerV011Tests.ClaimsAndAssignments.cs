@@ -152,6 +152,24 @@ public sealed partial class WorkerV011Tests
         Assert.Equal("preparation-failed", entries.Single(entry => entry.State == "Blocked").RecoveryState);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void NewAssignmentForSameIssueSupersedesClaimStageUncertainMutationOnly()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var claim = new ExecutionHistoryEntry(Guid.NewGuid(), "Test Project", "owner/repo", 107, "Example task",
+            "feature/107-example-task", "main", now.AddMinutes(-10), now.AddMinutes(-9),
+            "InfrastructureFailure", 1000, null, null, 0, [], null, null, null, "Unexpected remote Issue state; manual reconciliation is required.")
+            with { RecoveryState = GitHubOperationException.ReconciliationRequiredState };
+        Assert.True(WorkerHost.SupersededByAssignment(claim, 107));
+        // Other Issues, startup reconciliation and executions with work to preserve keep requiring inspection.
+        Assert.False(WorkerHost.SupersededByAssignment(claim, 108));
+        Assert.False(WorkerHost.SupersededByAssignment(claim, null));
+        Assert.False(WorkerHost.SupersededByAssignment(claim with { ValidationOutcome = "passed" }, 107));
+        Assert.False(WorkerHost.SupersededByAssignment(claim with { RecoveryState = "uncertain" }, 107));
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]

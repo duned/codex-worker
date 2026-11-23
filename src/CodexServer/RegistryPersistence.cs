@@ -970,16 +970,18 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         }
 
         command.Parameters.Clear();
-        command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state) VALUES ($id, $projectId, $workType, $workId, $workReference, $created, 'Queued');";
+        // A new request for work that already ran (for example "Retry from scratch") is the next attempt of that work.
+        command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state, attempt_number) VALUES ($id, $projectId, $workType, $workId, $workReference, $created, 'Queued', (SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM execution_requests WHERE project_id=$projectId AND work_type=$workType AND work_id=$workId)) RETURNING attempt_number;";
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$projectId", request.ProjectId);
         command.Parameters.AddWithValue("$workType", canonicalWork.Type);
         command.Parameters.AddWithValue("$workId", canonicalWork.Id);
         command.Parameters.AddWithValue("$workReference", JsonSerializer.Serialize(canonicalWork, ProjectJson));
         command.Parameters.AddWithValue("$created", now.ToString("O"));
+        var attemptNumber = 1;
         try
         {
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            attemptNumber = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture);
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
@@ -988,7 +990,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         }
         await transaction.CommitAsync(cancellationToken);
         ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "enqueue", "accepted", request.ProjectId, diagnosticWork, id);
-        return new(id, request.ProjectId, canonicalWork, now, "Queued", null, null, null);
+        return new(id, request.ProjectId, canonicalWork, now, "Queued", null, null, null) { AttemptNumber = attemptNumber };
     }
 
     public async Task<ExecutionRequest?> UpdateManagedEligibilityAsync(string executionRequestId, ManagedEligibilityUpdate update,
@@ -2194,7 +2196,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         if (updated == 1 && !reconciliation && report is { State: "Failed", FailureClassification: "IntegrationConflict", IntegrationResult: CodexProvisioning.ManagedIntegrationResults.RebaseConflict } &&
-            previous is { AttemptNumber: 1, RetryOfExecutionId: null })
+            previous is { RetryOfExecutionId: null })
             await QueueFreshAttemptAfterRebaseConflictAsync(command, executionRequestId, cancellationToken);
         await using var read = connection.CreateCommand();
         read.Transaction = (SqliteTransaction)transaction;
