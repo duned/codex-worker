@@ -127,12 +127,17 @@ public sealed partial class SqliteRegistryStore
                 RetryOfOperationId = operation.OperationId, State = "waiting-for-idle", RequestedAtUtc = now, DeadlineUtc = now.AddHours(24),
                 StartedAtUtc = null, InstallerVerified = false, Recovery = null, Diagnostic = "retry-managed-update" };
         }
+        // A timed-out operation whose Worker is back, idle, on the expected version and (for a restart) a new
+        // instance, with every recovery check satisfied, is reconciled automatically: this is exactly what the
+        // operator's "Accept current state" verifies. Explicit Worker failures still require the operator.
+        var automaticReconciliation = action == "poll" && operation is { State: "failed", DrainReleasedAtUtc: null } &&
+            operation.Diagnostic?.StartsWith("timeout-", StringComparison.Ordinal) == true && recovery.Eligible;
         if (action == "reconcile" && operation?.State == "succeeded")
         {
             await transaction.CommitAsync(ct);
             return operation;
         }
-        if (action == "reconcile")
+        if (action == "reconcile" || automaticReconciliation)
         {
             if (operation?.DrainReleasedAtUtc is not null || !recovery.Eligible) throw new WorkerUpdateRecoveryException(recovery);
             if (operation is null || heartbeat is null) throw new InvalidOperationException("worker-update-unavailable");
@@ -150,7 +155,8 @@ public sealed partial class SqliteRegistryStore
             heartbeat.ConfigurationSynchronization == "synchronized" && heartbeat.ContractVersion is 1 or 2 &&
             MissingCapabilities(operation.RequiredCapabilities, heartbeat.Capabilities).Count == 0)
         {
-            operation = operation with { State = "succeeded", Diagnostic = action == "reconcile" ? $"reconciled:{heartbeat.WorkerVersion}:{operation.Diagnostic}" : "ready" };
+            operation = operation with { State = "succeeded", Diagnostic = action == "reconcile" ? $"reconciled:{heartbeat.WorkerVersion}:{operation.Diagnostic}"
+                : automaticReconciliation ? $"auto-reconciled:{heartbeat.WorkerVersion}:{operation.Diagnostic}" : "ready" };
             if (operation.OwnsDrain && policy == WorkerSchedulingPolicy.Draining)
             {
                 command.CommandText = "UPDATE workers SET scheduling_policy=$policy WHERE worker_id=$worker;";

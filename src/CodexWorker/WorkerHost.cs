@@ -581,10 +581,20 @@ public sealed class WorkerHost
                             var entry = await history.ReadExecutionAsync(command.Request.WorkerExecutionId ?? Guid.Empty, token);
                             var project = runtimes.SingleOrDefault(p => p.Configuration.Project.Name == entry?.Project &&
                                 p.Configuration.Project.Repository == entry.Repository);
-                            return project is null ? new("refused", "project-unavailable", []) :
-                                command.Request.Action == ExecutionMaintenanceProtocol.ManualCompletion
-                                    ? await project.Worker.CompleteManuallyAsync(command, authorize, token)
-                                    : await project.Worker.ReconcileManagedCompletionAsync(command, authorize, token);
+                            if (project is null) return new("refused", "project-unavailable", []);
+                            var outcome = command.Request.Action == ExecutionMaintenanceProtocol.ManualCompletion
+                                ? await project.Worker.CompleteManuallyAsync(command, authorize, token)
+                                : await project.Worker.ReconcileManagedCompletionAsync(command, authorize, token);
+                            // The operator resolved the completion that paused this project; resume it unless it
+                            // is paused for another execution.
+                            if (outcome.Outcome == "succeeded" && outcome.Reason is "completion-reconciled" or "manually-completed" &&
+                                runtimeReadModel.Registry.Get(project.Configuration.Project.Name) is { State: ProjectLifecycleState.Unavailable } paused &&
+                                paused.UnavailableReason?.Contains(entry!.ExecutionId.ToString(), StringComparison.OrdinalIgnoreCase) == true)
+                            {
+                                runtimeReadModel.Registry.Enable(project.Configuration.Project.Name);
+                                _operationalLog($"Scheduler · {project.Configuration.Project.Name} · execution {entry.ExecutionId} · completion resolved by the operator · project scheduling resumed.");
+                            }
+                            return outcome;
                         }))
                     continue;
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining &&
