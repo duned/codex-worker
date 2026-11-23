@@ -7,7 +7,7 @@ import type { Validator } from '../shared/api/client';
 import { diagnostics as validateDiagnostics, record, worker as validateWorker } from '../shared/api/validation';
 import { useExecutions, useNodes } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { isActive, isOnline, scheduling, schedulingTone, slots } from '../shared/model';
+import { isActive, isOnline, scheduling, schedulingBlockerText, schedulingTone, slots } from '../shared/model';
 import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Tile, CopyValue } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow } from './ExecutionRow';
 import { WorkerMaintenance } from './WorkerMaintenance';
@@ -47,7 +47,7 @@ export function WorkerPage() {
     catch (error) { setLog({ state: error instanceof Error ? error.message : t('common.loadFailed'), lines: [] }); }
     finally { setLoadingLog(false); }
   }
-  const blockers = [...(diagnostics.data?.reasons ?? []), ...(worker.schedulingBlocker ? [worker.schedulingBlocker] : [])];
+  const blockers = [...(diagnostics.data?.reasons ?? []), ...(worker.schedulingBlocker ? [schedulingBlockerText(worker.schedulingBlocker)] : [])];
 
   return <>
     <PageHeader crumbs={[{ label: t('nav.workers'), to: '/workers' }, { label: worker.displayName || worker.workerId.slice(0, 8) }]}

@@ -78,7 +78,7 @@ public static class WorkerDiagnosticsDerivation
         if (worker.ManagedDiagnostics is { } managed)
         {
             if (managed.DiagnosticCode is { } code) reasons.Add($"Worker managed configuration: {managed.FailureStage} ({code})");
-            foreach (var observation in managed.Projects.Where(item => item.State is "blocked" or "failed" or "materializing" or "not-materialized"))
+            foreach (var observation in managed.Projects.Where(item => item.State is "blocked" or "failed"))
                 reasons.Add($"Worker-observed project {observation.ProjectId}, revision {observation.Revision}: {observation.State}" +
                     (observation.DiagnosticCode is null ? "" : $" ({observation.DiagnosticCode})"));
         }

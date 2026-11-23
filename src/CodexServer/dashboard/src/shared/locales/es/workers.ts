@@ -8,6 +8,7 @@ export const workers = {
   "workers.slotsTitle": "{used} de {total} huecos ocupados", "workers.slotsUsed": "{used} de {total} ocupados", "workers.slotsFree": "{n} libres para issues nuevas",
   "workers.pause": "Pausar planificación", "workers.resume": "Reanudar planificación", "workers.pausedDone": "Planificación pausada. Termina lo que tiene y no recoge issues nuevas.",
   "workers.resumed": "Planificación reanudada.", "workers.edit": "Editar Worker", "workers.whyBlocked": "Por qué no acepta trabajo",
+  "workers.blocker.worker-operation-unresolved": "Un reinicio o una actualización no ha terminado. Resuélvelo en Reinicio y actualizaciones.",
   "workers.blockedReason": "Está en línea pero no está listo para ejecutar issues.", "workers.offlineReason": "Ha dejado de enviar señales al servidor.",
   "workers.sections": "Secciones del Worker", "workers.tabWork": "Trabajo", "workers.tabDiagnostics": "Diagnóstico", "workers.now": "Ahora mismo",
   "workers.nothingNowAccepting": "Sin trabajo asignado. Recogerá la siguiente issue lista de sus proyectos.", "workers.nothingNow": "Sin trabajo asignado.",

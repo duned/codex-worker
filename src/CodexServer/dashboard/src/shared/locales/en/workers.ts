@@ -7,6 +7,7 @@ export const workers = {
   "workers.slotsTitle": "{used} of {total} slots in use", "workers.slotsUsed": "{used} of {total} in use", "workers.slotsFree": "{n} free for new Issues",
   "workers.pause": "Pause scheduling", "workers.resume": "Resume scheduling", "workers.pausedDone": "Scheduling paused. Current work finishes; no new Issues.",
   "workers.resumed": "Scheduling resumed.", "workers.edit": "Edit Worker", "workers.whyBlocked": "Why it cannot take work",
+  "workers.blocker.worker-operation-unresolved": "A restart or update has not finished. Resolve it under Restart and updates.",
   "workers.blockedReason": "It is online but not ready to run Issues.", "workers.offlineReason": "It has stopped sending signals to the Server.",
   "workers.sections": "Worker sections", "workers.tabWork": "Work", "workers.tabDiagnostics": "Diagnostics", "workers.now": "Right now",
   "workers.nothingNowAccepting": "Nothing assigned. It will pick up the next ready Issue of its projects.", "workers.nothingNow": "Nothing assigned.",

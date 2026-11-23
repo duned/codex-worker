@@ -4,7 +4,7 @@ import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
 import { useExecutions, useNames, useWorkers } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { attention, executionActions, explain, isActive, isOnline, issueNumber, scheduling } from '../shared/model';
+import { attention, executionActions, explain, isActive, isOnline, issueNumber, scheduling, schedulingBlockerText } from '../shared/model';
 import { Card, Empty, Filters, matches, Notice, PageHeader, ReadState, Row, Rows } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow, executionLabel } from './ExecutionRow';
 
@@ -47,7 +47,7 @@ export function HomePage() {
       })}
       {troubled.map(worker => <Row key={worker.workerId} className="grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto]">
         <div><div className="font-medium text-primary">{t('home.workerCannotWork', { worker: worker.displayName || worker.workerId })}</div>
-          <div className="text-sm text-secondary">{worker.schedulingBlocker ?? t(isOnline(worker) ? 'workers.blockedReason' : 'workers.offlineReason')}</div></div>
+          <div className="text-sm text-secondary">{(worker.schedulingBlocker && schedulingBlockerText(worker.schedulingBlocker)) ?? t(isOnline(worker) ? 'workers.blockedReason' : 'workers.offlineReason')}</div></div>
         <Button size="sm" color="secondary" href={`/workers/${encodeURIComponent(worker.workerId)}`}>{t('actions.viewWorker')}</Button>
       </Row>)}
     </Rows></Card>}
