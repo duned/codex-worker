@@ -403,7 +403,11 @@ public sealed class WorkerHost
                     capability => capability.Type == "authentication")).Distinct().ToArray();
                 await InitializeProjectsAsync(token);
                 await claudeReadiness.RefreshAsync(token);
+                _output.ToolsRefreshed((await _registration.InventoryDiscovery.GetAsync(cancellationToken: token))
+                    .FirstOrDefault(state => state.Id == "codex-cli")?.DetectedVersion);
                 agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, true, token);
+                if (agentReady) _output.CodexPreflightReady();
+                else _output.Warning(readiness.DiagnosticCode ?? "Codex preflight did not succeed; retrying automatically.");
                 await PublishReadinessAsync(token);
             }
             await PublishReadinessAsync(ct);
@@ -582,7 +586,8 @@ public sealed class WorkerHost
                 {
                     var registration = _registration;
                     if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning,
-                        executionToken, RevokeReadinessAsync))
+                        executionToken, RevokeReadinessAsync,
+                        token => ReportProvisionedCapabilitiesAsync(Volatile.Read(ref heartbeatCapabilities), token)))
                     {
                         await RefreshProvisionedReadinessAsync(executionToken);
                         continue;

@@ -636,7 +636,8 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
     }
 
     public async Task<bool> ExecuteProvisioningCommandAsync(WorkerServerSettings settings, ProvisioningPolicy policy,
-        CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeCapabilityMutation = null)
+        CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeCapabilityMutation = null,
+        Func<CancellationToken, Task>? beforeTerminalReport = null)
     {
         if (!settings.Enabled) return false;
         var workerId = await LoadRegisteredIdentityAsync(settings, cancellationToken);
@@ -681,6 +682,13 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
         }
         var result = await new NodeProvisioningCommandExecutor(InventoryDiscovery)
             .ExecuteAsync(command, permitted, cancellationToken, ReportAsync, decision.FailureCode);
+        // Publish the re-detected tool inventory before the terminal report, so a dashboard
+        // that stops following the command when it settles already reads the new versions.
+        if (permitted && beforeTerminalReport is not null)
+        {
+            try { await beforeTerminalReport(cancellationToken); }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested) { }
+        }
         // A terminal acknowledgement is safe to resend; execution itself is never retried.
         await ReportAsync(result, cancellationToken);
         return true;

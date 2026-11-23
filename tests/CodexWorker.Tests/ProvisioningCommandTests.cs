@@ -383,7 +383,13 @@ public sealed class ProvisioningCommandTests
             });
             var registration = new WorkerRegistrationClient(client, discovery);
             var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = identityPath };
-            Assert.True(await registration.ExecuteProvisioningCommandAsync(settings, new(), CancellationToken.None));
+            ProvisioningCommandStatus? reportedBeforePublish = null;
+            var published = false;
+            // The re-detected inventory is published before the terminal report the dashboard waits for.
+            Assert.True(await registration.ExecuteProvisioningCommandAsync(settings, new(), CancellationToken.None,
+                beforeTerminalReport: _ => { published = true; reportedBeforePublish = handler.Report?.Status; return Task.CompletedTask; }));
+            Assert.True(published);
+            Assert.NotEqual(ProvisioningCommandStatus.Succeeded, reportedBeforePublish);
             Assert.Equal(ProvisioningCommandStatus.Succeeded, handler.Report!.Status);
             Assert.True(probes > 0);
             probes = 0;

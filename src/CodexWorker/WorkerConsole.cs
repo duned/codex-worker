@@ -55,6 +55,9 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine($"GitHub labels ready · {projectCount} project{(projectCount == 1 ? "" : "s")}{(createdCount == 0 ? "" : $" · {createdCount} created")}", ConsoleColor.Green, "✓");
     public void GitHubDependenciesReady() => WriteLine("GitHub dependency API ready", ConsoleColor.Green, "✓");
     public void GlobalPreflight() => WriteLine("Global Codex preflight", ConsoleColor.Cyan, "▶");
+    public void ToolsRefreshed(string? codexVersion) =>
+        WriteLine($"Tools re-detected after provisioning · Codex CLI {codexVersion ?? "not detected"} · Codex preflight", ConsoleColor.Cyan, "▶");
+    public void CodexPreflightReady() => WriteLine("Codex preflight ready", ConsoleColor.Green, "✓");
 
     public void Started() => WriteLine("Worker started.", ConsoleColor.Green, "✓");
     public void NoProjectsConfigured() => WriteLine("Managed Worker is healthy and idle · no projects configured", ConsoleColor.Cyan, "○");
