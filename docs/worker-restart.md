@@ -50,7 +50,7 @@ Server scheduling policy is restored only if the operation still owns the drain.
 An operator's policy change revokes that restoration authority. No execution history,
 identity, ownership records or recovery worktrees are removed.
 
-Pending drain expires after 24 hours; dashboard reconnection expires after 20 minutes.
+Pending drain expires after 24 hours; dashboard reconnection expires after 5 minutes.
 Failed or uncertain requests are never automatically replayed. Scheduling remains
 paused and the operation retains a diagnostic. Inspect `systemctl status codex-worker`
 and `journalctl -u codex-worker` on the node. After checking that service-manager

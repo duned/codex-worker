@@ -81,7 +81,8 @@ export function WorkerMaintenance({ worker, onProgress }: { worker: WorkerObserv
 
     {failed && <div className="mt-4 flex flex-col gap-3">
       {checks?.checks.filter(check => !check.satisfied).map(check => <p key={check.code} className="text-sm text-secondary">
-        <span className="font-medium text-primary">{tryT(`maintenance.check.${check.code}`, check.description)}</span> {tryT(`maintenance.check.${check.code}.todo`, check.nextStep)}</p>)}
+        <span className="font-medium text-primary">{tryT(`maintenance.check.${check.code}`, check.description)}</span> {tryT(`maintenance.check.${check.code}.todo`, check.nextStep)}
+          {check.detail && <code className="ml-1 break-all text-tertiary">{check.detail}</code>}</p>)}
       <Check checked={quiescent} onChange={setQuiescent}>{t('maintenance.quiescent')}</Check>
       <div className="flex flex-wrap gap-2">
         {operation.restart && <Button size="sm" color="secondary" isDisabled={!quiescent || busy || !checks?.releaseDrainEligible}

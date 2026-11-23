@@ -52,7 +52,7 @@ restore its prior policy. Previously disabled or draining Workers remain so.
 A newer release published between discovery and installation may produce a version
 mismatch; this remains blocked for inspection rather than silently returning to service.
 
-Requests waiting for idle expire after 24 hours; started operations have a 20-minute
+Requests waiting for idle expire after 24 hours; started operations have a 5-minute
 reconnect deadline. Failures, interrupted starts, lost responses and uncertain
 outcomes never cause an automatic installation replay. Server restart retains the
 operation and drain ownership. A node reboot that loses the updater service result
