@@ -270,4 +270,54 @@ public sealed class GitHubOperationTests
         Assert.Equal(3, calls.Count(command => command.Length > 1 && command[0] == "api"));
         Assert.DoesNotContain(calls.SelectMany(command => command), arg => arg is "--add-label" or "--remove-label" or "comment");
     }
+
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("bug")]
+    [InlineData("bug,codex-ready,codex-in-progress")]
+    public async Task PartiallyAppliedLabelTransitionIsReplayedInsteadOfRequiringReconciliation(string partialLabels)
+    {
+        var partial = partialLabels.Split(',');
+        string[] labels = ["bug", "codex-ready"];
+        var edits = 0;
+        var client = new GitHubClient("owner/repo", (arguments, _) =>
+        {
+            var args = arguments.ToArray();
+            if (args[1] == "view")
+                return Task.FromResult(new ProcessResult(0, System.Text.Json.JsonSerializer.Serialize(new
+                { state = "OPEN", labels = labels.Select(name => new { name }) }), ""));
+            edits++;
+            if (edits == 1)
+            {
+                labels = partial;
+                return Task.FromResult(new ProcessResult(1, "", "HTTP 502 Bad Gateway"));
+            }
+            labels = ["bug", "codex-in-progress"];
+            return Task.FromResult(new ProcessResult(0, "", ""));
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
+        await client.ReplaceLabelAsync(17, "codex-ready", "codex-in-progress", CancellationToken.None);
+        Assert.Equal(2, edits);
+        Assert.Equal(["bug", "codex-in-progress"], labels);
+    }
+
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task UnrelatedConcurrentLabelChangeStillRequiresReconciliation()
+    {
+        string[] labels = ["bug", "codex-ready"];
+        var client = new GitHubClient("owner/repo", (arguments, _) =>
+        {
+            var args = arguments.ToArray();
+            if (args[1] == "view")
+                return Task.FromResult(new ProcessResult(0, System.Text.Json.JsonSerializer.Serialize(new
+                { state = "OPEN", labels = labels.Select(name => new { name }) }), ""));
+            labels = ["codex-ready"];
+            return Task.FromResult(new ProcessResult(1, "", "HTTP 502 Bad Gateway"));
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
+        var failure = await Assert.ThrowsAsync<GitHubOperationException>(() =>
+            client.ReplaceLabelAsync(17, "codex-ready", "codex-in-progress", CancellationToken.None));
+        Assert.Equal(GitHubFailureKind.Unknown, failure.FailureKind);
+    }
 }
