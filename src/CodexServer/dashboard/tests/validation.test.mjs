@@ -36,7 +36,9 @@ test('Server markers refresh on-screen collection and detail reads, never GitHub
   assert.equal(runtime.markerRefreshed('/api/v1/executions/abc'), true);
   assert.equal(runtime.markerRefreshed('/api/v1/workers/w1/diagnostics'), true);
   assert.equal(runtime.markerRefreshed('/api/v1/projects/p/github/issues'), false);
-  assert.equal(runtime.markerRefreshed('/api/v1/nodes'), false);
+  // Worker heartbeats (the workers marker) carry the node tool inventory.
+  assert.equal(runtime.markerRefreshed('/api/v1/nodes'), true);
+  assert.equal(runtime.markerRefreshed('/api/v1/nodes/w1/commands'), false);
 });
 
 test('archived branch pages must answer the project, age and offset this page asked for', () => {

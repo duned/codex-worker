@@ -6,7 +6,7 @@ import { useApiRead, useRuntime } from '../shared/api/session';
 import type { Validator } from '../shared/api/client';
 import { execution as validateExecution, record } from '../shared/api/validation';
 import { projectExecutionsPath, recentExecutionsPath, useExecutions, useNames, useProjects } from '../shared/data';
-import { t, useLanguage } from '../shared/i18n';
+import { t, tryT, useLanguage } from '../shared/i18n';
 import { canArchive, dateTime, duration, executionActions, executionStatus, explain, isActive, issueNumber, newerAttempt, stepProgress, type ExecutionAction } from '../shared/model';
 import { Ago, Card, Check, Explanation, Field, inputClass, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps, TextLink, CopyValue } from '../shared/ui';
 import { executionLabel } from './ExecutionRow';
@@ -123,7 +123,15 @@ export function ExecutionPage() {
       {item.completionSummary && <details className="mt-4 border-t border-secondary pt-3"><summary className="cursor-pointer text-sm font-medium text-secondary">{t('executions.technicalDetail')}</summary>
         <pre className="mt-2 overflow-x-auto rounded-lg bg-secondary p-3 font-mono text-xs whitespace-pre-wrap text-secondary">{item.completionSummary}</pre></details>}
     </Card>}
-    {item.state === 'Queued' && item.pendingReason && <Notice>{item.pendingReason}</Notice>}
+    {item.state === 'Queued' && item.pendingReason && <Notice>
+      {tryT(`pending.${item.pendingReason}`, item.pendingReason)}
+      {item.managedEligibilityState === 'blocked' && (item.managedEligibilityReasons?.length ?? 0) > 0 &&
+        <ul className="mt-2 list-disc pl-5">{item.managedEligibilityReasons!.map(text => <li key={text}>{text}</li>)}</ul>}
+      {item.managedEligibilityState && item.managedEligibilityState !== 'eligible' && number && <div className="mt-3">
+        <Button size="sm" color="secondary" isDisabled={!!action.busy} onClick={() => void action.run(`eligibility-${item.id}`,
+          `/api/v1/projects/${encodeURIComponent(item.projectId)}/github/issues/${number}/eligibility/refresh`, 'POST', {}, 'actions.eligibilityRechecked')}>
+          {t('actions.recheckEligibility')}</Button></div>}
+    </Notice>}
 
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
       <Card title={t('executions.result')}><KeyValues items={[

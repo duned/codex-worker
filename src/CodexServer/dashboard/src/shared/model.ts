@@ -1,3 +1,4 @@
+import { tryT } from './i18n';
 import type { ArchivedBranch, Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
@@ -77,6 +78,8 @@ export function explain(execution: ExecutionSummary): { what: TranslationKey; to
       : { what: 'explain.integration.what', todo: 'explain.integration.todo' };
   if (execution.failureClassification === 'CodexInterruption') return { what: 'explain.interrupted.what', todo: 'explain.interrupted.todo' };
   if (execution.failureClassification === 'Blocked') return { what: 'explain.blocked.what', todo: 'explain.blocked.todo' };
+  if (execution.failureClassification === 'PreparationFailed') return { what: 'explain.preparation.what', todo: 'explain.preparation.todo' };
+  if (execution.failureClassification === 'InfrastructureFailure') return { what: 'explain.infrastructure.what', todo: 'explain.infrastructure.todo' };
   return { what: 'explain.failed.what', todo: 'explain.failed.todo' };
 }
 
@@ -274,3 +277,6 @@ export function deniedPolicyHint(command: NodeCommandSummary): PolicyHint | unde
 export const deletableBranch = (branch: ArchivedBranch) => branch.decision === 'eligible' && /^[a-f0-9]{40}([a-f0-9]{24})?$/i.test(branch.tip);
 /** Splits a selection into requests the Server accepts (at most 100 branches each). */
 export const branchBatches = <T>(items: T[], size = 100) => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
+
+/** Readable text for a Server scheduling blocker code (unknown codes are shown as sent). */
+export const schedulingBlockerText = (code: string) => tryT(`workers.blocker.${code}`, code);

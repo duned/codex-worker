@@ -16,7 +16,8 @@ export interface SessionState { authenticated: boolean; pending: boolean; messag
 /** Server reads whose freshness follows the projects/workers/executions markers. */
 export const markerRefreshed = (path: string) => {
   const route = path.split('?')[0];
-  return /^\/api\/v1\/(projects|workers|executions)(\/|$)/.test(route) && !route.includes('/github/');
+  // Node tool inventory comes from Worker heartbeats, which advance the workers marker.
+  return route === '/api/v1/nodes' || /^\/api\/v1\/(projects|workers|executions)(\/|$)/.test(route) && !route.includes('/github/');
 };
 
 export class DashboardRuntime {
@@ -155,7 +156,8 @@ export class DashboardRuntime {
       if (!previous || previous[0] === next[0] && previous[index + 1] === next[index + 1]) continue;
       // Mark the category stale; only reads that are on screen refresh below.
       await this.queries.invalidateQueries({ queryKey: queryKeys.session(generation), refetchType: 'none',
-        predicate: query => String(query.queryKey[2]).split('?')[0].startsWith(`/api/v1/${category}/`) || String(query.queryKey[2]).split('?')[0] === `/api/v1/${category}` });
+        predicate: query => String(query.queryKey[2]).split('?')[0].startsWith(`/api/v1/${category}/`) || String(query.queryKey[2]).split('?')[0] === `/api/v1/${category}` ||
+          category === 'workers' && String(query.queryKey[2]).split('?')[0] === '/api/v1/nodes' });
     }
     // Retry failed initial loads as well as invalidated refreshes. Both use the
     // status loop's backoff, even when the Server marker has not changed. Collections

@@ -471,19 +471,21 @@ public sealed partial class CodexServerTests
         var project = await store.CreateProjectAsync(new CentralProjectDefinition("Recovery", "team/recovery", "main", "", []));
         var workerId = Guid.NewGuid().ToString("N");
         WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
-        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 5, capabilities));
-        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 5, capabilities, []));
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 6, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 6, capabilities, []));
         var safe = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
         var implementing = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "2")));
         var validating = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "3")));
         var claiming = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "4")));
         var uncertain = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "5")));
-        WorkerAssignmentRequest request = new(workerId, true, 5, new Dictionary<string, int> { [project.Id] = 5 });
+        var reporting = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "6")));
+        WorkerAssignmentRequest request = new(workerId, true, 6, new Dictionary<string, int> { [project.Id] = 6 });
         var safeAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
         var implementingAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
         var validatingAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
         var claimingAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
         var uncertainAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
+        var reportingAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
         await store.ReportExecutionAsync(implementing.Id, new WorkerExecutionReport(workerId, implementingAssignment.AssignmentId,
             "worker-implementation", "Running", Stage: "Codex", StartedAtUtc: clock.GetUtcNow(), Generation: implementingAssignment.Lease!.Generation));
         await store.ReportExecutionAsync(validating.Id, new WorkerExecutionReport(workerId, validatingAssignment.AssignmentId,
@@ -492,6 +494,8 @@ public sealed partial class CodexServerTests
             "worker-execution", "Running", Stage: "Integration", StartedAtUtc: clock.GetUtcNow(), Generation: uncertainAssignment.Lease!.Generation));
         await store.ReportExecutionAsync(claiming.Id, new WorkerExecutionReport(workerId, claimingAssignment.AssignmentId,
             "worker-claiming", "Running", Stage: "Claiming", StartedAtUtc: clock.GetUtcNow(), Generation: claimingAssignment.Lease!.Generation));
+        await store.ReportExecutionAsync(reporting.Id, new WorkerExecutionReport(workerId, reportingAssignment.AssignmentId,
+            "worker-reporting", "Running", Stage: "Reporting", StartedAtUtc: clock.GetUtcNow(), Generation: reportingAssignment.Lease!.Generation));
 
         clock.Advance(TimeSpan.FromSeconds(11));
         var afterRestart = new SqliteRegistryStore(database, timeProvider: clock, leaseDurationSeconds: 10, leaseRenewalIntervalSeconds: 2);
@@ -517,8 +521,11 @@ public sealed partial class CodexServerTests
         Assert.Equal("LeaseExpiredUncertain", uncertainResult.RecoveryState);
         Assert.Contains("Integration", uncertainResult.RecoveryReason);
         Assert.DoesNotContain(firstRead, x => x.RetryOfExecutionId == uncertain.Id);
-        Assert.Equal("LeaseExpiredUncertain", firstRead.Single(x => x.Id == claiming.Id).RecoveryState);
-        Assert.DoesNotContain(firstRead, x => x.RetryOfExecutionId == claiming.Id);
+        // Claiming precedes any implementation or integration, so a new attempt is safe; its claim re-verifies the Issue.
+        Assert.Equal("LeaseExpiredRequeued", firstRead.Single(x => x.Id == claiming.Id).RecoveryState);
+        Assert.Single(firstRead, x => x.RetryOfExecutionId == claiming.Id);
+        Assert.Equal("LeaseExpiredUncertain", firstRead.Single(x => x.Id == reporting.Id).RecoveryState);
+        Assert.DoesNotContain(firstRead, x => x.RetryOfExecutionId == reporting.Id);
         await Assert.ThrowsAsync<ExecutionRequestConflictException>(() => afterRestart.EnqueueExecutionAsync(
             new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "5"))));
 
@@ -533,7 +540,7 @@ public sealed partial class CodexServerTests
         await Assert.ThrowsAsync<ExecutionRequestReconciliationException>(() => afterRestart.ReconcileUncertainExecutionAsync(uncertain.Id,
             new ExecutionReconciliationRequest("NotIntegrated", "Duplicate operator request.")));
 
-        var verifiedIntegrated = await afterRestart.ReconcileUncertainExecutionAsync(claiming.Id,
+        var verifiedIntegrated = await afterRestart.ReconcileUncertainExecutionAsync(reporting.Id,
             new ExecutionReconciliationRequest("Integrated", "Confirmed the commit on the protected base branch.", new string('a', 40)));
         Assert.NotNull(verifiedIntegrated);
         Assert.Null(verifiedIntegrated.Retry);
@@ -545,13 +552,14 @@ public sealed partial class CodexServerTests
                 CompletedAtUtc: clock.GetUtcNow(), Generation: uncertainAssignment.Lease!.Generation)));
 
         var secondRead = await afterRestart.GetExecutionsAsync();
-        Assert.Equal(9, secondRead.Count);
+        Assert.Equal(11, secondRead.Count);
         Assert.Single(secondRead, x => x.RetryOfExecutionId == safe.Id);
         Assert.Single(secondRead, x => x.RetryOfExecutionId == implementing.Id);
         Assert.Single(secondRead, x => x.RetryOfExecutionId == validating.Id);
         Assert.Single(secondRead, x => x.RetryOfExecutionId == uncertain.Id);
         Assert.Single(secondRead, x => x.Id == uncertain.Id && x.RecoveryState == "OperatorRetryQueued");
-        Assert.Single(secondRead, x => x.Id == claiming.Id && x.RecoveryState == "OperatorVerifiedIntegrated");
+        Assert.Single(secondRead, x => x.RetryOfExecutionId == claiming.Id);
+        Assert.Single(secondRead, x => x.Id == reporting.Id && x.RecoveryState == "OperatorVerifiedIntegrated");
     }
 
     private static async Task<long> LeaseCountAsync(string database, string executionId)

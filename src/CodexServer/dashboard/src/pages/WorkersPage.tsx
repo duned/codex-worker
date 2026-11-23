@@ -5,7 +5,7 @@ import type { Validator } from '../shared/api/client';
 import { record } from '../shared/api/validation';
 import { useExecutions, useWorkers } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { isActive, isOnline, scheduling, schedulingTone, slots } from '../shared/model';
+import { isActive, isOnline, scheduling, schedulingBlockerText, schedulingTone, slots } from '../shared/model';
 import { Ago, Card, DotText, Empty, Filters, HeadRow, matches, PageHeader, Pill, ReadState, Row, RowLink, Rows, Slots } from '../shared/ui';
 import { ConnectWorkerPanel } from './WorkerPanel';
 
@@ -43,7 +43,7 @@ export function WorkersPage() {
               <span className="text-sm text-tertiary">{t('workers.managed')}{worker.workerVersion ? ` · v${worker.workerVersion}` : ''}</span></span>
             <span><DotText tone={isOnline(worker) ? 'ok' : 'idle'}>{t(isOnline(worker) ? 'workers.online' : 'workers.offline')}</DotText>
               <span className="block text-sm text-tertiary">{t('workers.lastSignal')} <Ago value={worker.lastHeartbeatAtUtc} /></span></span>
-            <span className="text-sm text-tertiary">{!isOnline(worker) ? t('workers.notAvailable') : worker.schedulingBlocker ?? (mine.length
+            <span className="text-sm text-tertiary">{!isOnline(worker) ? t('workers.notAvailable') : (worker.schedulingBlocker && schedulingBlockerText(worker.schedulingBlocker)) ?? (mine.length
               ? t('workers.workingOn', { list: mine.map(item => `#${item.workReference?.id}`).join(', ') }) : t('workers.idle'))}</span>
             <span className="flex flex-col gap-1"><span className="text-sm font-medium text-primary tabular-nums">{use.used} / {use.total}</span><Slots used={use.used} total={use.total} /></span>
             <span><Pill tone={schedulingTone[state]}>{t(`scheduling.${state}`)}</Pill></span>

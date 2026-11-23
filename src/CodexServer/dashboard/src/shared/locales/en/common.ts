@@ -58,6 +58,17 @@ export const common = {
   "explain.interrupted.todo": "The Worker resumes the same work when the engine is available again. If it does not, retry from scratch.",
   "explain.blocked.what": "The engine needs information or a decision before it can continue.",
   "explain.blocked.todo": "Answer in the Issue in GitHub, then retry from scratch.",
+  "actions.recheckEligibility": "Check the Issue again", "actions.eligibilityRechecked": "Issue checked again in GitHub.",
+  "pending.work is blocked by managed eligibility": "The Issue is not ready to run in GitHub (see why below). Fix it in GitHub, then check it again.",
+  "pending.managed eligibility is unavailable": "The Server could not read the Issue in GitHub. Check it again in a moment.",
+  "pending.project-capacity": "The project is already running as many Issues in parallel as it allows.",
+  "pending.project-capacity-not-advertised": "No Worker is offering this project right now. It may be paused or still being prepared on the Worker; see the Worker page.",
+  "pending.scheduling-paused": "Scheduling is paused on the compatible Workers.",
+  "pending.worker-configuration-pending": "A Worker is applying a new slot configuration; it picks up work once it finishes.",
+  "explain.preparation.what": "The Worker could not prepare the project before starting (checkout, labels or repository access). The Issue was not touched.",
+  "explain.preparation.todo": "Check the technical detail and the Worker. The Worker retries preparing the project by itself; then retry from scratch.",
+  "explain.infrastructure.what": "The Worker hit an infrastructure problem (GitHub, network or the machine) and stopped this attempt.",
+  "explain.infrastructure.todo": "Check in GitHub that the Issue is as intended (labels and comments), then retry from scratch.",
   "explain.failed.what": "The implementation or its validation failed.",
   "explain.failed.todo": "Read the report in the Issue comments, adjust the Issue if needed and retry from scratch."
 } as const;

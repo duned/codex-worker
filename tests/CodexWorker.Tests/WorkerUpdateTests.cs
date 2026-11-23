@@ -605,6 +605,40 @@ public sealed class WorkerUpdateTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TimedOutRestartIsReconciledAutomaticallyOnlyWhenTheWorkerIsVerifiablyBack(bool explicitFailure)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock { Now = DateTimeOffset.UtcNow };
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
+        Task Heartbeat(string instance) => store.HeartbeatWorkerAsync(new(2, worker, ApplicationVersion.Display,
+            "running", 0, 2, capabilities, [], ConfigurationSynchronization: "synchronized", InstanceId: instance));
+        await Heartbeat("original");
+        var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true);
+        Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, ApplicationVersion.Display);
+        if (explicitFailure) await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, fail: true);
+        // The service was restarted outside the operation (for example over SSH); the handoff never verified.
+        clock.Now += SqliteRegistryStore.ActiveOperationTimeout + TimeSpan.FromMinutes(1);
+        await Heartbeat("replacement");
+        await store.AdvanceWorkerUpdateAsync(worker);
+        var current = await store.GetWorkerUpdateAsync(worker);
+        if (explicitFailure)
+        {
+            Assert.Equal("failed", current?.State);
+            Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+            return;
+        }
+        Assert.Equal("succeeded", current?.State);
+        Assert.StartsWith("auto-reconciled:", current?.Diagnostic);
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+    }
+
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     [Fact]

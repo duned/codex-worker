@@ -951,7 +951,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 state='Failed' AND recovery_state IS NULL
                 AND completed_at_utc IS NOT NULL
                 AND COALESCE(julianday($readyApplied)>julianday(completed_at_utc), 0)
-                AND COALESCE(failure_classification IN ('Failed','Blocked'), 0))) OR state IN ('Queued','Assigned','Running') OR
+                AND COALESCE(failure_classification IN ('Failed','Blocked','PreparationFailed'), 0))) OR state IN ('Queued','Assigned','Running') OR
                 (state='Failed' AND recovery_state='LeaseExpiredUncertain'))
             LIMIT 1;
             """;
@@ -1333,7 +1333,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (assignedExecution is { WorkspaceRecovery: "FreshWorkspaceRequired", RetryOfExecutionId: { } previousId })
             interrupted = await ReadExecutionInTransactionAsync(connection, (SqliteTransaction)transaction, previousId, cancellationToken);
         var freshRecovery = assignedExecution is not null && interrupted is { State: "Failed", RecoveryState: "LeaseExpiredRequeued", IntegrationResult: null,
-            CurrentStage: "Preparing" or "Codex" or "Validation", Lease.State: "Expired" } &&
+            CurrentStage: "Claiming" or "Preparing" or "Codex" or "Implementing" or "Validation", Lease.State: "Expired" } &&
             interrupted.ProjectId == assignedExecution.ProjectId && interrupted.WorkReference == assignedExecution.WorkReference &&
             interrupted.AttemptNumber + 1 == assignedExecution.AttemptNumber &&
             string.Equals(interrupted.WorkReference.Url, $"https://github.com/{project.Repository}/issues/{assignedExecution.WorkReference.Id}",
@@ -2052,7 +2052,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         var decisions = new List<ExecutionRequest>();
         foreach (var item in expired)
         {
-            var safe = item.WorkspaceRecovery != "PreservedIntegrationImplementation" && item.Integration is null && (item.Stage is null or "Preparing" or "Codex" or "Validation");
+            // Nothing can have been integrated before the Integration stage; the next attempt's claim verifies the Issue again.
+            var safe = item.WorkspaceRecovery != "PreservedIntegrationImplementation" && item.Integration is null &&
+                (item.Stage is null or "Claiming" or "Preparing" or "Codex" or "Implementing" or "Validation");
             command.Parameters.Clear();
             command.CommandText = "UPDATE execution_requests SET state='Failed', recovery_state=$recovery, recovery_reason=$reason, workspace_recovery='PreviousWorkerLocalStateUnknown' WHERE id=$id AND recovery_state IS NULL;";
             command.Parameters.AddWithValue("$recovery", safe ? "LeaseExpiredRequeued" : "LeaseExpiredUncertain");

@@ -370,10 +370,13 @@ public sealed class WorkerHost
                         runtimeReadModel.Registry.ApplyExecutionEligibility(project.Configuration.Project.Name,
                             project.Configuration, eligibility);
                         var observation = managedConfiguration.Status.Diagnostics?.Projects.FirstOrDefault(item => item.ProjectId == definition.Id);
+                        // A project paused on this Worker (GitHub reconciliation) must not be reported as ready.
+                        var paused = eligibility.IsEligible && runtimeReadModel.Registry.Get(project.Configuration.Project.Name) is
+                            { State: ProjectLifecycleState.Unavailable or ProjectLifecycleState.Disabled };
                         if (observation?.State != "failed")
-                            managedConfiguration.RecordProjectState(definition, eligibility.IsEligible
+                            managedConfiguration.RecordProjectState(definition, paused ? "blocked" : eligibility.IsEligible
                                 ? preparedConfigurations.Contains(project.Configuration) ? "ready" : "not-materialized" : "blocked",
-                                eligibility.IsEligible ? null : "project-capabilities-missing");
+                                paused ? "project-recovery-verification-failed" : eligibility.IsEligible ? null : "project-capabilities-missing");
                     }
                 }
                 var ready = agentReady && executionDependenciesReady && (managedConfiguration is null || managedConfiguration.Status.SynchronizationStatus == "synchronized") &&
@@ -428,6 +431,9 @@ public sealed class WorkerHost
                     group.First().Configuration.Worker.MaxParallelTasks)));
             ReportCapacity();
             var idleHeartbeat = new IdleWorkerHeartbeat(_timeProvider.GetUtcNow());
+            // Managed preparation failures (checkout, labels, initialization) are often transient; retry them with
+            // backoff instead of leaving the project unavailable until a restart or a configuration change.
+            var preparationRetries = new Dictionary<string, (DateTimeOffset RetryAt, TimeSpan Backoff, string Reason)>(StringComparer.OrdinalIgnoreCase);
             var projectObservations = (await _registration.InventoryDiscovery.GetAsync(cancellationToken: ct))
                 .Select(state => state with { DetectedAtUtc = null }).ToArray();
             while (!ct.IsCancellationRequested)
@@ -575,10 +581,20 @@ public sealed class WorkerHost
                             var entry = await history.ReadExecutionAsync(command.Request.WorkerExecutionId ?? Guid.Empty, token);
                             var project = runtimes.SingleOrDefault(p => p.Configuration.Project.Name == entry?.Project &&
                                 p.Configuration.Project.Repository == entry.Repository);
-                            return project is null ? new("refused", "project-unavailable", []) :
-                                command.Request.Action == ExecutionMaintenanceProtocol.ManualCompletion
-                                    ? await project.Worker.CompleteManuallyAsync(command, authorize, token)
-                                    : await project.Worker.ReconcileManagedCompletionAsync(command, authorize, token);
+                            if (project is null) return new("refused", "project-unavailable", []);
+                            var outcome = command.Request.Action == ExecutionMaintenanceProtocol.ManualCompletion
+                                ? await project.Worker.CompleteManuallyAsync(command, authorize, token)
+                                : await project.Worker.ReconcileManagedCompletionAsync(command, authorize, token);
+                            // The operator resolved the completion that paused this project; resume it unless it
+                            // is paused for another execution.
+                            if (outcome.Outcome == "succeeded" && outcome.Reason is "completion-reconciled" or "manually-completed" &&
+                                runtimeReadModel.Registry.Get(project.Configuration.Project.Name) is { State: ProjectLifecycleState.Unavailable } paused &&
+                                paused.UnavailableReason?.Contains(entry!.ExecutionId.ToString(), StringComparison.OrdinalIgnoreCase) == true)
+                            {
+                                runtimeReadModel.Registry.Enable(project.Configuration.Project.Name);
+                                _operationalLog($"Scheduler · {project.Configuration.Project.Name} · execution {entry.ExecutionId} · completion resolved by the operator · project scheduling resumed.");
+                            }
+                            return outcome;
                         }))
                     continue;
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining &&
@@ -634,6 +650,16 @@ public sealed class WorkerHost
                 {
                     if (_global.Projects.Ownership == "managed")
                     {
+                        foreach (var (name, retry) in preparationRetries.ToArray())
+                        {
+                            if (_timeProvider.GetUtcNow() < retry.RetryAt) continue;
+                            if (runtimeReadModel.Registry.Get(name) is { State: ProjectLifecycleState.Unavailable } paused && paused.UnavailableReason == retry.Reason)
+                            {
+                                runtimeReadModel.Registry.Enable(name);
+                                _operationalLog($"Scheduler · {name} · retrying managed project preparation after {retry.Backoff.TotalMinutes:0} min.");
+                            }
+                            else preparationRetries.Remove(name);
+                        }
                         var projectLifecycles = runtimeReadModel.Registry.Status().ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
                         var projectCapacities = new Dictionary<string, int>(StringComparer.Ordinal);
                         foreach (var candidate in runtimes)
@@ -752,6 +778,7 @@ public sealed class WorkerHost
                                         { State: ProjectLifecycleState.Unavailable } unavailable)
                                         throw new IssuePreparationRejectedException(unavailable.UnavailableReason ?? "Project recovery requires inspection.");
                                     preparedConfigurations.Add(assignedProject.Configuration);
+                                    preparationRetries.Remove(assignedProject.Configuration.Project.Name);
                                     managedConfiguration!.RecordProjectState(assignment.Project, "ready");
                                 }
                                 else LogAssignment(assignment, "checkout reuse", assignedProject.Configuration);
@@ -771,6 +798,9 @@ public sealed class WorkerHost
                                 await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history, reason, leaseStop.Token);
                                 runtimeReadModel.Registry.MarkUnavailable(assignedProject.Configuration.Project.Name, reason);
                                 runtimeReadModel.Events.Publish("project.unavailable", reason, assignedProject.Configuration.Project.Name);
+                                var backoff = preparationRetries.TryGetValue(assignedProject.Configuration.Project.Name, out var previousRetry)
+                                    ? TimeSpan.FromTicks(Math.Min(previousRetry.Backoff.Ticks * 2, TimeSpan.FromMinutes(30).Ticks)) : TimeSpan.FromMinutes(2);
+                                preparationRetries[assignedProject.Configuration.Project.Name] = (_timeProvider.GetUtcNow().Add(backoff), backoff, reason);
                                 await PublishReadinessAsync(executionToken);
                                 leaseStop.Cancel();
                                 try { await leaseRenewal; } catch (OperationCanceledException) { }
@@ -791,8 +821,13 @@ public sealed class WorkerHost
                                 runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
                             }
                             LogAssignment(assignment, $"infrastructure failure during claim · GitHub {githubFailure.FailureKind} during {githubFailure.Operation}", assignedProject.Configuration);
-                            PauseProjectForGitHubFailure(runtimeReadModel, assignedProject.Configuration.Project.Name, githubFailure,
-                                "The Server assignment remains leased until expiry reconciliation.");
+                            // The Server fences this Issue: it is assigned again only after an operator queues a new
+                            // attempt, which supersedes this record. Pausing the whole project would only stop its
+                            // other Issues until a restart, with no way to resume it from the dashboard.
+                            var fenced = $"Issue #{githubFailure.IssueNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "?"} needs review after a GitHub {githubFailure.FailureKind} failure during {githubFailure.Operation}; " +
+                                "retry it from the dashboard once the Issue is as intended. Other Issues of this project continue.";
+                            runtimeReadModel.Events.Publish("project.github-reconciliation-required", fenced, assignedProject.Configuration.Project.Name);
+                            _output.Warning($"Project '{assignedProject.Configuration.Project.Name}': {fenced}");
                             continue;
                         }
                         catch (Exception ex)
@@ -1156,6 +1191,8 @@ public sealed class WorkerHost
         assignedIssueNumber == entry.IssueNumber && entry.CompletionJson is null && entry.ValidationOutcome != "passed" &&
         entry.RecoveryState == GitHubOperationException.ReconciliationRequiredState;
 
+    private bool ManagedOwnership => _global.Server.Enabled && _global.Projects.Ownership == "managed";
+
     private async Task ReconcileRecoveryAsync(IReadOnlyList<ProjectRuntime> runtimes, ExecutionHistoryStore history,
         WorkerRuntimeReadModel runtime, CancellationToken ct, int? assignedIssueNumber = null)
     {
@@ -1186,6 +1223,11 @@ public sealed class WorkerHost
                     {
                         remote = await project.GitHub.ReadIssueStateAsync(entry.IssueNumber, ct);
                     }
+                    catch (WorkerInfrastructureException) when (ManagedOwnership)
+                    {
+                        _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · GitHub state could not be read; left pending. The Server does not reassign this Issue until an operator retries it.");
+                        continue;
+                    }
                     catch (WorkerInfrastructureException ex)
                     {
                         var safeDetail = FailureDiagnosticRedactor.Redact(ex.Message,
@@ -1199,6 +1241,13 @@ public sealed class WorkerHost
                         continue;
                     }
                     var readyRemains = RequiresManualGitHubReconciliation(remote, project.Configuration.GitHub.ReadyLabel);
+                    if (readyRemains && ManagedOwnership)
+                    {
+                        // Only the Server schedules managed work, and it reassigns this Issue only after an operator
+                        // retry, which supersedes this record. Other Issues of the project are unaffected.
+                        _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · open and ready after an uncertain mutation; left pending until an operator retries it.");
+                        continue;
+                    }
                     if (readyRemains)
                     {
                         var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remains open and ready after execution {entry.ExecutionId} had an uncertain mutation. Inspect the Issue and history, then explicitly enable the project after reconciliation.";
