@@ -139,7 +139,7 @@ public sealed partial class SqliteRegistryStore
             // Explicit operator reconciliation only, after inspecting the quiescent local updater.
             // This never dispatches or repeats installation and retains the prior failure diagnostic.
             operation = operation with { State = "updating", InstallerVerified = true, ExpectedVersion = operation.ExpectedVersion ?? operation.OriginalVersion,
-                StartedAtUtc = operation.StartedAtUtc ?? operation.RequestedAtUtc.AddTicks(-1), DeadlineUtc = now.AddMinutes(20) };
+                StartedAtUtc = operation.StartedAtUtc ?? operation.RequestedAtUtc.AddTicks(-1), DeadlineUtc = now.Add(ActiveOperationTimeout) };
         }
         if (operation is { State: "updating", StartedAtUtc: not null } && heartbeat is not null && seen > operation.StartedAtUtc &&
             (heartbeat.WorkerVersion == operation.ExpectedVersion || heartbeat.LifecycleState == WorkerLifecycleStates.Stopped))
@@ -148,8 +148,7 @@ public sealed partial class SqliteRegistryStore
             heartbeat?.WorkerVersion == operation.ExpectedVersion && heartbeat?.LifecycleState == WorkerLifecycleStates.Running &&
             (heartbeat.CapabilityInventory is null || CapabilityCatalog.ExecutionReadiness(heartbeat.CapabilityInventory).Available) &&
             heartbeat.ConfigurationSynchronization == "synchronized" && heartbeat.ContractVersion is 1 or 2 &&
-            (operation.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current =>
-                 $"{current.Type}/{current.Name}/{current.Scope}" == required)))
+            MissingCapabilities(operation.RequiredCapabilities, heartbeat.Capabilities).Count == 0)
         {
             operation = operation with { State = "succeeded", Diagnostic = action == "reconcile" ? $"reconciled:{heartbeat.WorkerVersion}:{operation.Diagnostic}" : "ready" };
             if (operation.OwnsDrain && policy == WorkerSchedulingPolicy.Draining)
@@ -192,7 +191,7 @@ public sealed partial class SqliteRegistryStore
                 throw new InvalidOperationException("worker-update-target-changed-use-versioned-installer");
             var update = operation.Restart || WorkerUpdateProtocol.NeedsUpdate(heartbeat?.WorkerVersion ?? operation.OriginalVersion, version ?? throw new InvalidDataException("version-required"));
             operation = operation with { ExpectedVersion = version, State = update ? "updating" : "succeeded",
-                StartedAtUtc = now, DeadlineUtc = now.AddMinutes(20), Diagnostic = update ? null : "already-current" };
+                StartedAtUtc = now, DeadlineUtc = now.Add(ActiveOperationTimeout), Diagnostic = update ? null : "already-current" };
             if (!update && operation.PriorPolicy == WorkerSchedulingPolicy.Enabled &&
                 (heartbeat?.LifecycleState != WorkerLifecycleStates.Running || heartbeat.ConfigurationSynchronization != "synchronized"))
                 operation = operation with { State = "reconnecting", InstallerVerified = true,
@@ -232,9 +231,24 @@ public sealed partial class SqliteRegistryStore
         await transaction.CommitAsync(ct);
         return action == "poll" && operation is not { Restart: true, State: "failed", DrainReleasedAtUtc: not null } && (operation?.State is not ("waiting-for-idle" or "updating" or "reconnecting") || !idle) ? null : operation;
     }
+    /// <summary>How long a started update or restart may run before the Server reports it as failed.</summary>
+    internal static readonly TimeSpan ActiveOperationTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>Capabilities the Worker reported when the operation was requested and no longer reports.
+    /// Only type and name are compared: scopes are observations (readiness state, granted repositories)
+    /// that legitimately change across a restart and must not leave the operation unresolvable.</summary>
+    internal static IReadOnlyList<string> MissingCapabilities(IReadOnlyList<string>? required, IReadOnlyList<WorkerCapability> current) =>
+        (required ?? []).Select(item => item.Split('/', 3)).Where(parts => parts.Length >= 2)
+            .Select(parts => $"{parts[0]}/{parts[1]}").Distinct(StringComparer.Ordinal)
+            .Where(key => !current.Any(capability => $"{capability.Type}/{capability.Name}" == key)).ToArray();
+
     private static WorkerUpdateRecovery RecoveryReadiness(WorkerUpdateOperation? operation,
         WorkerHeartbeatRequest? heartbeat, DateTimeOffset seen, bool fresh, int assignments, int leases, DateTimeOffset now)
     {
+        var protocol = operation?.Restart == true ? WorkerUpdateProtocol.RestartCapability : WorkerUpdateProtocol.Capability;
+        IReadOnlyList<string> missingCapabilities = heartbeat is null ? ["heartbeat"] :
+            (heartbeat.Capabilities.Any(c => c.Type == "protocol" && c.Name == protocol) ? [] : new[] { $"protocol/{protocol}" })
+                .Concat(MissingCapabilities(operation?.RequiredCapabilities, heartbeat.Capabilities)).Distinct(StringComparer.Ordinal).ToArray();
         var recovery = new WorkerUpdateRecovery(operation is { State: not "succeeded", DrainReleasedAtUtc: null }, now,
         [
             new("failed-operation", operation?.State == "failed", "Operation has failed or timed out.", "Wait for the operation to finish or its deadline; inspect the service and journal."),
@@ -253,7 +267,8 @@ public sealed partial class SqliteRegistryStore
             new("no-active-assignments", assignments == 0, "No active Server assignments.", "Allow assigned work to finish or reconcile it through execution recovery."),
             new("no-active-leases", leases == 0, "No active Server leases.", "Wait for active leases to finish or reconcile uncertain executions."),
             new("no-active-executions", heartbeat?.ActiveExecutions == 0, "Worker reports no active executions.", "Wait for executions to finish and a fresh idle heartbeat."),
-            new("required-capabilities", heartbeat is not null && heartbeat.Capabilities.Any(c => c.Type == "protocol" && c.Name == (operation?.Restart == true ? WorkerUpdateProtocol.RestartCapability : WorkerUpdateProtocol.Capability)) && (operation?.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current => $"{current.Type}/{current.Name}/{current.Scope}" == required)), "Required capabilities are present.", "Restore capabilities reported before the operation."),
+            new("required-capabilities", missingCapabilities.Count == 0, "Required capabilities are present.", "Restore capabilities reported before the operation.",
+                missingCapabilities.Count == 0 ? null : string.Join(", ", missingCapabilities)),
             new("post-operation-heartbeat", operation is not null && seen > (operation.StartedAtUtc ?? (operation.Restart ? operation.RequestedAtUtc : operation.RequestedAtUtc.AddTicks(-1))), "Heartbeat was received after the operation started.", "Wait for a new Worker heartbeat.")
         ], heartbeat?.WorkerVersion);
         return recovery with { ReleaseDrainEligible = operation is { Restart: true, State: "failed", DrainReleasedAtUtc: null } &&

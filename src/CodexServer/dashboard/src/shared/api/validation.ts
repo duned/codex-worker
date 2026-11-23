@@ -230,7 +230,7 @@ export const workerUpdate: Validator<WorkerUpdate | null> = value => {
     const recovery = fields(item.recovery, ['checkedAtUtc'], ['schedulingBlocked', 'eligible']);
     optional(recovery, ['reportedVersion'], ['retryEligible', 'releaseDrainEligible']);
     if (!Array.isArray(recovery.checks) || recovery.checks.length > 20) throw new Error('Invalid Worker recovery status.');
-    recovery.checks.forEach(check => fields(check, ['code', 'description', 'nextStep'], ['satisfied']));
+    recovery.checks.forEach(check => optional(fields(check, ['code', 'description', 'nextStep'], ['satisfied']), ['detail']));
   }
   return item as unknown as WorkerUpdate;
 };

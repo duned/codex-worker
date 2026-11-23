@@ -605,6 +605,19 @@ public sealed class WorkerUpdateTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void RequiredCapabilitiesIgnoreScopeChangesButNameMissingCapabilities()
+    {
+        string[] required = ["agent-readiness/ccc/ready", "authentication/git-repository/owner/repo", "tool/codex-cli/", "agent-provider/ccc/"];
+        WorkerCapability[] current = [new("agent-readiness", "ccc", Scope: "absent"), new("authentication", "git-repository", Scope: "owner/other"),
+            new("tool", "codex-cli", Version: "0.99.0")];
+        Assert.Equal(["agent-provider/ccc"], SqliteRegistryStore.MissingCapabilities(required, current));
+        Assert.Empty(SqliteRegistryStore.MissingCapabilities(required, [.. current, new("agent-provider", "ccc")]));
+        Assert.Equal(TimeSpan.FromMinutes(5), SqliteRegistryStore.ActiveOperationTimeout);
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]

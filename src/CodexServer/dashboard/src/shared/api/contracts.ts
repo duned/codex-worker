@@ -130,7 +130,7 @@ export interface WorkerRelease {
 }
 export interface WorkerUpdateRecovery {
   schedulingBlocked: boolean; checkedAtUtc: string; eligible: boolean; reportedVersion?: string; retryEligible?: boolean; releaseDrainEligible?: boolean;
-  checks: { code: string; satisfied: boolean; description: string; nextStep: string }[];
+  checks: { code: string; satisfied: boolean; description: string; nextStep: string; detail?: string }[];
 }
 export interface WorkerUpdate {
   operationId: string; workerId: string; state: 'waiting-for-idle' | 'updating' | 'reconnecting' | 'succeeded' | 'failed';

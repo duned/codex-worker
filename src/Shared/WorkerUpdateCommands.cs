@@ -12,7 +12,8 @@ public sealed record WorkerUpdateRecovery(bool SchedulingBlocked, DateTimeOffset
 {
     public bool Eligible => Checks.All(check => check.Satisfied);
 }
-public sealed record WorkerUpdateRecoveryCheck(string Code, bool Satisfied, string Description, string NextStep);
+/// <param name="Detail">Optional concrete evidence for an unsatisfied check, such as the missing capability names.</param>
+public sealed record WorkerUpdateRecoveryCheck(string Code, bool Satisfied, string Description, string NextStep, string? Detail = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkerUpdatePreparation(string Version);
 /// <summary>Optional reason a Worker reports with a failed operation.</summary>
