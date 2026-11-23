@@ -746,7 +746,8 @@ public sealed class WorkerHost
                                     preparationStage = "instructions-and-initialization";
                                     await assignedProject.Worker.PrepareForHostAsync(leaseStop.Token);
                                     preparationStage = "recovery-verification";
-                                    await ReconcileRecoveryAsync([assignedProject], history, runtimeReadModel, leaseStop.Token);
+                                    await ReconcileRecoveryAsync([assignedProject], history, runtimeReadModel, leaseStop.Token,
+                                        AssignedIssueNumber(assignment));
                                     if (runtimeReadModel.Registry.Get(assignedProject.Configuration.Project.Name) is
                                         { State: ProjectLifecycleState.Unavailable } unavailable)
                                         throw new IssuePreparationRejectedException(unavailable.UnavailableReason ?? "Project recovery requires inspection.");
@@ -1142,8 +1143,21 @@ public sealed class WorkerHost
         (entry.RecoveryState == GitHubOperationException.ReconciliationRequiredState || entry.CompletionJson is not null ||
          entry.ValidationOutcome == "passed" && entry.RecoveryState is "uncertain" or "github-reconciled");
 
+    internal static int? AssignedIssueNumber(WorkerAssignmentContract assignment) =>
+        assignment.Work.Type is "issue" or "github-issue" &&
+        int.TryParse(assignment.Work.Id, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var number) && number > 0 ? number : null;
+
+    /// <summary>An uncertain GitHub mutation with no implementation to preserve (it failed before execution)
+    /// is superseded when the Server assigns a new attempt for the same Issue: that attempt exists only
+    /// because an operator explicitly queued it again, which is the manual reconciliation the record awaits.
+    /// Requiring the ready label to be absent would otherwise block the very retry that needs it.</summary>
+    internal static bool SupersededByAssignment(ExecutionHistoryEntry entry, int? assignedIssueNumber) =>
+        assignedIssueNumber == entry.IssueNumber && entry.CompletionJson is null && entry.ValidationOutcome != "passed" &&
+        entry.RecoveryState == GitHubOperationException.ReconciliationRequiredState;
+
     private async Task ReconcileRecoveryAsync(IReadOnlyList<ProjectRuntime> runtimes, ExecutionHistoryStore history,
-        WorkerRuntimeReadModel runtime, CancellationToken ct)
+        WorkerRuntimeReadModel runtime, CancellationToken ct, int? assignedIssueNumber = null)
     {
         foreach (var project in runtimes)
         {
@@ -1159,6 +1173,12 @@ public sealed class WorkerHost
                     if (entry.CompletionJson is not null || entry.ValidationOutcome == "passed")
                     {
                         await ReconcileCompletionAsync(project.Worker, entry, runtime, ct);
+                        continue;
+                    }
+                    if (SupersededByAssignment(entry, assignedIssueNumber))
+                    {
+                        await history.UpdateRecoveryAsync(entry.ExecutionId, "operator-acknowledged", ct);
+                        _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · uncertain GitHub mutation superseded by a new Server assignment for the same Issue.");
                         continue;
                     }
                     GitHubIssueState remote;

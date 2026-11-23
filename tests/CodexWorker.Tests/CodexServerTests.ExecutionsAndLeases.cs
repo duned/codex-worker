@@ -72,6 +72,11 @@ public sealed partial class CodexServerTests
         Assert.Equal(1L, completed.Lease.Generation);
         var retry = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, work));
         Assert.NotEqual(first.Id, retry.Id);
+        // A later request for the same work is its next attempt; other work and projects keep their own count.
+        Assert.Equal(1, first.AttemptNumber);
+        Assert.Equal(2, retry.AttemptNumber);
+        Assert.Equal(1, second.AttemptNumber);
+        Assert.Equal(1, sameIssueOtherProject.AttemptNumber);
 
         var restarted = new SqliteRegistryStore(database);
         await restarted.InitializeAsync();
