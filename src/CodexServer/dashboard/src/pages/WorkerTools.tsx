@@ -35,7 +35,7 @@ export function WorkerTools({ node, nodes, online, onSettled }: {
   // anything is in flight, and refresh the Worker's readiness once, when it settles.
   const wasInFlight = useRef(false);
   useEffect(() => {
-    if (wasInFlight.current && !inFlight) onSettled();
+    if (wasInFlight.current && !inFlight) { void refetchNodes(); onSettled(); }
     wasInFlight.current = inFlight;
     if (!inFlight) return;
     const id = setInterval(() => { void refetchCommands(); void refetchNodes(); }, 3000);
