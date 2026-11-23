@@ -236,9 +236,11 @@ public sealed partial class SqliteRegistryStore
 
     /// <summary>Capabilities the Worker reported when the operation was requested and no longer reports.
     /// Only type and name are compared: scopes are observations (readiness state, granted repositories)
-    /// that legitimately change across a restart and must not leave the operation unresolvable.</summary>
+    /// that legitimately change across a restart and must not leave the operation unresolvable.
+    /// Protocols are excluded: a release may retire protocols the Server no longer uses, and the
+    /// update/restart protocol the operation itself depends on is checked separately.</summary>
     internal static IReadOnlyList<string> MissingCapabilities(IReadOnlyList<string>? required, IReadOnlyList<WorkerCapability> current) =>
-        (required ?? []).Select(item => item.Split('/', 3)).Where(parts => parts.Length >= 2)
+        (required ?? []).Select(item => item.Split('/', 3)).Where(parts => parts.Length >= 2 && parts[0] != "protocol")
             .Select(parts => $"{parts[0]}/{parts[1]}").Distinct(StringComparer.Ordinal)
             .Where(key => !current.Any(capability => $"{capability.Type}/{capability.Name}" == key)).ToArray();
 
