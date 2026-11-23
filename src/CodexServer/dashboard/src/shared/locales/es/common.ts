@@ -59,6 +59,10 @@ export const common = {
   "explain.interrupted.todo": "El Worker retoma el mismo trabajo cuando el motor vuelve a estar disponible. Si no lo hace, reintenta desde cero.",
   "explain.blocked.what": "El motor necesita información o una decisión para seguir.",
   "explain.blocked.todo": "Responde en la issue en GitHub y reintenta desde cero.",
+  "explain.preparation.what": "El Worker no pudo preparar el proyecto antes de empezar (checkout, etiquetas o acceso al repositorio). La issue no se tocó.",
+  "explain.preparation.todo": "Revisa el detalle técnico y el Worker. El Worker reintenta preparar el proyecto por su cuenta; después reintenta desde cero.",
+  "explain.infrastructure.what": "El Worker tuvo un problema de infraestructura (GitHub, red o la máquina) y detuvo este intento.",
+  "explain.infrastructure.todo": "Comprueba en GitHub que la issue está como debe (etiquetas y comentarios) y reintenta desde cero.",
   "explain.failed.what": "La implementación o su validación ha fallado.",
   "explain.failed.todo": "Lee el informe en los comentarios de la issue, ajústala si hace falta y reintenta desde cero."
 } satisfies Record<keyof typeof source, string>;

@@ -773,7 +773,13 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             stage, entry.StartedAtUtc, final ? entry.CompletedAtUtc ?? DateTimeOffset.UtcNow : null,
             entry.DurationMilliseconds, Bound(entry.ValidationOutcome, 1000),
             state == "Completed" ? "passed" : state == "Failed" && rebaseConflict ? ManagedIntegrationResults.RebaseConflict : null,
-            state == "Failed" ? entry.RecoveryState == "codex-interrupted" ? "CodexInterruption" : Bound(entry.State, 100) : null, entry.RecoveryState is "recoverable" or "integration-conflict" or "codex-interrupted",
+            state == "Failed" ? entry.RecoveryState switch
+            {
+                "codex-interrupted" => "CodexInterruption",
+                // Refused before any claim: nothing changed in GitHub and the engine never ran.
+                "preparation-failed" => "PreparationFailed",
+                _ => Bound(entry.State, 100)
+            } : null, entry.RecoveryState is "recoverable" or "integration-conflict" or "codex-interrupted",
             Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation, completionReconciliationOperationId);
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"),
             $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));

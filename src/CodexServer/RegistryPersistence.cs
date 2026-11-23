@@ -951,7 +951,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 state='Failed' AND recovery_state IS NULL
                 AND completed_at_utc IS NOT NULL
                 AND COALESCE(julianday($readyApplied)>julianday(completed_at_utc), 0)
-                AND COALESCE(failure_classification IN ('Failed','Blocked'), 0))) OR state IN ('Queued','Assigned','Running') OR
+                AND COALESCE(failure_classification IN ('Failed','Blocked','PreparationFailed'), 0))) OR state IN ('Queued','Assigned','Running') OR
                 (state='Failed' AND recovery_state='LeaseExpiredUncertain'))
             LIMIT 1;
             """;

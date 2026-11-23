@@ -77,6 +77,8 @@ export function explain(execution: ExecutionSummary): { what: TranslationKey; to
       : { what: 'explain.integration.what', todo: 'explain.integration.todo' };
   if (execution.failureClassification === 'CodexInterruption') return { what: 'explain.interrupted.what', todo: 'explain.interrupted.todo' };
   if (execution.failureClassification === 'Blocked') return { what: 'explain.blocked.what', todo: 'explain.blocked.todo' };
+  if (execution.failureClassification === 'PreparationFailed') return { what: 'explain.preparation.what', todo: 'explain.preparation.todo' };
+  if (execution.failureClassification === 'InfrastructureFailure') return { what: 'explain.infrastructure.what', todo: 'explain.infrastructure.todo' };
   return { what: 'explain.failed.what', todo: 'explain.failed.todo' };
 }
 

@@ -58,6 +58,10 @@ export const common = {
   "explain.interrupted.todo": "The Worker resumes the same work when the engine is available again. If it does not, retry from scratch.",
   "explain.blocked.what": "The engine needs information or a decision before it can continue.",
   "explain.blocked.todo": "Answer in the Issue in GitHub, then retry from scratch.",
+  "explain.preparation.what": "The Worker could not prepare the project before starting (checkout, labels or repository access). The Issue was not touched.",
+  "explain.preparation.todo": "Check the technical detail and the Worker. The Worker retries preparing the project by itself; then retry from scratch.",
+  "explain.infrastructure.what": "The Worker hit an infrastructure problem (GitHub, network or the machine) and stopped this attempt.",
+  "explain.infrastructure.todo": "Check in GitHub that the Issue is as intended (labels and comments), then retry from scratch.",
   "explain.failed.what": "The implementation or its validation failed.",
   "explain.failed.todo": "Read the report in the Issue comments, adjust the Issue if needed and retry from scratch."
 } as const;
