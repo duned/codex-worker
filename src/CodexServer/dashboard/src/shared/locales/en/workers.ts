@@ -22,7 +22,7 @@ export const workers = {
   "tools.confirmLoginGitHub": "GitHub sign-in also grants the workflow permission needed to push GitHub Actions files.",
   "tools.historyUnavailable": "Recent tool actions could not be loaded. {error} You can still run actions; the Server rejects one that conflicts with an action already in progress.",
   "tools.status.Requested": "Requested",
-  "tools.requestedDetail": "Waiting for the Worker to pick it up (a few seconds).",
+  "tools.requestedDetail": "Waiting for the Worker to pick it up: a few seconds when idle, or after its running Issues finish.",
   "tools.runningDetail": "The Worker is running it. This page updates by itself.",
   "tools.succeededDetail": "Done. The tool status above is refreshed automatically.",
   "tools.failure.ProcessExited": "The tool exited with an error on the Worker.",

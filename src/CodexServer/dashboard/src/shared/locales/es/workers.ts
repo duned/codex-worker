@@ -23,7 +23,7 @@ export const workers = {
   "tools.confirmLoginGitHub": "El inicio de sesión de GitHub también concede el permiso de workflows necesario para publicar ficheros de GitHub Actions.",
   "tools.historyUnavailable": "No se pudo cargar el historial de acciones. {error} Aún puedes ejecutar acciones; el Server rechaza las que choquen con otra en curso.",
   "tools.status.Requested": "Solicitado",
-  "tools.requestedDetail": "Esperando a que el Worker lo recoja (unos segundos).",
+  "tools.requestedDetail": "Esperando a que el Worker lo recoja: unos segundos si está libre, o al terminar las issues en curso.",
   "tools.runningDetail": "El Worker lo está ejecutando. Esta página se actualiza sola.",
   "tools.succeededDetail": "Hecho. El estado de la herramienta se actualiza automáticamente.",
   "tools.failure.ProcessExited": "La herramienta terminó con un error en el Worker.",
