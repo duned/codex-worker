@@ -14,6 +14,25 @@ const stepTimingKeys = [['claimed', 'preparing'], ['codex'], ['validation'], ['i
 export const pausedOnWorker = (project: Pick<WorkerProjectReadiness, 'materializationState' | 'diagnosticCode'>) =>
   project.materializationState === 'blocked' && project.diagnosticCode === 'project-recovery-verification-failed';
 
+/** One health state per Worker with its main cause, most severe first. Connection, scheduling and paused projects
+ *  stay separate facts underneath; this is what a list or a header shows. */
+export type Health = 'offline' | 'blocked' | 'paused' | 'pausing' | 'degraded' | 'working' | 'ready';
+export interface WorkerHealth { state: Health; tone: Tone; label: TranslationKey; cause: { key: TranslationKey; values?: Record<string, string | number> } }
+export function workerHealth(worker: WorkerObservation, projectName: (id: string) => string = id => id): WorkerHealth {
+  const make = (state: Health, tone: Tone, key: TranslationKey, values?: Record<string, string | number>): WorkerHealth =>
+    ({ state, tone, label: `health.${state}` as TranslationKey, cause: { key, values } });
+  if (!isOnline(worker)) return make('offline', 'bad', 'workers.offlineReason');
+  if (worker.schedulingBlocker) return make('blocked', 'bad', 'health.cause.blocker', { text: schedulingBlockerText(worker.schedulingBlocker) });
+  if (worker.schedulingPolicy === 'Disabled') return make('paused', 'warn', 'scheduling.paused.detail');
+  if (worker.schedulingPolicy === 'Draining') return make('pausing', 'warn', 'scheduling.pausing.detail');
+  if (worker.lifecycleState && worker.lifecycleState !== 'running') return make('blocked', 'bad', 'workers.blockedReason');
+  const paused = (worker.managedDiagnostics?.projects ?? []).filter(project =>
+    pausedOnWorker({ materializationState: project.state, diagnosticCode: project.diagnosticCode ?? undefined }));
+  if (paused.length) return make('degraded', 'warn', 'health.cause.projectsPaused', { list: paused.map(project => projectName(project.projectId)).join(', ') });
+  const { used, total } = slots(worker);
+  return used ? make('working', 'run', 'health.cause.working', { used, total }) : make('ready', 'ok', 'workers.idle');
+}
+
 /** Everything that needs an operator, grouped by cause so each group carries one kind of action. */
 export interface AttentionInbox {
   pausedProjects: { worker: WorkerObservation; projectId: string; detail?: string }[];

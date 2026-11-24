@@ -5,9 +5,9 @@ import { useAction } from '../shared/actions';
 import { useApiRead, useRuntime } from '../shared/api/session';
 import type { Validator } from '../shared/api/client';
 import { diagnostics as validateDiagnostics, record, worker as validateWorker } from '../shared/api/validation';
-import { useExecutions, useNodes } from '../shared/data';
+import { useExecutions, useNames, useNodes } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { isActive, isOnline, pausedOnWorker, scheduling, schedulingBlockerText, schedulingTone, slots } from '../shared/model';
+import { isActive, isOnline, pausedOnWorker, scheduling, schedulingBlockerText, slots, workerHealth } from '../shared/model';
 import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Tile, CopyValue } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow } from './ExecutionRow';
 import { WorkerMaintenance } from './WorkerMaintenance';
@@ -26,7 +26,7 @@ export function WorkerPage() {
   useLanguage();
   const { workerId = '' } = useParams(), base = `/api/v1/workers/${encodeURIComponent(workerId)}`;
   const read = useApiRead(base, validateWorker), diagnostics = useApiRead(`${base}/diagnostics`, validateDiagnostics);
-  const nodes = useNodes(), executions = useExecutions(), action = useAction();
+  const nodes = useNodes(), executions = useExecutions(), action = useAction(), names = useNames();
   const [tab, setTab] = useState<'work' | 'diagnostics'>('work'), [editing, setEditing] = useState(false);
   const refetchWorker = read.refetch;
   const refreshWorker = useCallback(() => { void refetchWorker(); }, [refetchWorker]);
@@ -35,7 +35,7 @@ export function WorkerPage() {
   const refreshReadiness = useCallback(() => { void refetchWorker(); void refetchDiagnostics(); }, [refetchWorker, refetchDiagnostics]);
   const worker = read.data;
   if (!worker) return <><PageHeader title={t('workers.title')} crumbs={[{ label: t('nav.workers'), to: '/workers' }]} /><Card flush><ReadState read={read}>{null}</ReadState></Card></>;
-  const state = scheduling(worker), use = slots(worker), online = isOnline(worker);
+  const state = scheduling(worker), use = slots(worker), online = isOnline(worker), health = workerHealth(worker, names.project);
   const mine = (executions.data ?? []).filter(item => item.assignedWorkerId === worker.workerId);
   const running = mine.filter(isActive), recent = mine.filter(item => !isActive(item) && item.state !== 'Queued').slice(0, 10);
   const node = nodes.data?.find(item => item.id === worker.workerId), resources = worker.hostResources;
@@ -52,8 +52,8 @@ export function WorkerPage() {
       </>} />
 
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <Tile label={t('workers.connection')} tone={online ? 'ok' : 'idle'} value={t(online ? 'workers.online' : 'workers.offline')} detail={<>{t('workers.lastSignal')} <Ago value={worker.lastHeartbeatAtUtc} /></>} />
-      <Tile label={t('workers.scheduling')} tone={schedulingTone[state]} value={t(`scheduling.${state}`)} detail={t(`scheduling.${state}.detail`)} />
+      <div className="sm:col-span-2"><Tile label={t('workers.health')} tone={health.tone} value={t(health.label)}
+        detail={<>{t(health.cause.key, health.cause.values)} · {t('workers.lastSignal')} <Ago value={worker.lastHeartbeatAtUtc} /></>} /></div>
       <Tile label={t('workers.slots')} tone={use.used ? 'run' : 'idle'} value={t('workers.slotsUsed', { used: use.used, total: use.total })} detail={t('workers.slotsFree', { n: Math.max(0, use.total - use.used) })} />
     </div>
     {state === 'blocked' && blockers.length > 0 && <Card><p className="text-sm font-semibold text-primary">{t('workers.whyBlocked')}</p>

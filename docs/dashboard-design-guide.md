@@ -25,8 +25,8 @@ secondary *Diagnostics* tab or a collapsed *Technical detail* block, never on th
 | Issue | `/projects/{id}/issues/{n}` | Status, *what happened / what you can do* when it failed, description (Markdown), attempts with steps, status card and actions card. |
 | Executions | `/executions` | Every attempt with search and state filter. |
 | Execution | `/executions/{id}` | Five lifecycle steps with durations, explanation and actions, result and details. |
-| Workers | `/workers` | Aligned table: Worker, connection (online/offline + last signal), activity, slots, scheduling. Standalone Workers appear read-only. Side panel to connect a Worker. |
-| Worker | `/workers/{id}` | Tiles for connection, **scheduling (accepting / pausing / paused / not accepting)** and slots; pause/resume scheduling; *Work* and *Diagnostics* tabs; edit panel. |
+| Workers | `/workers` | Aligned table: Worker, health (one state with its main cause and last signal, filterable), activity, slots. Standalone Workers appear read-only. Side panel to connect a Worker. |
+| Worker | `/workers/{id}` | One **health** tile (ready / working / working with paused projects / pausing / paused / not working / offline) with its main cause and last signal, a slots tile, projects paused on this Worker with **Resume on this Worker**; pause/resume scheduling; *Work* and *Diagnostics* tabs; edit panel. |
 | Settings | `/settings` | Server, Server tools and credentials (side panel to add, replace, assign or revoke). |
 
 Edits always happen in a right-hand side panel. Secrets are write-only.

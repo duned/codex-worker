@@ -167,3 +167,18 @@ test('the attention inbox groups problems by cause and lists each once', () => {
   assert.deepEqual(inbox.workers.map(item => item.workerId), ['offline']);
   assert.equal(model.attentionCount(inbox), 6);
 });
+
+test('each Worker has one health state with its most severe cause', () => {
+  const worker = values => ({ workerId: 'w', availability: 'online', lifecycleState: 'running', workerExecutionSlots: 2, ...values });
+  const paused = { managedDiagnostics: { projects: [{ projectId: 'p', revision: 1, state: 'blocked', diagnosticCode: 'project-recovery-verification-failed' }] } };
+  const state = values => model.workerHealth(worker(values), id => `Project ${id}`);
+  assert.equal(state({ availability: 'offline', schedulingBlocker: 'worker-operation-unresolved' }).state, 'offline');
+  assert.equal(state({ schedulingBlocker: 'worker-operation-unresolved', schedulingPolicy: 'Disabled' }).state, 'blocked');
+  assert.equal(state({ schedulingPolicy: 'Disabled', lifecycleState: 'drained' }).state, 'paused');
+  assert.equal(state({ schedulingPolicy: 'Draining', lifecycleState: 'draining' }).state, 'pausing');
+  assert.equal(state({ lifecycleState: 'not-ready' }).state, 'blocked');
+  const degraded = state({ ...paused, activeExecutions: 1 });
+  assert.deepEqual([degraded.state, degraded.tone, degraded.cause.values.list], ['degraded', 'warn', 'Project p']);
+  assert.deepEqual(state({ activeExecutions: 1 }).cause, { key: 'health.cause.working', values: { used: 1, total: 2 } });
+  assert.equal(state({}).state, 'ready');
+});
