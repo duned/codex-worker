@@ -1141,6 +1141,17 @@ public static partial class ServerApplication
             }
             catch (ExecutionRequestCancellationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
+        app.MapPost("/api/v1/executions/{executionRequestId}/prioritize", async (string executionRequestId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            try
+            {
+                var execution = await store.PrioritizeQueuedExecutionAsync(executionRequestId, context.RequestAborted);
+                return execution is null ? Results.NotFound() : Results.Ok(execution);
+            }
+            catch (ExecutionRequestPriorityException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
         app.MapPost("/api/v1/executions/{executionRequestId}/reconcile", async (string executionRequestId,
             ExecutionReconciliationRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {

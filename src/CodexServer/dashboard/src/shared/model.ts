@@ -283,10 +283,10 @@ export const toolActionCommand = (operation: string): string =>
 
 /** The actions that can resolve an execution in its current state, best first. A finished execution with a newer
  * attempt for the same Issue has none: the newer attempt is the one to act on. */
-export type ExecutionAction = 'cancel' | 'retryIntegration' | 'retryFresh' | 'resolveUncertain' | 'manualCompletion';
+export type ExecutionAction = 'prioritize' | 'cancel' | 'retryIntegration' | 'retryFresh' | 'resolveUncertain' | 'manualCompletion';
 const settledRecovery = ['RebaseConflictRequeued', 'LeaseExpiredRequeued', 'PreparationRequeued', 'OperatorRetryQueued', 'OperatorVerifiedIntegrated'];
 export function executionActions(execution: ExecutionSummary, superseded: boolean): ExecutionAction[] {
-  if (execution.state === 'Queued') return ['cancel'];
+  if (execution.state === 'Queued') return ['prioritize', 'cancel'];
   if (execution.state !== 'Failed' || superseded || settledRecovery.includes(execution.recoveryState ?? '')) return [];
   // The Server keeps an uncertain attempt reserved until an operator records whether it reached the base branch.
   if (execution.recoveryState === 'LeaseExpiredUncertain') return ['resolveUncertain'];

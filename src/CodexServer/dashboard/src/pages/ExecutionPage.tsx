@@ -55,6 +55,8 @@ export function ExecutionPage() {
   const actionButton = (kind: ExecutionAction, primary: boolean) => {
     const color = primary ? 'primary' : 'secondary', busy = !!action.busy;
     switch (kind) {
+      case 'prioritize': return <Button key={kind} color="secondary" isDisabled={busy}
+        onClick={() => void action.run(`prioritize-${item.id}`, `${path}/prioritize`, 'POST', {}, 'actions.prioritized')}>{t('actions.prioritize')}</Button>;
       case 'cancel': return <Button key={kind} color="secondary-destructive" isDisabled={busy}
         onClick={() => void action.run(`cancel-${item.id}`, `${path}/cancel`, 'POST', {}, 'actions.cancelled')}>{t('actions.cancelQueued')}</Button>;
       case 'retryIntegration': return <Button key={kind} color={color} isDisabled={busy} onClick={() => void retryIntegration()}>{t('actions.retryIntegration')}</Button>;

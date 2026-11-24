@@ -32,7 +32,7 @@ export const common = {
   "actions.integrationRetryUnavailable": "Only the integration cannot be retried:",
   "explain.integration.todo": "Retry only the integration: it reuses the validated work without running the engine again. If that is not possible, retry from scratch.",
   "actions.resolve": "Resolve",
-  "actions.queued": "Queued. A free Worker will pick it up.", "actions.cancelled": "Removed from the queue.", "actions.retryFresh": "Retry from scratch", "actions.retryQueued": "Queued. If the Issue had lost its ready label, it was added back on GitHub.",
+  "actions.queued": "Queued. A free Worker will pick it up.", "actions.cancelled": "Removed from the queue.", "actions.retryFresh": "Retry from scratch", "actions.prioritize": "Move to the front", "actions.prioritized": "Moved to the front of the queue.", "actions.retryQueued": "Queued. If the Issue had lost its ready label, it was added back on GitHub.",
   "actions.viewDetail": "View detail", "actions.viewWorker": "View Worker", "actions.viewExecution": "View execution", "actions.cancelQueued": "Remove from queue",
   "actions.archive": "Archive", "actions.restore": "Restore", "actions.archiveSelected": "Archive selected ({n})", "actions.restoreSelected": "Restore selected ({n})",
   "actions.archived": "Archived {n} execution(s).", "actions.restored": "Restored {n} execution(s).",

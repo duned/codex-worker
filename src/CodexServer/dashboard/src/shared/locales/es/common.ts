@@ -33,7 +33,7 @@ export const common = {
   "actions.integrationRetryUnavailable": "No se puede reintentar solo la integración:",
   "explain.integration.todo": "Reintenta solo la integración: reutiliza el trabajo validado sin volver a ejecutar el motor. Si no es posible, reintenta desde cero.",
   "actions.resolve": "Resolver",
-  "actions.queued": "En cola. La recogerá el primer Worker libre.", "actions.cancelled": "Quitada de la cola.", "actions.retryFresh": "Reintentar desde cero", "actions.retryQueued": "En cola. Si la issue había perdido la etiqueta de lista, se ha vuelto a poner en GitHub.",
+  "actions.queued": "En cola. La recogerá el primer Worker libre.", "actions.cancelled": "Quitada de la cola.", "actions.retryFresh": "Reintentar desde cero", "actions.prioritize": "Subir al principio", "actions.prioritized": "Subida al principio de la cola.", "actions.retryQueued": "En cola. Si la issue había perdido la etiqueta de lista, se ha vuelto a poner en GitHub.",
   "actions.viewDetail": "Ver detalle", "actions.viewWorker": "Ver Worker", "actions.viewExecution": "Ver ejecución", "actions.cancelQueued": "Quitar de la cola",
   "actions.archive": "Archivar", "actions.restore": "Restaurar", "actions.archiveSelected": "Archivar seleccionadas ({n})", "actions.restoreSelected": "Restaurar seleccionadas ({n})",
   "actions.archived": "{n} ejecución(es) archivada(s).", "actions.restored": "{n} ejecución(es) restaurada(s).",

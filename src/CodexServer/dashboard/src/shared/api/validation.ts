@@ -53,7 +53,7 @@ export const projects = list<ProjectSummary>(value => { const item = fields(valu
 export const executions = list<ExecutionSummary>(value => {
   const item = fields(value, ['id', 'projectId', 'state', 'createdAtUtc']);
   optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState', 'recoveryReason', 'pendingReason', 'managedEligibilityState', 'managedEligibilityCheckedAtUtc', 'completionSummary',
-    'validationResult', 'integrationResult', 'failureClassification', 'retryOfExecutionId', 'workerExecutionId', 'workspaceRecovery', 'archivedAtUtc'], ['recoverable'], ['durationMilliseconds', 'attemptNumber']);
+    'validationResult', 'integrationResult', 'failureClassification', 'retryOfExecutionId', 'workerExecutionId', 'workspaceRecovery', 'archivedAtUtc', 'prioritizedAtUtc'], ['recoverable'], ['durationMilliseconds', 'attemptNumber']);
   if (item.stageStartedAtUtc != null) {
     const stages = record(item.stageStartedAtUtc);
     const allowed = new Set(['claimed', 'preparing', 'codex', 'validation', 'integration', 'reporting']);

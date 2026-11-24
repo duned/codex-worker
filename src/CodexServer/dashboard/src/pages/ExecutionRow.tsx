@@ -32,7 +32,8 @@ export function ExecutionRow({ execution, selection }: { execution: ExecutionSum
     <span className="text-sm text-tertiary">{names.worker(execution.assignedWorkerId)}</span>
     <span className="text-sm text-tertiary tabular-nums">{dateTime(execution.startedAtUtc ?? execution.createdAtUtc, language)}</span>
     <span className="flex flex-wrap items-center gap-1.5"><StatusPill status={executionStatus(execution)} />
-      {execution.archivedAtUtc && <Pill tone="idle">{t('executions.archived')}</Pill>}</span>
+      {execution.archivedAtUtc && <Pill tone="idle">{t('executions.archived')}</Pill>}
+      {execution.state === 'Queued' && execution.prioritizedAtUtc && <Pill tone="run">{t('executions.prioritized')}</Pill>}</span>
   </RowLink>;
   return selection ? <div className="flex items-center">
     <SelectBox label={t('executions.select', { name: executionLabel(execution) })} {...selection} />{row}</div> : row;

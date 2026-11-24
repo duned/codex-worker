@@ -95,7 +95,7 @@ test('tool progress shows a request until the Worker records it, then the comman
 
 test('execution actions offer only what can resolve the current state', () => {
   const failed = values => execution({ state: 'Failed', workReference: { type: 'github-issue', id: '60' }, ...values });
-  assert.deepEqual(model.executionActions(execution({ state: 'Queued' }), false), ['cancel']);
+  assert.deepEqual(model.executionActions(execution({ state: 'Queued' }), false), ['prioritize', 'cancel']);
   assert.deepEqual(model.executionActions(execution({ state: 'Running' }), false), []);
   assert.deepEqual(model.executionActions(execution({ state: 'Completed' }), false), []);
   assert.deepEqual(model.executionActions(failed({ recoveryState: 'LeaseExpiredUncertain' }), false), ['resolveUncertain']);

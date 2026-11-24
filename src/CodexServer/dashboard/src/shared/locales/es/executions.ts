@@ -10,7 +10,7 @@ export const executions = {
   "executions.newerAttempt": "Hay un intento más reciente para esta issue; actúa sobre ese.",
   "executions.openNewerAttempt": "Abrir intento {n}",
   "executions.created": "Encolada", "executions.finished": "Terminada", "executions.id": "Identificador", "executions.retryOf": "Reintento de",
-  "executions.view": "Vista", "executions.viewCurrent": "Actuales", "executions.viewArchived": "Archivadas", "executions.archived": "Archivada",
+  "executions.prioritized": "Primera en cola", "executions.view": "Vista", "executions.viewCurrent": "Actuales", "executions.viewArchived": "Archivadas", "executions.archived": "Archivada",
   "executions.archivedAt": "Archivada", "executions.archivedDescription": "Ejecuciones terminadas ocultas de las listas. Restaura una para volver a mostrarla.",
   "executions.noArchived": "No hay ejecuciones archivadas que coincidan.", "executions.select": "Seleccionar {name}", "executions.selectAll": "Seleccionar todas las mostradas"
 } satisfies Record<keyof typeof source, string>;

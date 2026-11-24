@@ -396,6 +396,37 @@ public sealed partial class CodexServerTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task PrioritizedQueuedRequestsAreAssignedFirst()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-03-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "priority.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Priority", "team/priority", "main", "", []));
+        var worker = Guid.NewGuid().ToString("N");
+        WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+        var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "2")));
+        var third = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "3")));
+
+        var prioritized = await store.PrioritizeQueuedExecutionAsync(third.Id);
+        Assert.Equal(clock.GetUtcNow(), prioritized?.PrioritizedAtUtc);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await store.PrioritizeQueuedExecutionAsync(second.Id);
+        Assert.Null(await store.PrioritizeQueuedExecutionAsync("missing"));
+
+        var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var assignment = (await store.RequestAssignmentAsync(request)).Assignment!;
+        Assert.Equal(second.Id, assignment.ServerExecutionId);
+        await Assert.ThrowsAsync<ExecutionRequestPriorityException>(() => store.PrioritizeQueuedExecutionAsync(second.Id));
+        Assert.Null((await store.GetExecutionAsync(first.Id))?.PrioritizedAtUtc);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("PreparationFailed", true)]
     [InlineData("Blocked", false)]
