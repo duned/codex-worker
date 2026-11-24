@@ -38,6 +38,8 @@ managedProjects:
 
 telegram:
   enabled: false
+  # Alert when this Worker, or one of its projects, stops taking work for this many minutes (0 disables).
+  blockedAlertMinutes: 15
 
 api:
   enabled: true

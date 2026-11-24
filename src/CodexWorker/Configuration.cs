@@ -139,6 +139,8 @@ public sealed class GlobalWorkerConfiguration
             if (value.Worker.PollingSeconds <= 0) throw new InvalidDataException("worker.pollingSeconds must be greater than zero.");
             if (value.Worker.MaxParallelTasks < 1 || value.Worker.MaxParallelTasks > 8)
                 throw new InvalidDataException("worker.maxParallelTasks must be between 1 and 8.");
+            if (value.Telegram.BlockedAlertMinutes is < 0 or > 1440)
+                throw new InvalidDataException("telegram.blockedAlertMinutes must be between 0 (disabled) and 1440.");
             if (value.Worker.Provisioning is null || value.Worker.Provisioning.AllowedPrivilegedActions is null || value.Worker.Provisioning.DeniedActions is null ||
                 value.Worker.Provisioning.AllowedPrivilegedActions.Count > 100 || value.Worker.Provisioning.DeniedActions.Count > 100 ||
                 value.Worker.Provisioning.AllowedPrivilegedActions.Concat(value.Worker.Provisioning.DeniedActions)
@@ -409,7 +411,12 @@ public sealed class ValidationSettings
     public int TimeoutSeconds { get; set; } = 900;
     public int MaxFixAttempts { get; set; } = 2;
 }
-public sealed class TelegramSettings { public bool Enabled { get; set; } }
+public sealed class TelegramSettings
+{
+    public bool Enabled { get; set; }
+    /// <summary>Minutes the Worker or one of its projects may stop taking work before a Telegram alert; 0 disables the alert.</summary>
+    public int BlockedAlertMinutes { get; set; } = 15;
+}
 public sealed class ManagementApiSettings
 {
     public bool Enabled { get; set; } = true;

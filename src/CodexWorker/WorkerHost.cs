@@ -429,6 +429,7 @@ public sealed class WorkerHost
             var scheduler = new ProjectScheduler(runtimes.Count);
             var capacityLog = new SchedulerCapacityLog(_global.Worker.MaxParallelTasks, _operationalLog);
             var idleNoWorkNotification = new IdleNoWorkNotificationState();
+            var blockageAlerts = new BlockageAlertState(TimeSpan.FromMinutes(_global.Telegram.BlockedAlertMinutes));
             void ReportCapacity() => capacityLog.Report(active.Count, active.Values
                 .GroupBy(project => project.Configuration.Project.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(group => (group.First().Configuration.Project.Name, group.Count(),
@@ -936,6 +937,15 @@ public sealed class WorkerHost
                 if (ct.IsCancellationRequested) break;
                 if (idleNoWorkNotification.Observe(active.Count, foundWork))
                     await telegram.NoWorkAsync(ct);
+                var readinessSnapshot = runtimeReadModel.Registry.Lifecycle.Snapshot;
+                foreach (var alert in blockageAlerts.Observe(_timeProvider.GetUtcNow(),
+                    readinessSnapshot.State == "not-ready" ? readinessSnapshot.ReconnectReadinessResult : null,
+                    runtimeReadModel.Registry.Status().Where(project => project.State == ProjectLifecycleState.Unavailable)
+                        .ToDictionary(project => project.Name, project => project.UnavailableReason ?? "Project unavailable.", StringComparer.OrdinalIgnoreCase)))
+                {
+                    _operationalLog($"Scheduler · {alert.Project ?? "Worker"} · {(alert.Recovered ? "takes work again" : "has not taken work")} for {WorkerConsole.FormatDuration(alert.Duration)} · Telegram alert.");
+                    await telegram.BlockageAsync(alert, ct);
+                }
                 if (active.Count > 0)
                 {
                     using var changeWait = CancellationTokenSource.CreateLinkedTokenSource(ct);

@@ -131,6 +131,12 @@ public sealed class TelegramNotifier : IDisposable
         SendTaskAsync(project, repository, issue, "🟡", "TAREA BLOQUEADA",
             $"Ejecución {ExecutionFormatting.Display(executionId)}\nPreparación rechazada: {Clean(reason)}", ct);
 
+    public Task BlockageAsync(BlockageAlert alert, CancellationToken ct) => SendAsync(Format(alert.Recovered
+        ? $"🟢 {_identity} · {(alert.Project is null ? "VUELVE A ACEPTAR TRABAJO" : "PROYECTO REACTIVADO")}\n" +
+            $"{(alert.Project is null ? "" : $"Proyecto: {alert.Project}\n")}Tras {WorkerConsole.FormatDuration(alert.Duration)} sin aceptar trabajo"
+        : $"🟠 {_identity} · {(alert.Project is null ? "NO ACEPTA TRABAJO" : "PROYECTO PAUSADO")}\n" +
+            $"{(alert.Project is null ? "" : $"Proyecto: {alert.Project}\n")}Desde hace {WorkerConsole.FormatDuration(alert.Duration)}\n{Clean(alert.Reason)}"), ct);
+
     public Task CriticalAsync(string? project, string details, CancellationToken ct) =>
         SendAsync(Format($"🚨 {_identity} · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
 

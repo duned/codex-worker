@@ -63,6 +63,7 @@ public static partial class WorkerConfigurationAdministration
             $"projects.directory: {configuration.Projects.Directory}{Environment.NewLine}" +
             $"projects.ownership: {configuration.Projects.Ownership}{Environment.NewLine}" +
             $"telegram.enabled: {configuration.Telegram.Enabled.ToString().ToLowerInvariant()}{Environment.NewLine}" +
+            $"telegram.blockedAlertMinutes: {configuration.Telegram.BlockedAlertMinutes}{Environment.NewLine}" +
             $"api.enabled: {configuration.Api.Enabled.ToString().ToLowerInvariant()}{Environment.NewLine}" +
             $"api.listenUrl: {SafeUrl(configuration.Api.ListenUrl)}{Environment.NewLine}" +
             $"api.eventHistoryLimit: {configuration.Api.EventHistoryLimit}{Environment.NewLine}" +
@@ -81,7 +82,7 @@ public static partial class WorkerConfigurationAdministration
                 configuration.Worker.Provisioning.AllowNonPrivileged, configuration.Worker.Provisioning.AllowCredentials,
                 configuration.Worker.Provisioning.AllowedPrivilegedActions, configuration.Worker.Provisioning.DeniedActions)),
         new WorkerConfigurationProjects(configuration.Projects.Directory, configuration.Projects.Ownership),
-        new WorkerConfigurationTelegram(configuration.Telegram.Enabled),
+        new WorkerConfigurationTelegram(configuration.Telegram.Enabled, configuration.Telegram.BlockedAlertMinutes),
         new WorkerConfigurationApi(configuration.Api.Enabled, SafeUrl(configuration.Api.ListenUrl), configuration.Api.EventHistoryLimit),
         new WorkerConfigurationServer(configuration.Server.Enabled, SafeUrl(configuration.Server.Url),
             configuration.Server.HeartbeatIntervalSeconds,
