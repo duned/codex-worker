@@ -101,7 +101,9 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
                             WorkerConfigurationChange.Add => $"Added {arguments[2]} to {update.Setting}",
                             WorkerConfigurationChange.Remove => $"Removed {arguments[2]} from {update.Setting}",
                             _ => $"Updated {update.Setting}"
-                        }) + $" in {update.ConfigurationPath}. Restart the Worker service for the change to take effect.");
+                        }) + $" in {update.ConfigurationPath}. " + (update.Setting.StartsWith("worker.provisioning.", StringComparison.Ordinal)
+                            ? "The running Worker applies it to its next provisioning or maintenance request; no restart is needed."
+                            : "Restart the Worker service for the change to take effect."));
                     return ProcessExitCodes.Success;
                 default:
                     throw new ArgumentException($"Unknown config command '{operation}'. Use 'codex-worker config --help' for usage.");

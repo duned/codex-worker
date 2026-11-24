@@ -40,7 +40,7 @@ export const workers = {
   "tools.terminalSignInNote": "El inicio de sesión de esta herramienta no se puede terminar desde el dashboard: su código del navegador tiene que volver al mismo terminal y nunca pasa por el Server.",
   "tools.failure.ManualVendorCliCompletionRequired": "El inicio de sesión hay que terminarlo en un terminal del Worker. Mira los pasos de abajo.",
   "tools.policySetTrue": "Activa {setting}:",
-  "tools.policyRestart": "Reinicia el Worker (botón Reiniciar de arriba) para que lea la política nueva y vuelve a lanzar la acción.",
+  "tools.policyRestart": "Vuelve a lanzar la acción: el Worker lee la política nueva por su cuenta, sin reiniciar.",
   "tools.policyDenied": "La política local del Worker no permite esta acción. Solo se puede cambiar en el propio Worker:",
   "tools.policyDeniedLikely": "La política local del Worker no permite esta acción (este Worker no indica qué ajuste; este es el más probable). Cámbialo en el Worker:",
   "tools.policyAllowlist": "Permite la acción privilegiada {key} (se conservan las entradas actuales):",

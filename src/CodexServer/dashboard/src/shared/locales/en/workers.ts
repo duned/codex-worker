@@ -39,7 +39,7 @@ export const workers = {
   "tools.terminalSignInNote": "This tool's sign-in cannot be finished from the dashboard: its browser code must go back to the same terminal, and it is never sent through the Server.",
   "tools.failure.ManualVendorCliCompletionRequired": "Sign-in has to be finished in a terminal on the Worker. See the steps below.",
   "tools.policySetTrue": "Enable {setting}:",
-  "tools.policyRestart": "Restart the Worker (Restart button above) so it reads the new policy, then run the action again.",
+  "tools.policyRestart": "Run the action again: the Worker reads the new policy on its own, no restart needed.",
   "tools.policyDenied": "The Worker's local policy does not allow this action. It can only be changed on the Worker:",
   "tools.policyDeniedLikely": "The Worker's local policy does not allow this action (this Worker does not say which setting; this is the most likely one). Change it on the Worker:",
   "tools.policyAllowlist": "Allow the privileged action {key} (the current entries are kept):",

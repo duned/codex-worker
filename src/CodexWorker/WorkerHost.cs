@@ -15,6 +15,7 @@ public sealed class WorkerHost
     private readonly WorkerRegistrationClient _registration;
     private readonly IAgentAuthenticationProvider? _agentAuthentication;
     private readonly string? _executionHistoryPath;
+    private readonly ProvisioningPolicySource _provisioningPolicy;
 
     public WorkerHost(GlobalWorkerConfiguration global,
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, WorkerConsole? output = null,
@@ -23,7 +24,6 @@ public sealed class WorkerHost
         string? executionHistoryPath = null)
     {
         _registration = registrationClient ?? new WorkerRegistrationClient();
-        _registration.UseMaintenancePolicy(global.Worker.Provisioning);
         _agentAuthentication = agentAuthentication;
         _executionHistoryPath = executionHistoryPath;
         _global = global;
@@ -33,6 +33,8 @@ public sealed class WorkerHost
         _operationalLog = operationalLog is null ? _ => { } :
             message => _output.Group(() => operationalLog(message));
         _executionOperationalLog = operationalLog is null ? null : _operationalLog;
+        _provisioningPolicy = new(global, message => _output.Warning(message));
+        _registration.UseMaintenancePolicy(() => _provisioningPolicy.Current);
     }
 
     private void LogAssignment(WorkerAssignmentContract assignment, string message, WorkerConfiguration? configuration = null,
@@ -596,7 +598,7 @@ public sealed class WorkerHost
                 // Recovery updates use local policy and Server authorization, not the invalid managed snapshot.
                 // The Server also verifies idle executions/leases and holds scheduling drained until readiness returns.
                 if (managed && active.Count == 0 &&
-                    await _registration.ExecuteWorkerUpdateAsync(_global.Server, _global.Worker.Provisioning, runtimeReadModel, _output.Warning, executionToken))
+                    await _registration.ExecuteWorkerUpdateAsync(_global.Server, _provisioningPolicy.Current, runtimeReadModel, _output.Warning, executionToken))
                     continue;
                 if (managed && managedConfiguration?.Status.SynchronizationStatus == "synchronized" && active.Count == 0 &&
                     await _registration.ExecuteTelegramTestAsync(_global.Server, managedConfiguration, telegram, executionToken))
@@ -628,7 +630,7 @@ public sealed class WorkerHost
                     managedConfiguration?.Status.SynchronizationStatus == "synchronized")
                 {
                     var registration = _registration;
-                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning,
+                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _provisioningPolicy.Current,
                         executionToken, RevokeReadinessAsync,
                         token => ReportProvisionedCapabilitiesAsync(Volatile.Read(ref heartbeatCapabilities), token)))
                     {
@@ -1447,7 +1449,7 @@ public sealed class WorkerHost
     private ProvisioningPlanExecutor CreateProvisioningExecutor(WorkerRegistrationClient registration,
         IReadOnlyList<ProjectRuntime> runtimes,
         Func<IReadOnlyList<WorkerCapabilityContract>, CancellationToken, Task> capabilitiesChanged) => new(_registration.CapabilityDiscovery,
-        policy: _global.Worker.Provisioning,
+        policy: _provisioningPolicy.Current,
         authenticationExecutor: new GitHubAuthenticationProvisioner(_runner,
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.GitHub,
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.Git,
