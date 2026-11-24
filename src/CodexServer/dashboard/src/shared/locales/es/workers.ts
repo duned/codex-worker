@@ -159,6 +159,8 @@ export const workers = {
   "health.degraded": "Trabajando con proyectos pausados", "health.working": "Trabajando", "health.ready": "Listo",
   "health.cause.blocker": "{text}", "health.cause.projectsPaused": "Pausados en este Worker: {list}. Los demás proyectos siguen trabajando.",
   "health.cause.working": "{used} de {total} plazas en uso.", "workers.health": "Estado",
+  "health.clock": "Reloj desajustado", "health.cause.clockAhead": "Su reloj va {seconds} s por delante del Server. Los leases y los plazos dependen de él: sincroniza la hora de la máquina (NTP).",
+  "health.cause.clockBehind": "Su reloj va {seconds} s por detrás del Server. Los leases y los plazos dependen de él: sincroniza la hora de la máquina (NTP).",
   "workers.pausedTitle": "Proyectos pausados en este Worker",
   "workers.pausedHint": "El Worker dejó de coger trabajo de estos proyectos tras un fallo que no podía resolver solo. Revisa el motivo y reactívalo cuando sea seguro. Los demás proyectos siguen trabajando.",
   "workers.pausedPill": "Pausado en este Worker",

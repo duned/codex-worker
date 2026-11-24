@@ -110,6 +110,7 @@ For Worker maintenance, request local drain and wait for completion before clean
 | Installation/download failure | Supported OS/architecture, published component archive/checksum and outbound HTTPS; preserve retained identity on retry. |
 | Service will not start | Journal, configuration validation, file ownership and service executable/environment. Standalone deterministic startup failures exit 2 and are not restarted by systemd. |
 | Online but not ready | Missing tools, service PATH/CODEX_HOME, service-account authentication and scoped repository permissions; registration is not preflight. Managed control/heartbeat can remain online while execution is unavailable. |
+| **Clock out of sync** on a Worker | Each heartbeat carries the Worker's clock; the Server flags a difference above 60 s on the Worker and on Home because leases and operation deadlines depend on it. Enable time synchronization (`timedatectl set-ntp true`) on the machine. |
 | `server-unavailable` | Server systemd state, DNS, TLS trust, firewall/proxy and reachable configured URL. |
 | 401/403 or `server-unauthorized` | Existing identity, Server association and revocation state. Do not delete identity or enroll anew as a connectivity fix. |
 | `managed-contract-invalid` | Installed build compatibility and snapshot contract/hash; retrieval succeeded. Do not bypass validation or remove cache/recovery state. |

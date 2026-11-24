@@ -16,13 +16,18 @@ export const pausedOnWorker = (project: Pick<WorkerProjectReadiness, 'materializ
 
 /** One health state per Worker with its main cause, most severe first. Connection, scheduling and paused projects
  *  stay separate facts underneath; this is what a list or a header shows. */
-export type Health = 'offline' | 'blocked' | 'paused' | 'pausing' | 'degraded' | 'working' | 'ready';
+export type Health = 'offline' | 'blocked' | 'clock' | 'paused' | 'pausing' | 'degraded' | 'working' | 'ready';
+/** Leases and operation deadlines tolerate this much difference between the Worker and Server clocks. */
+export const clockSkewToleranceSeconds = 60;
+export const clockSkewed = (worker: WorkerObservation) => isOnline(worker) && Math.abs(worker.clockSkewSeconds ?? 0) > clockSkewToleranceSeconds;
 export interface WorkerHealth { state: Health; tone: Tone; label: TranslationKey; cause: { key: TranslationKey; values?: Record<string, string | number> } }
 export function workerHealth(worker: WorkerObservation, projectName: (id: string) => string = id => id): WorkerHealth {
   const make = (state: Health, tone: Tone, key: TranslationKey, values?: Record<string, string | number>): WorkerHealth =>
     ({ state, tone, label: `health.${state}` as TranslationKey, cause: { key, values } });
   if (!isOnline(worker)) return make('offline', 'bad', 'workers.offlineReason');
   if (worker.schedulingBlocker) return make('blocked', 'bad', 'health.cause.blocker', { text: schedulingBlockerText(worker.schedulingBlocker) });
+  if (clockSkewed(worker)) return make('clock', 'warn', (worker.clockSkewSeconds ?? 0) > 0 ? 'health.cause.clockAhead' : 'health.cause.clockBehind',
+    { seconds: Math.abs(worker.clockSkewSeconds ?? 0) });
   if (worker.schedulingPolicy === 'Disabled') return make('paused', 'warn', 'scheduling.paused.detail');
   if (worker.schedulingPolicy === 'Draining') return make('pausing', 'warn', 'scheduling.pausing.detail');
   if (worker.lifecycleState && worker.lifecycleState !== 'running') return make('blocked', 'bad', 'workers.blockedReason');
@@ -37,6 +42,7 @@ export function workerHealth(worker: WorkerObservation, projectName: (id: string
 export interface AttentionInbox {
   pausedProjects: { worker: WorkerObservation; projectId: string; detail?: string }[];
   maintenance: WorkerObservation[];
+  clock: WorkerObservation[];
   uncertain: ExecutionSummary[];
   ineligible: ExecutionSummary[];
   failed: ExecutionSummary[];
@@ -49,7 +55,7 @@ export function attentionInbox(executions: ExecutionSummary[], workers: WorkerOb
     .map(project => ({ worker, projectId: project.projectId, detail: project.detail ?? undefined })));
   const maintenance = workers.filter(worker => worker.schedulingBlocker === 'worker-operation-unresolved');
   return {
-    pausedProjects, maintenance,
+    pausedProjects, maintenance, clock: workers.filter(clockSkewed),
     // An uncertain lease keeps its project slot until someone reconciles it.
     uncertain: latestFailures.filter(item => item.recoveryState === 'LeaseExpiredUncertain'),
     ineligible: executions.filter(item => item.state === 'Queued' && !!item.managedEligibilityState && item.managedEligibilityState !== 'eligible'),
@@ -60,7 +66,7 @@ export function attentionInbox(executions: ExecutionSummary[], workers: WorkerOb
   };
 }
 export const attentionCount = (inbox: AttentionInbox) =>
-  inbox.pausedProjects.length + inbox.maintenance.length + inbox.uncertain.length + inbox.ineligible.length + inbox.failed.length + inbox.workers.length;
+  inbox.pausedProjects.length + inbox.maintenance.length + inbox.clock.length + inbox.uncertain.length + inbox.ineligible.length + inbox.failed.length + inbox.workers.length;
 
 export const isActive = (execution: ExecutionSummary) => execution.state === 'Assigned' || execution.state === 'Running';
 export const isConflict = (execution: ExecutionSummary) => execution.failureClassification === 'IntegrationConflict';

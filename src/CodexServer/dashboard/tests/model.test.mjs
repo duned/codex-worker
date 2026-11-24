@@ -182,3 +182,13 @@ test('each Worker has one health state with its most severe cause', () => {
   assert.deepEqual(state({ activeExecutions: 1 }).cause, { key: 'health.cause.working', values: { used: 1, total: 2 } });
   assert.equal(state({}).state, 'ready');
 });
+
+test('a Worker clock more than a minute off the Server is a health warning and an inbox item', () => {
+  const worker = values => ({ workerId: 'w', availability: 'online', lifecycleState: 'running', ...values });
+  assert.equal(model.workerHealth(worker({ clockSkewSeconds: 60 })).state, 'ready');
+  const ahead = model.workerHealth(worker({ clockSkewSeconds: 90 }));
+  assert.deepEqual([ahead.state, ahead.cause.key, ahead.cause.values.seconds], ['clock', 'health.cause.clockAhead', 90]);
+  assert.equal(model.workerHealth(worker({ clockSkewSeconds: -120 })).cause.key, 'health.cause.clockBehind');
+  assert.equal(model.workerHealth(worker({ clockSkewSeconds: 600, availability: 'offline' })).state, 'offline');
+  assert.deepEqual(model.attentionInbox([], [worker({ clockSkewSeconds: 600 }), worker({ workerId: 'ok' })]).clock.map(item => item.workerId), ['w']);
+});

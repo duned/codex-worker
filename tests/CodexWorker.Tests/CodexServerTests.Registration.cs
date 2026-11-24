@@ -449,6 +449,31 @@ public sealed partial class CodexServerTests
     }
 
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(null, null, false)]
+    [InlineData(0, 0, false)]
+    [InlineData(-60, -60, false)]
+    [InlineData(90, 90, true)]
+    [InlineData(-300, -300, true)]
+    public async Task HeartbeatReportsWorkerClockSkew(int? workerAheadSeconds, int? expectedSkew, bool skewed)
+    {
+        using var temporary = new TemporaryDirectory();
+        var now = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "registry.db"), 30, new TestTimeProvider(now));
+        await store.InitializeAsync();
+        var workerId = Guid.NewGuid().ToString("N");
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 1, []));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, [], [],
+            SentAtUtc: workerAheadSeconds is { } ahead ? now.AddSeconds(ahead) : null));
+
+        var worker = (await store.GetWorkerAsync(workerId))!;
+        Assert.Equal((expectedSkew, skewed), (worker.ClockSkewSeconds, worker.ClockSkewed));
+        var diagnostics = WorkerDiagnosticsDerivation.Derive(worker, [], [], "version", observedAtUtc: now);
+        Assert.Equal(skewed, diagnostics.Reasons.Any(reason => reason.StartsWith("Worker clock differs", StringComparison.Ordinal)));
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
     public async Task ServerStartsAndExposesStatusHealthAndVersion()

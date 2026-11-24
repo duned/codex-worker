@@ -7,7 +7,7 @@ export interface WorkerObservation {
   telegram?: { enabled: boolean; chatId?: string | null; credentialId?: string | null; tokenConfigured: boolean };
   configuredMaximumCapacity?: number; workerExecutionSlots?: number; configurationRevision?: number;
   hostResources?: { measuredAtUtc: string; logicalCpuCount?: number; totalMemoryBytes?: number; usedMemoryBytes?: number; diskTotalBytes?: number; diskAvailableBytes?: number; cpuUsagePercent?: number; memoryUsagePercent?: number; sampleSeconds?: number };
-  platform?: string; firstRegisteredAtUtc?: string; activeProjects?: string[];
+  platform?: string; firstRegisteredAtUtc?: string; activeProjects?: string[]; clockSkewSeconds?: number;
   managedDiagnostics?: { projects?: { projectId: string; revision: number; state: string; diagnosticCode?: string | null; detail?: string | null }[] } | null;
 }
 export interface ProjectSummary {

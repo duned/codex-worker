@@ -2,7 +2,7 @@ export const home = {
   "home.title": "Home", "home.summary": "{online} of {workers} Workers online · {active} running · {queued} queued.",
   "home.attentionCount": "{n} things need your attention.", "home.allGood": "Everything is working.", "home.restOk": "Everything else is working normally.",
   "home.attention": "Needs your attention", "home.issueFailed": "{issue} did not finish in {project}", "home.workerCannotWork": "{worker} cannot take work",
-  "home.group.paused": "Projects paused on a Worker", "home.group.maintenance": "Restarts and updates not resolved",
+  "home.group.paused": "Projects paused on a Worker", "home.group.maintenance": "Restarts and updates not resolved", "home.group.clock": "Worker clocks out of sync",
   "home.group.uncertain": "Executions with an unknown outcome", "home.group.ineligible": "Queued but cannot be assigned",
   "home.group.failed": "Issues that did not finish", "home.group.workers": "Workers that cannot take work",
   "home.projectPaused": "{project} is paused on {worker}", "home.maintenanceUnresolved": "{worker}: a restart or update did not finish",

@@ -14,7 +14,7 @@ function optional(item: Record<string, unknown>, strings: string[] = [], boolean
 function validateWorker(value: unknown) {
   const item = fields(value, ['workerId', 'availability']);
   optional(item, ['workerVersion', 'displayName', 'lifecycleState', 'schedulingPolicy', 'schedulingBlocker', 'lastHeartbeatAtUtc', 'authenticationCredentialStatus', 'authenticationCredentialRevokedAtUtc', 'platform', 'firstRegisteredAtUtc'], [],
-    ['capacity', 'maximumCapacity', 'activeExecutions', 'availableCapacity', 'activeAssignments', 'configuredMaximumCapacity', 'workerExecutionSlots', 'configurationRevision']);
+    ['capacity', 'maximumCapacity', 'activeExecutions', 'availableCapacity', 'activeAssignments', 'configuredMaximumCapacity', 'workerExecutionSlots', 'configurationRevision', 'clockSkewSeconds']);
   if (item.configuredMaximumCapacity != null && (!Number.isSafeInteger(item.configuredMaximumCapacity) || Number(item.configuredMaximumCapacity) < 1 || Number(item.configuredMaximumCapacity) > 8)) throw new Error('Invalid configured Worker capacity.');
   if (item.workerExecutionSlots != null && (!Number.isSafeInteger(item.workerExecutionSlots) || Number(item.workerExecutionSlots) < 1 || Number(item.workerExecutionSlots) > 8)) throw new Error('Invalid Worker execution slots.');
   if (item.configurationRevision != null && (!Number.isSafeInteger(item.configurationRevision) || Number(item.configurationRevision) < 1)) throw new Error('Invalid Worker configuration revision.');

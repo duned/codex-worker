@@ -66,6 +66,8 @@ public static class WorkerDiagnosticsDerivation
             reasons.Add(worker.ActiveAssignments == 0 ? "Drain complete; scheduling remains paused" :
                 $"Draining; {worker.ActiveAssignments} active assignments retain their leases");
         if (worker.Availability is "stale" or "offline") reasons.Add("Offline");
+        else if (worker.ClockSkewed)
+            reasons.Add($"Worker clock differs from the Server by {worker.ClockSkewSeconds} s; leases and deadlines need clocks within {WorkerRegistrationResponse.ClockSkewToleranceSeconds} s");
         if (worker.Availability == "draining" || worker.Availability == "online" && worker.LifecycleState == "draining") reasons.Add("Draining");
         if (worker.Availability == "online" && worker.AvailableCapacity == 0 && worker.LifecycleState == "running") reasons.Add("At capacity");
         if (readiness.Length > 0 && !readiness.Any(project => project.IsEligible))

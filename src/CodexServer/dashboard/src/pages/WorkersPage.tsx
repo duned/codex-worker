@@ -18,7 +18,7 @@ export const observers: Validator<Observer[]> = value => {
 };
 const columns = 'md:grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_minmax(0,1.4fr)_90px]';
 
-const healthFilters = ['ready', 'working', 'degraded', 'pausing', 'paused', 'blocked', 'offline'] as const;
+const healthFilters = ['ready', 'working', 'degraded', 'clock', 'pausing', 'paused', 'blocked', 'offline'] as const;
 
 export function WorkersPage() {
   useLanguage();

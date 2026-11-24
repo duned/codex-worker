@@ -4,7 +4,7 @@ import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
 import { retryIssuePath, useExecutions, useNames, useWorkers } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { attentionCount, attentionInbox, executionActions, explain, isActive, isOnline, issueNumber, schedulingBlockerText } from '../shared/model';
+import { attentionCount, attentionInbox, executionActions, explain, isActive, isOnline, issueNumber, schedulingBlockerText, workerHealth } from '../shared/model';
 import type { TranslationKey } from '../shared/i18n';
 import { Card, Empty, Filters, matches, Notice, PageHeader, ReadState, Row, Rows } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow, executionLabel } from './ExecutionRow';
@@ -42,6 +42,14 @@ export function HomePage() {
           detail={schedulingBlockerText('worker-operation-unresolved')}>
           <Button size="sm" color="primary" href={`/workers/${encodeURIComponent(worker.workerId)}`}>{t('actions.resolve')}</Button>
         </Item>)}
+      </Group>
+      <Group title="home.group.clock" count={inbox.clock.length}>
+        {inbox.clock.map(worker => {
+          const health = workerHealth(worker);
+          return <Item key={worker.workerId} title={`${names.worker(worker.workerId)} · ${t(health.label)}`} detail={t(health.cause.key, health.cause.values)}>
+            <Button size="sm" color="secondary" href={`/workers/${encodeURIComponent(worker.workerId)}`}>{t('actions.viewWorker')}</Button>
+          </Item>;
+        })}
       </Group>
       <Group title="home.group.uncertain" count={inbox.uncertain.length}>
         {inbox.uncertain.map(execution => <Item key={execution.id}

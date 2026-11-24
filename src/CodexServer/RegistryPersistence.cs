@@ -463,7 +463,8 @@ public sealed record WorkerRegistrationRequest(int ContractVersion, string Worke
 }
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, [property: System.Text.Json.Serialization.JsonRequired] int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null, string? InstanceId = null);
+    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null, string? InstanceId = null,
+    DateTimeOffset? SentAtUtc = null);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
@@ -472,7 +473,14 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
     string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null,
     string SchedulingPolicy = WorkerSchedulingPolicy.Enabled, int ActiveAssignments = 0,
     string AuthenticationCredentialStatus = "not-configured", DateTimeOffset? AuthenticationCredentialRevokedAtUtc = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null,
-    int? ConfiguredMaximumCapacity = null, long ConfigurationRevision = 1, int? WorkerExecutionSlots = null, WorkerTelegramConfiguration? Telegram = null, string? SchedulingBlocker = null);
+    int? ConfiguredMaximumCapacity = null, long ConfigurationRevision = 1, int? WorkerExecutionSlots = null, WorkerTelegramConfiguration? Telegram = null, string? SchedulingBlocker = null,
+    int? ClockSkewSeconds = null)
+{
+    /// <summary>Leases and operation deadlines tolerate this much difference between Worker and Server clocks.</summary>
+    public const int ClockSkewToleranceSeconds = 60;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ClockSkewed => ClockSkewSeconds is { } skew && Math.Abs(skew) > ClockSkewToleranceSeconds;
+}
 
 public static class WorkerSchedulingPolicy
 {
@@ -2617,7 +2625,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             online ? heartbeat!.ActiveProjects : Array.Empty<string>(), heartbeat is null ? null : seen,
             heartbeat?.ConfigurationSynchronization, heartbeat?.ConfigurationVersion, heartbeat?.CapabilityInventory ?? request.CapabilityInventory,
             schedulingPolicy, activeAssignments, authenticationCredentialStatus, authenticationCredentialRevokedAtUtc, heartbeat?.ManagedDiagnostics, heartbeat?.HostResources,
-            configuredMaximumCapacity, configurationRevision, workerExecutionSlots, telegram);
+            configuredMaximumCapacity, configurationRevision, workerExecutionSlots, telegram,
+            // Worker clock at sending minus Server clock at receipt; network delay only makes it slightly negative.
+            ClockSkewSeconds: heartbeat?.SentAtUtc is { } sent ? (int)Math.Round((sent - seen).TotalSeconds) : null);
     }
 
     public async Task<ServerResourceStatus> GetResourceStatusAsync(CancellationToken cancellationToken = default)
