@@ -1000,16 +1000,19 @@ public static partial class ServerApplication
             catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
         app.MapPost("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/enqueue", async (string projectId,
-            int issueNumber, HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            int issueNumber, bool? restoreReadyLabel, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
             try
             {
-                var created = await github.EnqueueIssueAsync(projectId, new WorkReference("github-issue", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), context.RequestAborted);
+                var created = restoreReadyLabel == true
+                    ? await github.RelabelAndEnqueueIssueAsync(projectId, issueNumber, context.RequestAborted)
+                    : await github.EnqueueIssueAsync(projectId, new WorkReference("github-issue", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), context.RequestAborted);
                 return Results.Created($"/api/v1/executions/{created.Id}", created);
             }
+            catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (ProjectDisabledException ex) { return Results.Conflict(new { error = ex.Message }); }

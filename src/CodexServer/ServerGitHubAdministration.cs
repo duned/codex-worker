@@ -103,6 +103,9 @@ public interface IServerGitHubAdministrationService
         GitHubIssueDependencyBatchRequest request, CancellationToken cancellationToken = default);
     Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
         CancellationToken cancellationToken = default);
+    /// <summary>Enqueues an Issue after restoring the project's ready label when that label is the only missing condition.</summary>
+    Task<ExecutionRequest> RelabelAndEnqueueIssueAsync(string projectId, int issueNumber,
+        CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ExecutionRequest>?> RefreshQueuedEligibilityAsync(string projectId, int issueNumber,
         CancellationToken cancellationToken = default);
     Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request,
@@ -945,6 +948,32 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
     public Task<ExecutionRequest> EnqueueIssueAsync(CentralProject discoveredProject, WorkReference workReference,
         CancellationToken cancellationToken = default) =>
         EnqueueIssueCoreAsync(discoveredProject.Id, workReference, cancellationToken, discoveredProject);
+
+    public async Task<ExecutionRequest> RelabelAndEnqueueIssueAsync(string projectId, int issueNumber,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateIssueNumber(issueNumber);
+        await using (BeginMutationOperation())
+        {
+            var project = await RequireProjectAsync(projectId, cancellationToken);
+            if (!project.Enabled) throw new ProjectDisabledException();
+            ValidateMutationProject(project);
+            var issue = await _reads.GetIssueAsync(project, issueNumber, cancellationToken)
+                ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
+            // Restore only a lost ready label: a closed, blocked or dependent Issue keeps its reasons and is refused below.
+            if (!issue.IsEligible && project.IssueReadyLabel is { Length: > 0 } ready &&
+                string.Equals(issue.State, "open", StringComparison.OrdinalIgnoreCase) &&
+                !issue.Labels.Contains(ready, StringComparer.OrdinalIgnoreCase) &&
+                WithoutReadyLabelRequirement(issue, project).IsEligible)
+            {
+                await _issueWriter.AddLabelAsync(project, issueNumber, ready, cancellationToken);
+                _logger.LogInformation("Restored ready label {Label} on {Repository}#{IssueNumber} for an operator retry.",
+                    ready, project.Repository, issueNumber);
+            }
+        }
+        return await EnqueueIssueAsync(projectId, new WorkReference("github-issue",
+            issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), cancellationToken);
+    }
 
     private async Task<ExecutionRequest> EnqueueIssueCoreAsync(string projectId, WorkReference workReference,
         CancellationToken cancellationToken, CentralProject? discoveredProject)

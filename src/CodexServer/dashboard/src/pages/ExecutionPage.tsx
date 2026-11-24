@@ -5,7 +5,7 @@ import { useAction, useArchive } from '../shared/actions';
 import { useApiRead, useRuntime } from '../shared/api/session';
 import type { Validator } from '../shared/api/client';
 import { execution as validateExecution, record } from '../shared/api/validation';
-import { projectExecutionsPath, recentExecutionsPath, useExecutions, useNames, useProjects } from '../shared/data';
+import { projectExecutionsPath, recentExecutionsPath, retryIssuePath, useExecutions, useNames, useProjects } from '../shared/data';
 import { t, tryT, useLanguage } from '../shared/i18n';
 import { canArchive, dateTime, duration, executionActions, executionStatus, explain, isActive, issueNumber, newerAttempt, stepProgress, type ExecutionAction } from '../shared/model';
 import { Ago, Card, Check, Explanation, Field, inputClass, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps, TextLink, CopyValue } from '../shared/ui';
@@ -30,7 +30,7 @@ export function ExecutionPage() {
   if (!item) return <><PageHeader title={t('executions.detail')} crumbs={[{ label: t('nav.executions'), to: '/executions' }]} /><Card flush><ReadState read={read}>{null}</ReadState></Card></>;
   const project = projects.data?.find(entry => entry.id === item.projectId), number = issueNumber(item), status = executionStatus(item), reason = explain(item);
   const issuePath = number ? `/projects/${encodeURIComponent(item.projectId)}/issues/${number}` : undefined;
-  const enqueue = () => number && action.run(`enqueue-${item.projectId}-${number}`, `/api/v1/projects/${encodeURIComponent(item.projectId)}/github/issues/${number}/enqueue`, 'POST', {}, 'actions.queued');
+  const enqueue = () => number && action.run(`enqueue-${item.projectId}-${number}`, retryIssuePath(item.projectId, number), 'POST', {}, 'actions.retryQueued');
   const newer = newerAttempt(item, attempts.data ?? []);
   const available = executionActions(item, !!newer);
   const operationId = () => crypto.randomUUID().replaceAll('-', '');

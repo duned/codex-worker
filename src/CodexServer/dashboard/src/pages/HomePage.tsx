@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
-import { useExecutions, useNames, useWorkers } from '../shared/data';
+import { retryIssuePath, useExecutions, useNames, useWorkers } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
 import { attention, executionActions, explain, isActive, isOnline, issueNumber, scheduling, schedulingBlockerText } from '../shared/model';
 import { Card, Empty, Filters, matches, Notice, PageHeader, ReadState, Row, Rows } from '../shared/ui';
@@ -39,7 +39,7 @@ export function HomePage() {
           <div className="flex flex-wrap gap-2">
             {number && executionActions(execution, false)[0] === 'retryFresh' ? <>
               <Button size="sm" color="primary" isDisabled={!!action.busy} onClick={() => void action.run(`enqueue-${execution.projectId}-${number}`,
-                `/api/v1/projects/${encodeURIComponent(execution.projectId)}/github/issues/${number}/enqueue`, 'POST', {}, 'actions.queued')}>{t('actions.retryFresh')}</Button>
+                retryIssuePath(execution.projectId, number), 'POST', {}, 'actions.retryQueued')}>{t('actions.retryFresh')}</Button>
               <Button size="sm" color="secondary" href={`/executions/${encodeURIComponent(execution.id)}`}>{t('actions.viewDetail')}</Button></>
               : <Button size="sm" color="primary" href={`/executions/${encodeURIComponent(execution.id)}`}>{t('actions.resolve')}</Button>}
           </div>

@@ -3,7 +3,7 @@ import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
 import { useApiRead } from '../shared/api/session';
 import { issue as validateIssue, project as validateProject } from '../shared/api/validation';
-import { projectExecutionsPath, useExecutions, useNames } from '../shared/data';
+import { projectExecutionsPath, retryIssuePath, useExecutions, useNames } from '../shared/data';
 import { Markdown } from '../shared/Markdown';
 import { t, useLanguage } from '../shared/i18n';
 import { executionActions, executionStatus, explain, isActive, issueStatus } from '../shared/model';
@@ -24,7 +24,7 @@ export function IssuePage() {
     latest?.state === 'Queued' ? [{ label: 'actions.removeFromQueue', run: cancel, tone: 'secondary-destructive' }]
     : latest && isActive(latest) ? [{ label: 'actions.viewExecution', href: `/executions/${encodeURIComponent(latest.id)}`, tone: 'primary' }]
     : latest?.state === 'Failed' ? executionActions(latest, false)[0] === 'retryFresh'
-      ? [{ label: 'actions.retryFresh', run: () => enqueue('actions.queued'), tone: 'primary' }, { label: 'actions.viewExecution', href: `/executions/${encodeURIComponent(latest.id)}` }]
+      ? [{ label: 'actions.retryFresh', run: () => action.run(`enqueue-${projectId}-${number}`, retryIssuePath(projectId, number), 'POST', {}, 'actions.retryQueued'), tone: 'primary' }, { label: 'actions.viewExecution', href: `/executions/${encodeURIComponent(latest.id)}` }]
       // Its execution page offers the action that resolves it (retry only the integration, resolve an uncertain result...).
       : [{ label: executionActions(latest, false).length ? 'actions.resolve' : 'actions.viewExecution', href: `/executions/${encodeURIComponent(latest.id)}`, tone: 'primary' }]
     : [{ label: latest ? 'actions.runAgain' : 'issues.enqueue', run: () => enqueue('actions.queued'), tone: 'primary' }];
