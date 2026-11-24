@@ -55,8 +55,15 @@ public sealed partial class WorkerRegistrationClient
             return false;
         }
         if (operation.WorkerId != worker || !WorkerUpdateProtocol.ValidId(operation.OperationId) ||
-            operation.State is not ("waiting-for-idle" or "updating" or "reconnecting") || operation.DeadlineUtc <= DateTimeOffset.UtcNow)
+            operation.State is not ("waiting-for-idle" or "updating" or "reconnecting"))
             throw new InvalidDataException("Invalid Worker update command.");
+        if (operation.DeadlineUtc <= DateTimeOffset.UtcNow)
+        {
+            // Past its deadline by this Worker's clock: never start it. The Server expires and reconciles the operation
+            // itself; when this clock runs ahead, the Server also flags the skew on the Worker.
+            log($"Worker update {operation.OperationId} is past its deadline by this Worker's clock; it was not started. Check the machine's time synchronization if this repeats.");
+            return false;
+        }
         if (operation.State is "updating" or "reconnecting")
         {
             if (operation.Restart || operation.InstallerVerified) return false;

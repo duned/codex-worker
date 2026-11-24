@@ -477,7 +477,7 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
     int? ClockSkewSeconds = null)
 {
     /// <summary>Leases and operation deadlines tolerate this much difference between Worker and Server clocks.</summary>
-    public const int ClockSkewToleranceSeconds = 60;
+    public const int ClockSkewToleranceSeconds = ManagedClock.ToleranceSeconds;
     [System.Text.Json.Serialization.JsonIgnore]
     public bool ClockSkewed => ClockSkewSeconds is { } skew && Math.Abs(skew) > ClockSkewToleranceSeconds;
 }

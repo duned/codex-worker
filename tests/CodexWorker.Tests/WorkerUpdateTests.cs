@@ -122,6 +122,41 @@ public sealed class WorkerUpdateTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task AnOperationPastItsDeadlineByTheWorkerClockIsSkippedWithoutFailing()
+    {
+        // Regression: a Worker clock running more than the operation timeout ahead of the Server used to throw
+        // from the maintenance poll and stop the Worker on every attempt.
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock { Now = DateTimeOffset.UtcNow.AddHours(-25) };
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
+        await store.HeartbeatWorkerAsync(new(2, worker, ApplicationVersion.Display, "running", 0, 2, capabilities, [],
+            ConfigurationSynchronization: "synchronized", InstanceId: "original"));
+        await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await File.WriteAllTextAsync(settings.IdentityFile, worker);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile, CancellationToken.None);
+        using var history = new ExecutionHistoryStore(Path.Combine(temporary.Path, "history.db"));
+        var runtime = new WorkerRuntimeReadModel(new(), [], history);
+        runtime.Lifecycle.SetReady();
+        using var handler = new UpdateStoreHandler(store, worker);
+        using var http = new HttpClient(handler);
+        var messages = new List<string>();
+        var dispatches = 0;
+        Task<ProcessResult> Dispatch(string executable, string[] arguments, TimeSpan timeout, CancellationToken ct) { dispatches++; return Task.FromResult(new ProcessResult(0, "", "")); }
+
+        Assert.False(await new WorkerRegistrationClient(http).ExecuteWorkerUpdateAsync(settings,
+            new ProvisioningPolicy { AllowedPrivilegedActions = [WorkerUpdateProtocol.RestartPolicyKey] }, runtime,
+            restartSupported: true, Dispatch, CancellationToken.None, messages.Add));
+
+        Assert.Equal(0, dispatches);
+        Assert.Contains("past its deadline by this Worker's clock", Assert.Single(messages), StringComparison.Ordinal);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

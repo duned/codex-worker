@@ -19,7 +19,7 @@ public sealed partial class WorkerRegistrationClient
             ?? throw new InvalidDataException("Missing Telegram test operation.");
         if (!Guid.TryParseExact(operation.Id, "N", out _) || operation.Status != "running" ||
             operation.Version is not { Length: > 0 and <= 128 } || operation.Version.Any(char.IsControl) ||
-            operation.DeadlineUtc == default || operation.DeadlineUtc > DateTimeOffset.UtcNow.AddSeconds(60))
+            operation.DeadlineUtc == default || operation.DeadlineUtc > DateTimeOffset.UtcNow.AddSeconds(60).Add(ManagedClock.Tolerance))
             throw new InvalidDataException("Invalid Telegram test operation.");
         var diagnostic = "configuration-changed";
         var remaining = operation.DeadlineUtc - DateTimeOffset.UtcNow;

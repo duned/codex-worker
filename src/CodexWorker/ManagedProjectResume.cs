@@ -21,7 +21,7 @@ public sealed partial class WorkerRegistrationClient
             ?? throw new InvalidDataException("Missing project resume operation.");
         if (!Guid.TryParseExact(operation.Id, "N", out _) || operation.Status != "running" ||
             !ProjectResumeProtocol.ValidProjectId(operation.ProjectId) || operation.DeadlineUtc == default ||
-            operation.DeadlineUtc > DateTimeOffset.UtcNow.AddSeconds(ProjectResumeProtocol.TimeoutSeconds + 5))
+            operation.DeadlineUtc > DateTimeOffset.UtcNow.AddSeconds(ProjectResumeProtocol.TimeoutSeconds + 5).Add(ManagedClock.Tolerance))
             throw new InvalidDataException("Invalid project resume operation.");
         var diagnostic = operation.DeadlineUtc > DateTimeOffset.UtcNow ? resume(operation.ProjectId) : "delivery-unavailable";
         using var report = CreateAuthorizedRequest(HttpMethod.Post, settings, path + "/report");
