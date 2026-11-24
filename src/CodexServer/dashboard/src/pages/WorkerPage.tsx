@@ -7,7 +7,8 @@ import type { Validator } from '../shared/api/client';
 import { diagnostics as validateDiagnostics, record, worker as validateWorker } from '../shared/api/validation';
 import { useExecutions, useNames, useNodes } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { isActive, isOnline, pausedOnWorker, scheduling, schedulingBlockerText, slots, workerHealth } from '../shared/model';
+import { dateTime, engineQuota, isActive, isOnline, pausedOnWorker, quotaWindowKey, scheduling, schedulingBlockerText, slots, workerHealth } from '../shared/model';
+import type { EngineQuota } from '../shared/api/contracts';
 import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Tile, CopyValue } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow } from './ExecutionRow';
 import { WorkerExport } from './WorkerExport';
@@ -57,6 +58,7 @@ export function WorkerPage() {
         detail={<>{t(health.cause.key, health.cause.values)} · {t('workers.lastSignal')} <Ago value={worker.lastHeartbeatAtUtc} /></>} /></div>
       <Tile label={t('workers.slots')} tone={use.used ? 'run' : 'idle'} value={t('workers.slotsUsed', { used: use.used, total: use.total })} detail={t('workers.slotsFree', { n: Math.max(0, use.total - use.used) })} />
     </div>
+    {online && engineQuota(worker) && <QuotaCard quota={engineQuota(worker)!} />}
     {state === 'blocked' && blockers.length > 0 && <Card><p className="text-sm font-semibold text-primary">{t('workers.whyBlocked')}</p>
       <ul className="mt-2 list-disc pl-5 text-sm text-secondary">{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul></Card>}
 
@@ -102,6 +104,25 @@ export function WorkerPage() {
     </div>}
     <WorkerPanel open={editing} onClose={() => setEditing(false)} worker={worker} />
   </>;
+}
+
+/** The engine usage windows the Worker read last; the Server holds new work while one is nearly used up. */
+function QuotaCard({ quota }: { quota: EngineQuota }) {
+  const language = useLanguage();
+  const windows = quota.status === 'available' ? quota.windows : [];
+  return <Card title={t('quota.title')} actions={<span className="text-sm text-tertiary">{t('quota.observed')} <Ago value={quota.observedAtUtc} /></span>}>
+    {windows.length ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">{windows.map((window, index) => {
+      const left = window.remainingPercent;
+      const tone = left == null ? 'bg-utility-neutral-400' : left <= 5 ? 'bg-utility-red-500' : left <= 20 ? 'bg-utility-yellow-500' : 'bg-utility-green-500';
+      return <div key={index}>
+        <div className="flex items-baseline justify-between gap-2 text-sm"><span className="font-medium text-primary">{t(quotaWindowKey(window.durationMinutes))}</span>
+          <span className="text-secondary">{left == null ? t('quota.unknown') : t('quota.left', { percent: Math.round(left) })}</span></div>
+        <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-quaternary" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={left ?? undefined}
+          aria-label={t(quotaWindowKey(window.durationMinutes))}><div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.max(0, Math.min(100, left ?? 0))}%` }} /></div>
+        {window.resetsAtUtc && <p className="mt-1 text-xs text-tertiary">{t('quota.resets', { time: dateTime(window.resetsAtUtc, language) })}</p>}
+      </div>;
+    })}</div> : <p className="text-sm text-tertiary">{t('quota.unavailable', { status: quota.status })}</p>}
+  </Card>;
 }
 
 /** A bounded log the Worker sends on request: its runtime events or its service journal. Nothing is stored on the Server. */

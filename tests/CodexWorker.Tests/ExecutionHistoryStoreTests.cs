@@ -35,7 +35,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; PRAGMA user_version = 22;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN metrics_json; ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; PRAGMA user_version = 22;";
             await command.ExecuteNonQueryAsync();
         }
         using var reopened = new ExecutionHistoryStore(database.Path);
@@ -78,7 +78,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; PRAGMA user_version = 21;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN metrics_json; ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; PRAGMA user_version = 21;";
             await command.ExecuteNonQueryAsync();
         }
         using var reopened = new ExecutionHistoryStore(database.Path);
@@ -113,7 +113,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 18;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN metrics_json; ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 18;";
             await command.ExecuteNonQueryAsync();
         }
         using var reopened = new ExecutionHistoryStore(database.Path);
@@ -432,7 +432,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 11;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN metrics_json; ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 11;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -544,7 +544,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 7;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN metrics_json; ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 7;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -567,7 +567,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 6;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN metrics_json; ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -594,7 +594,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 9;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN metrics_json; ALTER TABLE executions DROP COLUMN parent_issue_captured; ALTER TABLE executions DROP COLUMN parent_provenance; ALTER TABLE executions DROP COLUMN original_issue_body_fingerprint; ALTER TABLE executions DROP COLUMN retry_mode; DROP TABLE observer_delivery; DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 9;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -761,7 +761,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(24L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(25L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

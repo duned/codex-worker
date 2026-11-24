@@ -7,10 +7,10 @@ public sealed record ImplementationRequest(string ProjectDirectory, string Instr
     Action<string>? CodexSessionDiagnostic = null);
 
 public sealed record ImplementationResult(string Status, string Summary, string[] TestsOrValidationPerformed,
-    bool NeedsHumanInput, string? Question, string? BlockerType = null)
+    bool NeedsHumanInput, string? Question, string? BlockerType = null, CodexProvisioning.EngineUsage? Usage = null)
 {
     internal static ImplementationResult FromCodex(CodexOutcome outcome) => new(outcome.Status, outcome.Summary,
-        outcome.TestsOrValidationPerformed, outcome.NeedsHumanInput, outcome.Question, outcome.BlockerType);
+        outcome.TestsOrValidationPerformed, outcome.NeedsHumanInput, outcome.Question, outcome.BlockerType, outcome.Usage);
 }
 
 /// <summary>Uses the existing structured outcome and infrastructure exception classifications.</summary>
@@ -35,6 +35,26 @@ public sealed class ImplementationEngineSelector(IEnumerable<IImplementationEngi
 
     public IImplementationEngine? Select(string identity, ICodexExecutor codex) => identity == "codex"
         ? new CodexImplementationEngine(codex) : _engines.GetValueOrDefault(identity);
+}
+
+/// <summary>Adds what each engine run reports it used to its execution, whichever engine and step ran.</summary>
+internal sealed class UsageRecordingEngine(IImplementationEngine inner, WorkerExecution execution) : IImplementationEngine
+{
+    public string Identity => inner.Identity;
+    private ImplementationResult Record(ImplementationResult result)
+    {
+        if (result.Usage is { } usage) execution.RecordUsage(usage);
+        return result;
+    }
+    public async Task<ImplementationResult> RunAsync(ImplementationRequest request, CancellationToken ct) =>
+        Record(await inner.RunAsync(request, ct));
+    public async Task<ImplementationResult> RepairAsync(ImplementationRequest request, ValidationFailure failure,
+        int attempt, int maximumAttempts, CancellationToken ct) => Record(await inner.RepairAsync(request, failure, attempt, maximumAttempts, ct));
+    public async Task<ImplementationResult> RepairIntegrationAsync(ImplementationRequest request, IntegrationRepairContext context,
+        string? summary, IReadOnlyList<string> commands, int attempt, int maximumAttempts, CancellationToken ct) =>
+        Record(await inner.RepairIntegrationAsync(request, context, summary, commands, attempt, maximumAttempts, ct));
+    public async Task<ImplementationResult> ResolveIntegrationConflictAsync(ImplementationRequest request, string details, CancellationToken ct) =>
+        Record(await inner.ResolveIntegrationConflictAsync(request, details, ct));
 }
 
 internal sealed class CodexImplementationEngine(ICodexExecutor codex) : IImplementationEngine

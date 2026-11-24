@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 namespace CodexWorker;
 
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
-    string? IntegrationBranch = null, string? CompletedBranch = null, Guid? ResourceExecutionId = null, int? ResourceAttemptNumber = null);
+    string? IntegrationBranch = null, string? CompletedBranch = null, Guid? ResourceExecutionId = null, int? ResourceAttemptNumber = null,
+    CodexProvisioning.ExecutionChanges? Changes = null);
 public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary, string? IntegrationBase = null);
 public sealed record IntegrationRepairContext(ValidationFailure Failure, string BaseBranch, string OriginalBaseCommit,
     string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
@@ -729,6 +730,8 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 await GitAtAsync(ExecutionDirectory, ["commit", "-m", $"Implement #{issue.Number}: {issue.Title}"], ct);
             }
             var commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            // The integrated change is measured against the base it lands on; without auto-merge, against the start.
+            var changesBase = _startingCommit;
             if (settings.AutoMerge)
             {
                 var implementationCommit = commit;
@@ -763,6 +766,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                     if (localBase == remoteBase && containsCurrentBase.ExitCode == 0)
                     {
                         commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+                        changesBase = localBase;
                         prepared = new GitIntegrationResult(true,
                             $"Committed as `{commit[..12]}`. Merged into `{settings.BaseBranch}`.", commit, settings.BaseBranch,
                             settings.PushCompletedBranch ? _completedBranch : settings.DeleteLocalFeatureBranch ? null : _featureBranch,
@@ -847,11 +851,44 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             var completedBranch = settings.AutoMerge && settings.PushCompletedBranch ? _completedBranch :
                 settings.AutoMerge && settings.DeleteLocalFeatureBranch ? null : _featureBranch;
             return new GitIntegrationResult(true, summary, commit, settings.AutoMerge ? settings.BaseBranch : null,
-                completedBranch, _resourceExecutionId, _resourceAttemptNumber);
+                completedBranch, _resourceExecutionId, _resourceAttemptNumber, await MeasureChangesAsync(changesBase, commit, ct));
         }
         catch (GitIntegrationConflictException) { throw; }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Git commit/integration for Issue #{issue.Number} failed; checkout state is preserved for diagnosis: {ex.Message}", ex); }
+    }
+
+    /// <summary>Size of the change between two commits, for reporting only: a failure to measure never affects integration.</summary>
+    private async Task<CodexProvisioning.ExecutionChanges?> MeasureChangesAsync(string? baseCommit, string commit, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(baseCommit)) return null;
+        try
+        {
+            var result = await GitAsync(["-c", "core.quotepath=off", "diff", "--numstat", "--no-color", baseCommit, commit], ct);
+            return ParseNumstat(result.StandardOutput, baseCommit, commit);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is WorkerInfrastructureException or InvalidOperationException or IOException) { return null; }
+    }
+
+    internal static CodexProvisioning.ExecutionChanges? ParseNumstat(string output, string? baseCommit, string? commit)
+    {
+        int files = 0, insertions = 0, deletions = 0;
+        var paths = new List<string>();
+        foreach (var line in output.Split('\n'))
+        {
+            var fields = line.TrimEnd('\r').Split('\t', 3);
+            if (fields.Length != 3 || fields[2].Length == 0) continue;
+            files++;
+            // Binary files report "-" for both counts.
+            if (int.TryParse(fields[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var added)) insertions += added;
+            if (int.TryParse(fields[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var removed)) deletions += removed;
+            var path = new string(fields[2].Where(character => !char.IsControl(character)).ToArray());
+            if (paths.Count < CodexProvisioning.ExecutionChanges.MaximumFiles && path.Length > 0)
+                paths.Add(path.Length <= CodexProvisioning.ExecutionChanges.MaximumPathLength ? path : "…" + path[^(CodexProvisioning.ExecutionChanges.MaximumPathLength - 1)..]);
+        }
+        var changes = new CodexProvisioning.ExecutionChanges(files, insertions, deletions, paths, baseCommit, commit);
+        return CodexProvisioning.ExecutionChanges.Valid(changes) ? changes : changes with { BaseCommit = null, Commit = null };
     }
 
     private async Task ValidateRebasedSourceAsync(int issueNumber, string implementationCommit,

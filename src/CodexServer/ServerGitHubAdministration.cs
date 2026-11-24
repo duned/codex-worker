@@ -106,6 +106,10 @@ public interface IServerGitHubAdministrationService
     /// <summary>Enqueues an Issue after restoring the project's ready label when that label is the only missing condition.</summary>
     Task<ExecutionRequest> RelabelAndEnqueueIssueAsync(string projectId, int issueNumber,
         CancellationToken cancellationToken = default);
+    /// <summary>Retries an Issue with operator guidance: posts it as an Issue comment the next attempt reads, then enqueues.
+    /// Eligibility is checked first, so a refused retry leaves no comment behind.</summary>
+    Task<ExecutionRequest> EnqueueIssueWithGuidanceAsync(string projectId, int issueNumber, string guidance, bool restoreReadyLabel,
+        CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ExecutionRequest>?> RefreshQueuedEligibilityAsync(string projectId, int issueNumber,
         CancellationToken cancellationToken = default);
     Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request,
@@ -974,6 +978,36 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
         return await EnqueueIssueAsync(projectId, new WorkReference("github-issue",
             issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), cancellationToken);
     }
+
+    public async Task<ExecutionRequest> EnqueueIssueWithGuidanceAsync(string projectId, int issueNumber, string guidance, bool restoreReadyLabel,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateIssueNumber(issueNumber);
+        if (GitHubIssueMutationValidation.GuidanceError(guidance) is { } error) throw new InvalidDataException(error);
+        await using (BeginMutationOperation())
+        {
+            var project = await RequireProjectAsync(projectId, cancellationToken);
+            if (!project.Enabled) throw new ProjectDisabledException();
+            ValidateMutationProject(project);
+            var issue = await _reads.GetIssueAsync(project, issueNumber, cancellationToken)
+                ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
+            var relabel = restoreReadyLabel && !issue.IsEligible && project.IssueReadyLabel is { Length: > 0 } &&
+                string.Equals(issue.State, "open", StringComparison.OrdinalIgnoreCase) &&
+                !issue.Labels.Contains(project.IssueReadyLabel, StringComparer.OrdinalIgnoreCase) &&
+                WithoutReadyLabelRequirement(issue, project).IsEligible;
+            if (!issue.IsEligible && !relabel) throw new ManagedIssueIneligibleException(issue);
+            await _issueWriter.AddCommentAsync(project, issueNumber, GuidanceComment(guidance), cancellationToken);
+            _logger.LogInformation("Posted operator guidance on {Repository}#{IssueNumber} for a retry.", project.Repository, issueNumber);
+        }
+        return restoreReadyLabel
+            ? await RelabelAndEnqueueIssueAsync(projectId, issueNumber, cancellationToken)
+            : await EnqueueIssueAsync(projectId, new WorkReference("github-issue",
+                issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), cancellationToken);
+    }
+
+    /// <summary>A plain comment: the heading only tells readers where it came from; the Worker treats it as any other comment.</summary>
+    internal static string GuidanceComment(string guidance) =>
+        "**Guidance for the next attempt** (sent from the Codex Server dashboard with a retry)\n\n" + guidance.Trim().Replace("\r\n", "\n", StringComparison.Ordinal);
 
     private async Task<ExecutionRequest> EnqueueIssueCoreAsync(string projectId, WorkReference workReference,
         CancellationToken cancellationToken, CentralProject? discoveredProject)

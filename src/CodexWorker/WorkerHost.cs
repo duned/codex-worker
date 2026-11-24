@@ -5,6 +5,7 @@ using CodexProvisioning;
 /// <summary>Global host with bounded execution concurrency across independently configured projects.</summary>
 public sealed class WorkerHost
 {
+    private static readonly TimeSpan QuotaRefreshInterval = TimeSpan.FromMinutes(5);
     private readonly GlobalWorkerConfiguration _global;
     private readonly IReadOnlyList<(string Path, WorkerConfiguration Configuration)> _projects;
     private readonly WorkerConsole _output;
@@ -691,6 +692,10 @@ public sealed class WorkerHost
                 }
                 var previouslyReady = agentReady;
                 agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, executionToken);
+                // Keeps the quota sent with each heartbeat current while idle; executions refresh it themselves.
+                if (agentReady && (CodexQuotaReader.Local.CachedObservation is not { } quota ||
+                    DateTimeOffset.UtcNow - quota.ObservedAtUtc > QuotaRefreshInterval))
+                    await CodexQuotaReader.Local.ReadAsync(executionToken);
                 if (agentReady && !previouslyReady)
                 {
                     runtimeReadModel.Events.Publish("codex.ready", "Codex execution readiness restored; preserved recoveries are eligible.");

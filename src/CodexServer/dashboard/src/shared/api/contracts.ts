@@ -8,7 +8,13 @@ export interface WorkerObservation {
   configuredMaximumCapacity?: number; workerExecutionSlots?: number; configurationRevision?: number;
   hostResources?: { measuredAtUtc: string; logicalCpuCount?: number; totalMemoryBytes?: number; usedMemoryBytes?: number; diskTotalBytes?: number; diskAvailableBytes?: number; cpuUsagePercent?: number; memoryUsagePercent?: number; sampleSeconds?: number };
   platform?: string; firstRegisteredAtUtc?: string; activeProjects?: string[]; clockSkewSeconds?: number;
+  engineQuotas?: EngineQuota[] | null;
   managedDiagnostics?: { projects?: { projectId: string; revision: number; state: string; diagnosticCode?: string | null; detail?: string | null }[] } | null;
+}
+/** A Worker's latest reading of an engine account's usage windows (5 h, weekly). */
+export interface EngineQuota {
+  engine: string; observedAtUtc: string; status: string;
+  windows: { durationMinutes?: number | null; remainingPercent?: number | null; resetsAtUtc?: string | null }[];
 }
 export interface ProjectSummary {
   id: string; name: string; repository: string; revision?: number; enabled?: boolean; requirements?: { type: string; name: string; version?: string }[];
@@ -31,6 +37,12 @@ export interface ExecutionSummary {
   completionSummary?: string; validationResult?: string; integrationResult?: string; failureClassification?: string;
   recoverable?: boolean; attemptNumber?: number; retryOfExecutionId?: string; workerExecutionId?: string; workspaceRecovery?: string; archivedAtUtc?: string; prioritizedAtUtc?: string;
   workReference?: { type: string; id: string; url?: string; title?: string; selection?: { engine: 'codex' | 'ccc'; model?: string | null; effort?: string | null } };
+  metrics?: ExecutionMetrics | null;
+}
+/** What the Worker reported with the final result: engine usage summed over every run, and the size of the integrated change. */
+export interface ExecutionMetrics {
+  usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; costUsd?: number | null; runs: number } | null;
+  changes?: { filesChanged: number; insertions: number; deletions: number; files: string[]; baseCommit?: string | null; commit?: string | null } | null;
 }
 export interface ExecutionArchiveResult { changed: string[]; refused: { id: string; reason: string }[] }
 export interface ExecutionMaintenanceRequest {

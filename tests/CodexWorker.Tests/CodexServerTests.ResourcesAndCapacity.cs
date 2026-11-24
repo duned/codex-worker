@@ -480,4 +480,51 @@ public sealed partial class CodexServerTests
                 existing.Platform, existing.Capacity, existing.Capabilities, existing.CapabilityInventory);
         return await store.BootstrapWorkerAsync(authorization, registration, token, operation: existing is null ? "enroll" : "rotate");
     }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task ExhaustedEngineQuotaHoldsAssignmentUntilTheWindowResets()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-01-01T10:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "quota.db"), 300, clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Quota", "team/quota", "main", ""));
+        var workerId = Guid.NewGuid().ToString("N");
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new(2, workerId, "Worker", "1.0.0", "linux-x64", 1, capabilities));
+        var reset = clock.GetUtcNow().AddHours(2);
+        EngineQuota Quota(double remaining) => new("codex", clock.GetUtcNow(), "available",
+            [new EngineQuotaWindow(300, remaining, reset), new EngineQuotaWindow(10080, 60, reset.AddDays(3))]);
+        await store.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 0, 1, capabilities, [], EngineQuotas: [Quota(3)]));
+        var queued = await store.EnqueueExecutionAsync(new(project.Id, new("issue", "1")));
+        var request = new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+
+        Assert.Equal("engine-quota-exhausted", (await store.RequestAssignmentAsync(request)).Reason);
+        Assert.Equal("engine-quota-exhausted", (await store.GetExecutionAsync(queued.Id))?.PendingReason);
+        Assert.Equal(3, (await store.GetWorkerAsync(workerId))?.EngineQuotas?.Single().Windows[0].RemainingPercent);
+
+        // A stale observation no longer blocks: the engine reports its own limit if it is still exhausted.
+        clock.Advance(EngineQuota.Freshness + TimeSpan.FromMinutes(1));
+        await store.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 0, 1, capabilities, [],
+            EngineQuotas: [new EngineQuota("codex", clock.GetUtcNow() - EngineQuota.Freshness - TimeSpan.FromMinutes(1), "available", [new EngineQuotaWindow(300, 0, reset)])]));
+        Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
+    }
+
+    [Fact]
+    public void EngineQuotaBlocksOnlyFreshExhaustedWindowsOfTheSelectedEngine()
+    {
+        var now = DateTimeOffset.Parse("2026-01-01T10:00:00Z");
+        EngineQuota[] quotas = [new("codex", now, "available", [new EngineQuotaWindow(300, 5, now.AddHours(1))])];
+        Assert.NotNull(EngineQuota.ExhaustedWindow(quotas, "codex", now));
+        Assert.Null(EngineQuota.ExhaustedWindow(quotas, "ccc", now));
+        Assert.Null(EngineQuota.ExhaustedWindow(quotas, "codex", now.AddHours(1)));
+        Assert.Null(EngineQuota.ExhaustedWindow([quotas[0] with { Status = "query failed" }], "codex", now));
+        Assert.Null(EngineQuota.ExhaustedWindow([new("codex", now, "available", [new EngineQuotaWindow(300, 5.1, now.AddHours(1))])], "codex", now));
+        Assert.False(EngineQuota.Valid([new("other", now, "available", [])]));
+        Assert.False(EngineQuota.Valid([new("codex", now, "available", [new EngineQuotaWindow(300, 101, null)])]));
+        Assert.Null(new CodexQuotaObservation(now, "available", [new CodexQuotaWindow(-5, 50, null)]).ToContract());
+        Assert.Equal("query failed", new CodexQuotaObservation(now, "query\nfailed".Replace("\n", " "), []).ToContract()!.Status);
+    }
 }

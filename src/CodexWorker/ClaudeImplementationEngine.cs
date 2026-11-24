@@ -88,6 +88,7 @@ public sealed class ClaudeImplementationEngine : IImplementationEngine
             var outcome = CodexResultParser.Parse(root.GetProperty("structured_output").GetRawText());
             return ImplementationResult.FromCodex(outcome with
             {
+                Usage = EngineUsageParser.FromClaudeResult(root),
                 Summary = FailureDiagnosticRedactor.Redact(outcome.Summary, secrets),
                 Question = outcome.Question is null ? null : FailureDiagnosticRedactor.Redact(outcome.Question, secrets),
                 TestsOrValidationPerformed = outcome.TestsOrValidationPerformed.Select(value => FailureDiagnosticRedactor.Redact(value, secrets)).ToArray()

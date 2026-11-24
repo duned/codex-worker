@@ -373,6 +373,13 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
         return await RequireGitHubAdministration().RelabelAndEnqueueIssueAsync(projectId, issueNumber, cancellationToken);
     }
 
+    public async Task<ExecutionRequest> EnqueueIssueWithGuidanceAsync(string projectId, int issueNumber, string guidance, bool restoreReadyLabel,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().EnqueueIssueWithGuidanceAsync(projectId, issueNumber, guidance, restoreReadyLabel, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<ExecutionRequest>?> RefreshQueuedEligibilityAsync(string projectId, int issueNumber,
         CancellationToken cancellationToken = default)
     {

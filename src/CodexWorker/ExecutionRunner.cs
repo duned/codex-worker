@@ -69,6 +69,7 @@ public sealed partial class ExecutionRunner(WorkerConfiguration config, IGitRepo
             if (engine is null)
                 return new IssueProcessingResult(IssueOutcomeKind.Blocked,
                     new IssueExecutionReport(null, [], HumanInput: $"Execution engine '{identity}' is unavailable on this Worker."));
+            engine = new UsageRecordingEngine(engine, execution);
             if (context.IntegrationRecovery || context.InterruptedExecution || IsInterruptedValidation(context))
                 return await RunIntegrationRecoveryAsync(context, engine, ct);
             await _repositoryGate.WaitAsync(ct);
@@ -405,7 +406,8 @@ public sealed partial class ExecutionRunner(WorkerConfiguration config, IGitRepo
             AssignmentId: execution.AssignmentId,
             OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery,
             CodexThreadId: execution.CodexThreadId, CodexSessionOwner: execution.CodexSessionOwner,
-            ParentIssueNumber: execution.ParentIssueNumber, ParentIssueCaptured: execution.ParentIssueCaptured, ParentProvenance: execution.ParentProvenance);
+            ParentIssueNumber: execution.ParentIssueNumber, ParentIssueCaptured: execution.ParentIssueCaptured, ParentProvenance: execution.ParentProvenance,
+            Metrics: execution.MetricsWith(report?.Integration?.Changes));
 
     private static string? Extract(string? text, string pattern)
     {

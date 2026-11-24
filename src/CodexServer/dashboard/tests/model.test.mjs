@@ -193,6 +193,46 @@ test('a Worker clock more than a minute off the Server is a health warning and a
   assert.deepEqual(model.attentionInbox([], [worker({ clockSkewSeconds: 600 }), worker({ workerId: 'ok' })]).clock.map(item => item.workerId), ['w']);
 });
 
+test('a Worker whose engine quota is nearly used up shows it as its health, with the Server rule', () => {
+  const now = Date.now(), iso = offset => new Date(now + offset).toISOString();
+  const quota = (remaining, values = {}) => ({ engineQuotas: [{ engine: 'codex', observedAtUtc: iso(-60000), status: 'available',
+    windows: [{ durationMinutes: 300, remainingPercent: remaining, resetsAtUtc: iso(3600000) }, { durationMinutes: 10080, remainingPercent: 70 }], ...values }] });
+  const worker = values => ({ workerId: 'w', availability: 'online', lifecycleState: 'running', ...values });
+  const exhausted = model.workerHealth(worker(quota(5)));
+  assert.deepEqual([exhausted.state, exhausted.tone, exhausted.cause.key, exhausted.cause.values.reserve], ['quota', 'warn', 'health.cause.quota', 5]);
+  assert.equal(model.workerHealth(worker(quota(5.5))).state, 'ready');
+  assert.equal(model.workerHealth(worker(quota(0, { status: 'query failed' }))).state, 'ready');
+  assert.equal(model.workerHealth(worker(quota(0, { observedAtUtc: iso(-16 * 60000) }))).state, 'ready');
+  assert.equal(model.exhaustedQuota(worker(quota(1)), 'ccc'), undefined);
+  assert.equal(model.quotaWindowKey(10080), 'quota.window.weekly');
+});
+
+test('engine comparison adds reported usage, and cost only from attempts that report one', () => {
+  const finished = (id, engine, usage) => execution({ id, state: 'Completed', durationMilliseconds: 60000,
+    workReference: { type: 'github-issue', id, selection: { engine } }, metrics: usage ? { usage } : undefined });
+  const stats = model.engineStats([
+    finished('1', 'ccc', { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 100, costUsd: 0.25, runs: 1 }),
+    finished('2', 'ccc', { inputTokens: 3000, cachedInputTokens: 0, outputTokens: 300, costUsd: 0.5, runs: 2 }),
+    finished('3', 'codex', { inputTokens: 12000, cachedInputTokens: 9000, outputTokens: 900, runs: 1 }),
+    finished('4', 'codex')]);
+  const [ccc, codex] = stats;
+  assert.deepEqual([ccc.withUsage, ccc.inputTokens, ccc.outputTokens, ccc.costUsd], [2, 4000, 400, 0.75]);
+  assert.deepEqual([codex.withUsage, codex.finished, codex.inputTokens, codex.costUsd], [1, 2, 12000, undefined]);
+  assert.deepEqual([model.tokens(950), model.tokens(1234), model.tokens(34567), model.tokens(4100000)], ['950', '1.2 k', '35 k', '4.1 M']);
+  assert.equal(model.usd(0.4567), '$0.457');
+  const text = model.usageText({ inputTokens: 1500, cachedInputTokens: 0, outputTokens: 20, costUsd: 1.5, runs: 3 }, (key, values) => `${key}:${Object.values(values).join('/')}`);
+  assert.equal(text, 'usage.input:1.5 k/0 · usage.output:20 · $1.50 · usage.runs:3');
+});
+
+test('the integrated change links to its comparison in the Issue repository', () => {
+  const changes = { filesChanged: 1, insertions: 2, deletions: 0, files: ['a'], baseCommit: 'abc1234', commit: 'def5678' };
+  const withChanges = (url, values = {}) => execution({ workReference: { type: 'github-issue', id: '7', url }, metrics: { changes: { ...changes, ...values } } });
+  assert.equal(model.compareUrl(withChanges('https://github.com/team/app/issues/7')), 'https://github.com/team/app/compare/abc1234...def5678');
+  assert.equal(model.compareUrl(withChanges('https://github.com/team/app/issues/7', { baseCommit: null })), 'https://github.com/team/app/commit/def5678');
+  assert.equal(model.compareUrl(withChanges('https://evil.example/team/app/issues/7')), undefined);
+  assert.equal(model.compareUrl(withChanges('https://github.com/team/app/issues/7', { commit: null })), undefined);
+});
+
 test('a preparation failure the Server retried by itself needs no attention', () => {
   const failed = execution({ state: 'Failed', failureClassification: 'PreparationFailed', recoveryState: 'PreparationRequeued' });
   assert.equal(model.executionStatus(failed).label, 'status.preparationRetried');

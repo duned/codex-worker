@@ -876,4 +876,39 @@ public sealed partial class CodexServerTests
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task FinalReportKeepsValidEngineUsageAndChangeSizeAndDropsInvalidOnes()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-02-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "metrics.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Metrics", "team/metrics", "main", "", []));
+        var workerId = Guid.NewGuid().ToString("N");
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var metrics = new ExecutionMetrics(new EngineUsage(12000, 9000, 800, 0.42m, 2),
+            new ExecutionChanges(3, 40, 5, ["src/a.cs", "src/b.cs", "README.md"], "abc1234", "def5678"));
+
+        async Task<ExecutionRequest?> RunAsync(string issue, ExecutionMetrics reported)
+        {
+            var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", issue)));
+            var assigned = (await store.RequestAssignmentAsync(new WorkerAssignmentRequest(workerId, true, 1,
+                new Dictionary<string, int> { [project.Id] = 1 }))).Assignment!;
+            var started = clock.GetUtcNow();
+            return await store.ReportExecutionAsync(queued.Id, new WorkerExecutionReport(workerId, assigned.AssignmentId, "run-" + issue, "Completed", null,
+                started, started.AddMinutes(1), 60000, "passed", "passed", null, false, "Done.", assigned.Lease!.Generation, Metrics: reported));
+        }
+
+        var completed = await RunAsync("1", metrics);
+        Assert.Equivalent(metrics, completed!.Metrics);
+        Assert.Equivalent(metrics, (await store.GetExecutionAsync(completed.Id))!.Metrics);
+        var invalid = await RunAsync("2", metrics with { Changes = metrics.Changes! with { Commit = "not-a-commit" } });
+        Assert.Equal("Completed", invalid!.State);
+        Assert.Null(invalid.Metrics);
+    }
 }

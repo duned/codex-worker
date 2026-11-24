@@ -1000,14 +1000,18 @@ public static partial class ServerApplication
             catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
         app.MapPost("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/enqueue", async (string projectId,
-            int issueNumber, bool? restoreReadyLabel, HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            int issueNumber, bool? restoreReadyLabel, IssueRetryRequest? body, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
+            if (body?.Guidance is { } guidance && GitHubIssueMutationValidation.GuidanceError(guidance) is { } guidanceError)
+                return Results.BadRequest(new { error = guidanceError });
             try
             {
-                var created = restoreReadyLabel == true
+                var created = body?.Guidance is { } note
+                    ? await github.EnqueueIssueWithGuidanceAsync(projectId, issueNumber, note, restoreReadyLabel == true, context.RequestAborted)
+                    : restoreReadyLabel == true
                     ? await github.RelabelAndEnqueueIssueAsync(projectId, issueNumber, context.RequestAborted)
                     : await github.EnqueueIssueAsync(projectId, new WorkReference("github-issue", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), context.RequestAborted);
                 return Results.Created($"/api/v1/executions/{created.Id}", created);
@@ -1287,7 +1291,7 @@ public static partial class ServerApplication
         request.ActiveExecutions is >= 0 and <= 8 && request.MaximumCapacity is >= 1 and <= 8 &&
         request.ActiveExecutions <= request.MaximumCapacity && request.Capabilities is not null && request.Capabilities.Count <= 32 &&
         request.Capabilities.All(ValidCapability) &&
-        ManagedWorkerDiagnostics.Valid(request.ManagedDiagnostics) && WorkerHostResources.Valid(request.HostResources) &&
+        ManagedWorkerDiagnostics.Valid(request.ManagedDiagnostics) && WorkerHostResources.Valid(request.HostResources) && EngineQuota.Valid(request.EngineQuotas) &&
         CapabilityCatalog.ValidInventory(request.CapabilityInventory) && request.ActiveProjects is not null && request.ActiveProjects.Count <= 32 &&
         (request.ConfigurationSynchronization is null or "synchronized" or "cached" or "unavailable" or "error" or "not-synchronized") &&
         (request.ConfigurationVersion is null || (request.ConfigurationVersion.Length <= 128 && !request.ConfigurationVersion.Any(char.IsControl))) &&
