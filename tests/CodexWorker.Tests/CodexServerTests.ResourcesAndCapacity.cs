@@ -524,5 +524,7 @@ public sealed partial class CodexServerTests
         Assert.Null(EngineQuota.ExhaustedWindow([new("codex", now, "available", [new EngineQuotaWindow(300, 5.1, now.AddHours(1))])], "codex", now));
         Assert.False(EngineQuota.Valid([new("other", now, "available", [])]));
         Assert.False(EngineQuota.Valid([new("codex", now, "available", [new EngineQuotaWindow(300, 101, null)])]));
+        Assert.Null(new CodexQuotaObservation(now, "available", [new CodexQuotaWindow(-5, 50, null)]).ToContract());
+        Assert.Equal("query failed", new CodexQuotaObservation(now, "query\nfailed".Replace("\n", " "), []).ToContract()!.Status);
     }
 }

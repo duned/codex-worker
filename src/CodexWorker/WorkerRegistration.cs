@@ -581,7 +581,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion,
             await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken), configurationSync?.Diagnostics, await WorkerHostResourceCollector.CollectAsync(cancellationToken), WorkerProcessIdentity.InstanceId,
             // The machine clock, deliberately: the Server compares it with its own to detect skew that breaks leases and deadlines.
-            DateTimeOffset.UtcNow, CodexQuotaReader.Local.CachedObservation is { } quota ? [quota.ToContract()] : null));
+            DateTimeOffset.UtcNow, CodexQuotaReader.Local.CachedObservation?.ToContract() is { } quota ? [quota] : null));
         using var response = await SendAsync(request, cancellationToken, TimeSpan.FromSeconds(10));
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}", null, response.StatusCode);
