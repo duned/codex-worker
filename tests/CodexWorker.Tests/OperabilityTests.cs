@@ -349,7 +349,7 @@ public sealed class OperabilityTests
         using var body = JsonDocument.Parse(handler.Body!);
         var message = body.RootElement.GetProperty("text").GetString()!;
         Assert.Contains("Duración: 01:17", message);
-        Assert.Contains("Commit: abcdef123456", message);
+        Assert.Contains("Commit: <a href=\"https://github.com/owner/repo/commit/abcdef123456\">abcdef123456</a>", message);
         Assert.Contains("Integrada en: main", message);
         Assert.Contains("Added the uptime endpoint with focused coverage.", message);
         Assert.Contains("Rama completada preservada: completed/3", message);

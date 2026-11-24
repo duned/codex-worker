@@ -1,4 +1,4 @@
-import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, ProjectResumeOperation, ArchivedBranchPage, ArchivedBranchDeleteResult, BranchSelection } from './contracts';
+import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, ProjectResumeOperation, ProjectSchedulingPause, ArchivedBranchPage, ArchivedBranchDeleteResult, BranchSelection } from './contracts';
 import type { Validator } from './client';
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid object.');
@@ -53,7 +53,7 @@ export const projects = list<ProjectSummary>(value => { const item = fields(valu
 export const executions = list<ExecutionSummary>(value => {
   const item = fields(value, ['id', 'projectId', 'state', 'createdAtUtc']);
   optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState', 'recoveryReason', 'pendingReason', 'managedEligibilityState', 'managedEligibilityCheckedAtUtc', 'completionSummary',
-    'validationResult', 'integrationResult', 'failureClassification', 'retryOfExecutionId', 'workerExecutionId', 'workspaceRecovery', 'archivedAtUtc'], ['recoverable'], ['durationMilliseconds', 'attemptNumber']);
+    'validationResult', 'integrationResult', 'failureClassification', 'retryOfExecutionId', 'workerExecutionId', 'workspaceRecovery', 'archivedAtUtc', 'prioritizedAtUtc'], ['recoverable'], ['durationMilliseconds', 'attemptNumber']);
   if (item.stageStartedAtUtc != null) {
     const stages = record(item.stageStartedAtUtc);
     const allowed = new Set(['claimed', 'preparing', 'codex', 'validation', 'integration', 'reporting']);
@@ -225,6 +225,7 @@ export const workerRelease: Validator<WorkerRelease> = value => {
   return item as unknown as WorkerRelease;
 };
 /** A Worker restart/update operation, or null when none was ever requested. */
+export const projectSchedulingPauses = list<ProjectSchedulingPause>(value => { optional(fields(value, ['projectId'], ['paused']), ['pausedAtUtc']); });
 export const projectResume: Validator<ProjectResumeOperation | null> = value => {
   if (value === null) return null;
   const item = fields(value, ['id', 'projectId', 'status', 'deadlineUtc']);

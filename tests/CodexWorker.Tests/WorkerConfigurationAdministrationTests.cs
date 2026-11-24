@@ -111,6 +111,21 @@ public sealed class WorkerConfigurationAdministrationTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public async Task ProvisioningPolicyChangesNeedNoRestart()
+    {
+        using var fixture = new Fixture();
+        fixture.Write("worker:\n  maxParallelTasks: 1\nprojects:\n  directory: ./projects\n");
+
+        var (exitCode, output) = await RunAsync("config", "add", "worker.provisioning.allowedPrivilegedActions", "worker:service:restart", "--config", fixture.ConfigPath);
+
+        Assert.Equal(ProcessExitCodes.Success, exitCode);
+        Assert.Contains("no restart is needed", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("Restart the Worker service", output, StringComparison.Ordinal);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public async Task SetJsonReturnsVersionedUpdateContractAndAppliesTheSetting()
     {
         using var fixture = new Fixture();

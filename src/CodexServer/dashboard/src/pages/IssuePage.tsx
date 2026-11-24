@@ -6,7 +6,7 @@ import { issue as validateIssue, project as validateProject } from '../shared/ap
 import { projectExecutionsPath, retryIssuePath, useExecutions, useNames } from '../shared/data';
 import { Markdown } from '../shared/Markdown';
 import { t, useLanguage } from '../shared/i18n';
-import { executionActions, executionStatus, explain, isActive, issueStatus } from '../shared/model';
+import { duration, executionActions, executionStatus, explain, isActive, issueStatus, totalDuration } from '../shared/model';
 import { Ago, Card, Empty, Explanation, KeyValues, PageHeader, ReadState, RowLink, Rows, StatusPill, Steps, TextLink } from '../shared/ui';
 
 export function IssuePage() {
@@ -65,6 +65,7 @@ export function IssuePage() {
           [t('executions.worker'), latest?.assignedWorkerId ? <TextLink to={`/workers/${encodeURIComponent(latest.assignedWorkerId)}`}>{names.worker(latest.assignedWorkerId)}</TextLink> : latest ? names.worker(undefined) : t('issues.unassigned')],
           [t('issues.dependsOn'), issue.data?.blockedBy.length ? issue.data.blockedBy.map(blocker => `#${blocker.number}`).join(', ') : t('issues.nothing')],
           [t('executions.engine'), `${selection?.engine === 'ccc' ? 'Claude Code' : 'Codex'}${selection?.effort ? ` · ${selection.effort}` : ''}${selection?.model ? ` · ${selection.model}` : ''}`],
+          [t('issues.timeSpent'), attempts.length ? t('issues.timeSpentValue', { time: duration(totalDuration(attempts)), n: attempts.length }) : '—'],
           [t('issues.eligible'), issue.data ? (issue.data.isEligible ? t('issues.yes') : issue.data.eligibilityReasons.join(' · ') || t('issues.no')) : '—']
         ]} /></Card>
         <Card title={t('issues.actions')}><div className="flex flex-col gap-2">

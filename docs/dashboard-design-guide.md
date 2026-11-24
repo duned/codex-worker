@@ -21,7 +21,7 @@ secondary *Diagnostics* tab or a collapsed *Technical detail* block, never on th
 | --- | --- | --- |
 | Home | `/home` | One status line, **Needs your attention** grouped by cause — projects paused on a Worker, unresolved restarts/updates, executions with an unknown outcome, queued requests that cannot be assigned, failed latest attempts and Workers that cannot take work — each item with its cause in one sentence and the action that resolves it, **Running now** with lifecycle steps, recently finished executions with filters. |
 | Projects | `/projects` | List with search and status filter; side panel to add a project. |
-| Project | `/projects/{id}` | Issues (open/all, search, status filter) with their derived status, configuration card, pause/resume, add an Issue to the queue, edit panel. |
+| Project | `/projects/{id}` | Issues (open/all, search, status filter) with their derived status, configuration card, pause/resume (pausing holds new assignments on every Worker through `PUT /api/v1/project-scheduling/{id}` without changing the project revision; a project disabled through its lifecycle shows Resume instead), add an Issue to the queue, edit panel. |
 | Issue | `/projects/{id}/issues/{n}` | Status, *what happened / what you can do* when it failed, description (Markdown), attempts with steps, status card and actions card. |
 | Executions | `/executions` | Every attempt with search and state filter. |
 | Execution | `/executions/{id}` | Five lifecycle steps with durations, explanation and actions, result and details. |

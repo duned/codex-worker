@@ -118,6 +118,8 @@ public sealed class GlobalWorkerConfiguration
     public WorkerServerSettings Server { get; set; } = new();
     public StandaloneReportingSettings Reporting { get; set; } = new();
     public ManagedProjectRuntimeSettings ManagedProjects { get; set; } = new();
+    /// <summary>The file this configuration was loaded from, when it came from one.</summary>
+    [YamlIgnore] public string? SourcePath { get; private set; }
 
     public static GlobalWorkerConfiguration Load(string path)
     {
@@ -169,6 +171,7 @@ public sealed class GlobalWorkerConfiguration
                 throw new InvalidDataException("projects.ownership must be standalone or managed.");
             if (value.Projects.Ownership == "managed" && !value.Server.Enabled)
                 throw new InvalidDataException("projects.ownership managed requires server.enabled: true.");
+            value.SourcePath = fullPath;
             return value;
         }
         catch (YamlDotNet.Core.YamlException ex) { throw new InvalidDataException($"Invalid global worker configuration '{fullPath}': {ex.Message}", ex); }

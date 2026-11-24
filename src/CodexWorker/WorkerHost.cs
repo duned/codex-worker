@@ -15,6 +15,7 @@ public sealed class WorkerHost
     private readonly WorkerRegistrationClient _registration;
     private readonly IAgentAuthenticationProvider? _agentAuthentication;
     private readonly string? _executionHistoryPath;
+    private readonly ProvisioningPolicySource _provisioningPolicy;
 
     public WorkerHost(GlobalWorkerConfiguration global,
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, WorkerConsole? output = null,
@@ -23,7 +24,6 @@ public sealed class WorkerHost
         string? executionHistoryPath = null)
     {
         _registration = registrationClient ?? new WorkerRegistrationClient();
-        _registration.UseMaintenancePolicy(global.Worker.Provisioning);
         _agentAuthentication = agentAuthentication;
         _executionHistoryPath = executionHistoryPath;
         _global = global;
@@ -33,6 +33,8 @@ public sealed class WorkerHost
         _operationalLog = operationalLog is null ? _ => { } :
             message => _output.Group(() => operationalLog(message));
         _executionOperationalLog = operationalLog is null ? null : _operationalLog;
+        _provisioningPolicy = new(global, message => _output.Warning(message));
+        _registration.UseMaintenancePolicy(() => _provisioningPolicy.Current);
     }
 
     private void LogAssignment(WorkerAssignmentContract assignment, string message, WorkerConfiguration? configuration = null,
@@ -66,6 +68,27 @@ public sealed class WorkerHost
         await _registration.ReportExecutionAsync(_global.Server, entry, "Failed", null, lease.Generation, token);
         LogAssignment(assignment, "terminal outcome Blocked · Server report completed", configuration);
     }
+
+    /// <summary>Refuses an assignment this Worker cannot run and keeps the Worker running. When the refusal
+    /// cannot be reported, the assignment's Server lease expires and the Server requeues it.</summary>
+    private async Task RefuseAssignmentAsync(WorkerAssignmentContract assignment, WorkerConfiguration configuration,
+        ExecutionHistoryStore history, WorkerRuntimeReadModel runtime, string reason, CancellationToken token)
+    {
+        runtime.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId}: {reason}", configuration.Project.Name);
+        try { await RejectIncompatibleAssignmentAsync(assignment, configuration, history, reason, token); }
+        catch (Exception error) when (error is HttpRequestException or WorkerInfrastructureException or InvalidDataException or IOException ||
+            error is OperationCanceledException && !token.IsCancellationRequested)
+        {
+            LogAssignment(assignment, "assignment refusal could not be reported · its Server lease expires and the Server requeues it", configuration);
+        }
+    }
+
+    /// <summary>A placeholder configuration that identifies a project this Worker does not have, for refusing its assignment.</summary>
+    private static WorkerConfiguration UnconfiguredProject(ServerProjectContract project) => new()
+    {
+        Project = new() { Name = project.Name, Repository = project.Repository },
+        Git = new() { BaseBranch = project.DefaultBranch }
+    };
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -304,10 +327,11 @@ public sealed class WorkerHost
                         throw new WorkerInfrastructureException(message);
                     }
                 }
+                // Successful preparation lifts preparation and capability pauses only; reconciliation pauses wait for an operator.
                 foreach (var project in healthyRuntimes)
-                    if (runtimeReadModel.Registry.Status().Any(state => state.Name == project.Configuration.Project.Name &&
-                        state.State == ProjectLifecycleState.Unavailable))
-                        runtimeReadModel.Registry.Enable(project.Configuration.Project.Name);
+                    if (!runtimeReadModel.Registry.EnableAfterPreparation(project.Configuration.Project.Name) &&
+                        runtimeReadModel.Registry.Get(project.Configuration.Project.Name) is { State: ProjectLifecycleState.Unavailable })
+                        _operationalLog($"Scheduler · {project.Configuration.Project.Name} · prepared again · reconciliation pause kept until an operator resumes it.");
                 validatedConfigurations.UnionWith(healthyRuntimes
                     .Select(project => project.Configuration));
                 Volatile.Write(ref heartbeatCapabilities, heartbeatCapabilities.Concat(healthyRuntimes.SelectMany(project =>
@@ -463,7 +487,7 @@ public sealed class WorkerHost
                     {
                         var reason = $"Completion reconciliation required for Issue #{ex.IssueNumber}, execution {ex.ExecutionId}. " +
                             LimitCompletionDiagnostic(ex.Message, project.Configuration);
-                        runtimeReadModel.Registry.MarkUnavailable(ex.Project, reason);
+                        runtimeReadModel.Registry.MarkUnavailable(ex.Project, reason, operatorHeld: true);
                         runtimeReadModel.Events.Publish("project.github-reconciliation-required", reason, ex.Project);
                         _output.Warning(reason);
                         _operationalLog($"Scheduler · {ex.Project} · {reason} · only this project is paused; do not replay Codex.");
@@ -574,7 +598,7 @@ public sealed class WorkerHost
                 // Recovery updates use local policy and Server authorization, not the invalid managed snapshot.
                 // The Server also verifies idle executions/leases and holds scheduling drained until readiness returns.
                 if (managed && active.Count == 0 &&
-                    await _registration.ExecuteWorkerUpdateAsync(_global.Server, _global.Worker.Provisioning, runtimeReadModel, _output.Warning, executionToken))
+                    await _registration.ExecuteWorkerUpdateAsync(_global.Server, _provisioningPolicy.Current, runtimeReadModel, _output.Warning, executionToken))
                     continue;
                 if (managed && managedConfiguration?.Status.SynchronizationStatus == "synchronized" && active.Count == 0 &&
                     await _registration.ExecuteTelegramTestAsync(_global.Server, managedConfiguration, telegram, executionToken))
@@ -606,7 +630,7 @@ public sealed class WorkerHost
                     managedConfiguration?.Status.SynchronizationStatus == "synchronized")
                 {
                     var registration = _registration;
-                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning,
+                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _provisioningPolicy.Current,
                         executionToken, RevokeReadinessAsync,
                         token => ReportProvisionedCapabilitiesAsync(Volatile.Read(ref heartbeatCapabilities), token)))
                     {
@@ -722,7 +746,12 @@ public sealed class WorkerHost
                         }
                         if (!assignmentResponse.HasWork && assignmentResponse.Assignment is null) { break; }
                         if (!assignmentResponse.HasWork || assignmentResponse.Assignment is null)
-                            throw new WorkerInfrastructureException("Codex Server returned an inconsistent assignment response; remote assignment state may be uncertain.");
+                        {
+                            // Nothing identifiable was assigned: keep running and ask again on the next cycle.
+                            runtimeReadModel.Events.Publish("assignment.rejected", "Codex Server returned an inconsistent assignment response.");
+                            _output.Warning("Codex Server returned an inconsistent assignment response; the Worker keeps running and asks again.");
+                            break;
+                        }
                         var assignment = assignmentResponse.Assignment!;
                         LogAssignment(assignment, "assignment received", includeCorrelation: true);
                         if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
@@ -730,8 +759,10 @@ public sealed class WorkerHost
                             lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
                             lease.ExecutionId != assignment.ServerExecutionId || lease.WorkerId != assignment.WorkerId)
                         {
-                            LogAssignment(assignment, "assignment rejected · infrastructure failure: invalid active ownership lease");
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} has no valid active ownership lease.");
+                            // Without a valid lease there is no authority to act or report; the Server lease expiry requeues it.
+                            LogAssignment(assignment, "assignment ignored · no valid active ownership lease · the Server requeues it when the lease expires");
+                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} has no valid active ownership lease.");
+                            break;
                         }
                         var assignedProject = runtimes.FirstOrDefault(candidate => MatchesManagedProject(candidate.Configuration, assignment.Project, managedConfiguration!.AppliedProjects));
                         if (assignedProject is null)
@@ -745,9 +776,10 @@ public sealed class WorkerHost
                                 nextManagedConfigurationSync = DateTimeOffset.MinValue;
                                 break;
                             }
-                            LogAssignment(assignment, "assignment rejected · infrastructure failure: project is outside the configured Worker registry");
-                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} references a project outside the configured Worker project registry.");
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} references a project that is not safely configured on this Worker; assignment remains owned by this Worker for inspection.");
+                            await RefuseAssignmentAsync(assignment, UnconfiguredProject(assignment.Project), history, runtimeReadModel,
+                                "The project is not configured on this Worker; the managed configuration is synchronized again.", executionToken);
+                            nextManagedConfigurationSync = DateTimeOffset.MinValue;
+                            break;
                         }
                         if (IssueExecutionMetadata.ValidationError(assignment.Work.Selection) is { } selectionError)
                         {
@@ -766,9 +798,9 @@ public sealed class WorkerHost
                         }
                         if (!runtimeReadModel.Registry.TryReserve(assignedProject.Configuration.Project.Name, assignedProject.Configuration))
                         {
-                            LogAssignment(assignment, "assignment rejected · infrastructure failure: project is draining", assignedProject.Configuration);
-                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} arrived after project '{assignment.Project.Name}' began draining.", assignedProject.Configuration.Project.Name);
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} arrived while project '{assignment.Project.Name}' was draining; assignment remains owned by this Worker for inspection.");
+                            await RefuseAssignmentAsync(assignment, assignedProject.Configuration, history, runtimeReadModel,
+                                $"Project '{assignment.Project.Name}' is draining or paused on this Worker.", executionToken);
+                            continue;
                         }
                         activeProject = assignedProject.Configuration.Project.Name;
                         Task<IssueProcessingResult?>? assignedExecution;
@@ -882,8 +914,11 @@ public sealed class WorkerHost
                                 leaseStop.Dispose();
                                 runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
                             }
-                            LogAssignment(assignment, "infrastructure failure · assignment did not create an execution", assignedProject.Configuration);
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} did not create an execution.");
+                            // A replayed or already-recorded assignment: leave its history untouched and let the Server lease
+                            // expiry decide, instead of stopping the Worker.
+                            LogAssignment(assignment, "assignment did not create an execution · left to Server lease expiry", assignedProject.Configuration);
+                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} did not create an execution.", assignedProject.Configuration.Project.Name);
+                            break;
                         }
                         active.Add(assignedExecution, assignedProject);
                         ReportCapacity();
@@ -1204,7 +1239,7 @@ public sealed class WorkerHost
         {
             var reason = $"Completion reconciliation required for Issue #{entry.IssueNumber}, execution {entry.ExecutionId}: " +
                 LimitCompletionDiagnostic(ex.Message, worker.Configuration);
-            runtime.Registry.MarkUnavailable(worker.Configuration.Project.Name, reason);
+            runtime.Registry.MarkUnavailable(worker.Configuration.Project.Name, reason, operatorHeld: true);
             runtime.Events.Publish("project.github-reconciliation-required", reason, worker.Configuration.Project.Name);
             _output.Warning(reason);
             _operationalLog($"Scheduler · {worker.Configuration.Project.Name} · execution {entry.ExecutionId} · completion stopped because remote proof or reporting state is ambiguous · project scheduling paused. {reason}");
@@ -1272,7 +1307,7 @@ public sealed class WorkerHost
                             project.Configuration.Environment.Variables.Values.ToArray());
                         if (safeDetail.Length > 1200) safeDetail = safeDetail[..1180] + " … [truncated]";
                         var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remote state could not be verified for execution {entry.ExecutionId}: {safeDetail}";
-                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason, operatorHeld: true);
                         runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
                         _output.Warning(reason);
                         _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · startup GitHub reconciliation could not verify remote state · project scheduling paused.");
@@ -1289,7 +1324,7 @@ public sealed class WorkerHost
                     if (readyRemains)
                     {
                         var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remains open and ready after execution {entry.ExecutionId} had an uncertain mutation. Inspect the Issue and history, then explicitly enable the project after reconciliation.";
-                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason, operatorHeld: true);
                         runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
                         _output.Warning(reason);
                         _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · remote state verified as open and ready · scheduling paused pending manual reconciliation.");
@@ -1395,7 +1430,7 @@ public sealed class WorkerHost
         if (reason.Length > 1600) reason = reason[..1580] + " … [truncated]";
         if (!string.IsNullOrWhiteSpace(additionalContext)) reason += $" {additionalContext}";
         if (reason.Length > 1800) reason = reason[..1780] + " … [truncated]";
-        runtime.Registry.MarkUnavailable(projectName, reason);
+        runtime.Registry.MarkUnavailable(projectName, reason, operatorHeld: reconciliationRequired);
         runtime.Events.Publish(reconciliationRequired ? "project.github-reconciliation-required" : "project.github-failure",
             reason, projectName);
         _output.Warning($"Project '{projectName}' paused after a GitHub failure; unrelated projects will continue. {reason}");
@@ -1414,7 +1449,7 @@ public sealed class WorkerHost
     private ProvisioningPlanExecutor CreateProvisioningExecutor(WorkerRegistrationClient registration,
         IReadOnlyList<ProjectRuntime> runtimes,
         Func<IReadOnlyList<WorkerCapabilityContract>, CancellationToken, Task> capabilitiesChanged) => new(_registration.CapabilityDiscovery,
-        policy: _global.Worker.Provisioning,
+        policy: _provisioningPolicy.Current,
         authenticationExecutor: new GitHubAuthenticationProvisioner(_runner,
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.GitHub,
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.Git,

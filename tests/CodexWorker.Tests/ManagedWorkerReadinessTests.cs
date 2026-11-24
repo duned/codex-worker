@@ -563,6 +563,87 @@ public sealed class ManagedWorkerReadinessTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData("unknown-project")]
+    [InlineData("invalid-lease")]
+    [InlineData("inconsistent-response")]
+    public async Task UnexpectedAssignmentsAreRefusedWithoutStoppingTheWorker(string scenario)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var temporary = new TemporaryDirectory();
+        await temporary.EnableProjectProbesAsync();
+        using var stop = new CancellationTokenSource();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "identity") };
+        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        var project = new ServerProjectContract("opaque-central-id", "Central", "owner/repo", "main", "", [], 1,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var unknown = project with { Id = "other-id", Name = "Other", Repository = "owner/other" };
+        var global = new GlobalWorkerConfiguration
+        {
+            Server = settings, Projects = new() { Ownership = "managed" },
+            ManagedProjects = new() { CheckoutDirectory = Path.Combine(temporary.Path, "checkouts") },
+            Api = new() { Enabled = false }
+        };
+        var requests = 0;
+        var askedAgain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reported = new TaskCompletionSource<WorkerExecutionReportContract>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new Handler(async (request, token) =>
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/configuration", StringComparison.Ordinal))
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new ServerManagedConfigurationContract(2,
+                    ManagedConfigurationSynchronizer.CalculateVersion([project]), [project])) };
+            if (path.EndsWith("/assignments/request", StringComparison.Ordinal))
+            {
+                if (Interlocked.Increment(ref requests) > 1)
+                {
+                    askedAgain.TrySetResult();
+                    return new(HttpStatusCode.OK) { Content = JsonContent.Create(new WorkerAssignmentResponseContract(false, null)) };
+                }
+                if (scenario == "inconsistent-response")
+                    return new(HttpStatusCode.OK) { Content = JsonContent.Create(new WorkerAssignmentResponseContract(true, null)) };
+                var now = DateTimeOffset.UtcNow;
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new WorkerAssignmentResponseContract(true,
+                    new("assignment", "execution", scenario == "unknown-project" ? unknown : project,
+                        new("github-issue", "17"), workerId, new Dictionary<string, string>(),
+                        new("execution", workerId, 1, now, scenario == "invalid-lease" ? now : now.AddMinutes(15), "Active", 60)))) };
+            }
+            if (path.EndsWith("/report", StringComparison.Ordinal))
+                reported.TrySetResult(await (request.Content ?? throw new InvalidDataException("Missing report"))
+                    .ReadFromJsonAsync<WorkerExecutionReportContract>(token) ?? throw new InvalidDataException("Missing report"));
+            return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
+        });
+        using var client = new HttpClient(handler);
+        var host = new WorkerHost(global, [], new WorkerConsole(new StringWriter(), interactive: false),
+            registrationClient: new WorkerRegistrationClient(client,
+                new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
+                new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))),
+            agentAuthentication: new TestProvider { Available = true },
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"), timeProvider: new AcceleratedTimers());
+        var run = host.RunAsync(stop.Token);
+        try
+        {
+            await askedAgain.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.False(run.IsCompleted);
+            if (scenario == "unknown-project")
+            {
+                var report = await reported.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(("Failed", 1), (report.State, report.Generation));
+                Assert.Contains("not configured on this Worker", report.Summary, StringComparison.Ordinal);
+            }
+            else Assert.False(reported.Task.IsCompleted);
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(15));
+        }
+    }
+
     /// <summary>Real clock whose timers fire sooner, so polling and heartbeat loops need no wall-clock seconds.</summary>
     private sealed class AcceleratedTimers : TimeProvider
     {

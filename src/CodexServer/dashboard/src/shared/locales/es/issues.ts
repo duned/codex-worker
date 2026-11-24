@@ -1,5 +1,6 @@
 import type { issues as source } from '../en/issues';
 export const issues = {
+  "issues.timeSpent": "Tiempo dedicado", "issues.timeSpentValue": "{time} en {n} intentos",
   "issues.title": "Issues", "issues.scope": "Qué issues", "issues.open": "Abiertas", "issues.all": "Todas", "issues.search": "Buscar por número o título",
   "issues.filterWaiting": "Esperando", "issues.filterRunning": "En curso", "issues.filterDone": "Terminadas", "issues.filterBlocked": "Bloqueadas o reintentadas",
   "issues.waitsFor": "Espera a {list}", "issues.none": "No se encontraron issues en GitHub.", "issues.enqueue": "Añadir issue a la cola",

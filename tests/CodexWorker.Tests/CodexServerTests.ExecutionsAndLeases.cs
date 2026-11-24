@@ -397,6 +397,114 @@ public sealed partial class CodexServerTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task PausedProjectSchedulingHoldsQueuedWorkWithoutChangingTheRevision()
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "project-pause.db"));
+        await store.InitializeAsync();
+        var paused = await store.CreateProjectAsync(new CentralProjectDefinition("Paused", "team/paused", "main", "", []));
+        var other = await store.CreateProjectAsync(new CentralProjectDefinition("Other", "team/other", "main", "", []));
+        var worker = Guid.NewGuid().ToString("N");
+        WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(paused.Repository), .. AuthenticationCapabilities(other.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 2, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 2, capabilities, []));
+        var held = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(paused.Id, new WorkReference("issue", "1")));
+        var free = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(other.Id, new WorkReference("issue", "2")));
+
+        Assert.True((await store.SetProjectSchedulingPausedAsync(paused.Id, true))?.Paused);
+        Assert.Null(await store.SetProjectSchedulingPausedAsync("missing", true));
+        Assert.Equal(paused.Revision, (await store.GetProjectAsync(paused.Id))?.Revision);
+        Assert.Equal("project-scheduling-paused", (await store.GetExecutionAsync(held.Id))?.PendingReason);
+
+        var request = new WorkerAssignmentRequest(worker, true, 2, new Dictionary<string, int> { [paused.Id] = 1, [other.Id] = 1 });
+        Assert.Equal(free.Id, (await store.RequestAssignmentAsync(request)).Assignment?.ServerExecutionId);
+        Assert.Null((await store.RequestAssignmentAsync(request)).Assignment);
+
+        Assert.False((await store.SetProjectSchedulingPausedAsync(paused.Id, false))?.Paused);
+        Assert.Empty(await store.GetProjectSchedulingPausesAsync());
+        Assert.Equal(held.Id, (await store.RequestAssignmentAsync(request)).Assignment?.ServerExecutionId);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task PrioritizedQueuedRequestsAreAssignedFirst()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-03-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "priority.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Priority", "team/priority", "main", "", []));
+        var worker = Guid.NewGuid().ToString("N");
+        WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+        var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "2")));
+        var third = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "3")));
+
+        var prioritized = await store.PrioritizeQueuedExecutionAsync(third.Id);
+        Assert.Equal(clock.GetUtcNow(), prioritized?.PrioritizedAtUtc);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await store.PrioritizeQueuedExecutionAsync(second.Id);
+        Assert.Null(await store.PrioritizeQueuedExecutionAsync("missing"));
+
+        var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var assignment = (await store.RequestAssignmentAsync(request)).Assignment!;
+        Assert.Equal(second.Id, assignment.ServerExecutionId);
+        await Assert.ThrowsAsync<ExecutionRequestPriorityException>(() => store.PrioritizeQueuedExecutionAsync(second.Id));
+        Assert.Null((await store.GetExecutionAsync(first.Id))?.PrioritizedAtUtc);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData("PreparationFailed", true)]
+    [InlineData("Blocked", false)]
+    public async Task PreparationRefusalQueuesExactlyOneAutomaticAttempt(string classification, bool requeued)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-03-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "preparation.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Prepare", "team/prepare", "main", "", []));
+        var worker = Guid.NewGuid().ToString("N");
+        WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "9")));
+        var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+
+        async Task<ExecutionRequest> RefuseAsync(string executionId)
+        {
+            var assignment = (await store.RequestAssignmentAsync(request)).Assignment!;
+            Assert.Equal(executionId, assignment.ServerExecutionId);
+            return (await store.ReportExecutionAsync(executionId, new WorkerExecutionReport(worker, assignment.AssignmentId,
+                Guid.NewGuid().ToString(), "Failed", CompletedAtUtc: clock.GetUtcNow(), FailureClassification: classification,
+                Generation: assignment.Lease!.Generation)))!;
+        }
+
+        var failed = await RefuseAsync(first.Id);
+        var queued = (await store.GetExecutionsAsync()).Where(item => item.State == "Queued").ToArray();
+        if (!requeued)
+        {
+            Assert.Null(failed.RecoveryState);
+            Assert.Empty(queued);
+            return;
+        }
+        Assert.Equal("PreparationRequeued", failed.RecoveryState);
+        var retry = Assert.Single(queued);
+        Assert.Equal((first.Id, 2, first.WorkReference), (retry.RetryOfExecutionId, retry.AttemptNumber, retry.WorkReference));
+
+        // A second refusal in the same chain stays failed for the operator.
+        var second = await RefuseAsync(retry.Id);
+        Assert.Null(second.RecoveryState);
+        Assert.DoesNotContain(await store.GetExecutionsAsync(), item => item.State == "Queued");
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task LeaseRenewalIsGenerationAndOwnerBoundAndExpiryCreatesSafeRetry()
     {
         using var temporary = new TemporaryDirectory();

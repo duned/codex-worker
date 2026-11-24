@@ -69,6 +69,12 @@ public interface IRegistryStore
     Task<IReadOnlyList<ExecutionRequest>> ListExecutionsAsync(ExecutionQuery query, CancellationToken cancellationToken = default);
     Task<ExecutionRequest?> GetExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
     Task<ExecutionRequest?> CancelQueuedExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
+    /// <summary>Moves a queued request ahead of the others; the latest prioritized request goes first.</summary>
+    Task<ExecutionRequest?> PrioritizeQueuedExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
+    /// <summary>Pauses or resumes assignment of a project's queued work on every Worker without changing its revision.
+    /// Returns null when the project does not exist.</summary>
+    Task<ProjectSchedulingPause?> SetProjectSchedulingPausedAsync(string projectId, bool paused, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ProjectSchedulingPause>> GetProjectSchedulingPausesAsync(CancellationToken cancellationToken = default);
     Task<ExecutionArchiveResult> SetExecutionsArchivedAsync(IReadOnlyList<string> executionRequestIds, bool archived, CancellationToken cancellationToken = default);
     Task<ExecutionReconciliationResult?> ReconcileUncertainExecutionAsync(string executionRequestId,
         ExecutionReconciliationRequest request, CancellationToken cancellationToken = default);
@@ -109,7 +115,11 @@ public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference
     string? WorkspaceRecovery = null, string? PendingReason = null, IReadOnlyList<string>? MissingRequirements = null,
     string ManagedEligibilityState = "eligible", IReadOnlyList<string>? ManagedEligibilityReasons = null,
     DateTimeOffset? ManagedEligibilityCheckedAtUtc = null,
-    IReadOnlyDictionary<string, DateTimeOffset>? StageStartedAtUtc = null, DateTimeOffset? ArchivedAtUtc = null);
+    IReadOnlyDictionary<string, DateTimeOffset>? StageStartedAtUtc = null, DateTimeOffset? ArchivedAtUtc = null,
+    DateTimeOffset? PrioritizedAtUtc = null);
+public sealed record ProjectSchedulingPause(string ProjectId, bool Paused, DateTimeOffset? PausedAtUtc);
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
+public sealed record ProjectSchedulingRequest([property: System.Text.Json.Serialization.JsonRequired] bool Paused);
 public sealed record ExecutionLease(string ExecutionId, string WorkerId, long Generation,
     DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);
 public sealed record ExecutionLeaseRenewal(string WorkerId, long Generation);
@@ -239,6 +249,7 @@ public sealed class ExecutionRequestConflictException() : Exception("An active e
 public sealed class ExecutionRequestTransitionException() : Exception("The requested execution state transition is invalid.") { }
 public sealed class ExecutionRequestOwnershipException() : Exception("Execution report was rejected because its lease is stale or lifecycle state has advanced.") { }
 public sealed class ExecutionRequestCancellationException() : Exception("Only queued execution requests can be cancelled by an operator.") { }
+public sealed class ExecutionRequestPriorityException() : Exception("Only queued execution requests can be moved to the front of the queue.") { }
 public sealed class ExecutionRequestReconciliationException(string message) : Exception(message);
 
 public static class ExecutionAdministrationValidation
@@ -477,7 +488,7 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
     int? ClockSkewSeconds = null)
 {
     /// <summary>Leases and operation deadlines tolerate this much difference between Worker and Server clocks.</summary>
-    public const int ClockSkewToleranceSeconds = 60;
+    public const int ClockSkewToleranceSeconds = ManagedClock.ToleranceSeconds;
     [System.Text.Json.Serialization.JsonIgnore]
     public bool ClockSkewed => ClockSkewSeconds is { } skew && Math.Abs(skew) > ClockSkewToleranceSeconds;
 }
@@ -562,7 +573,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
 {
     private readonly ILogger _logger = logger ?? NullLogger<SqliteRegistryStore>.Instance;
 
-    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json, (SELECT archived_at_utc FROM execution_archive a WHERE a.execution_id=execution_requests.id) FROM execution_requests";
+    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json, (SELECT archived_at_utc FROM execution_archive a WHERE a.execution_id=execution_requests.id), (SELECT prioritized_at_utc FROM execution_priorities p WHERE p.execution_id=execution_requests.id) FROM execution_requests";
     public const int CurrentSchemaVersion = 21;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
@@ -833,6 +844,16 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 CREATE TABLE IF NOT EXISTS execution_archive (
                     execution_id TEXT NOT NULL PRIMARY KEY,
                     archived_at_utc TEXT NOT NULL
+                );
+                -- Operator scheduling pause: no new assignments for the project on any Worker; not part of its revision.
+                CREATE TABLE IF NOT EXISTS project_scheduling_pauses (
+                    project_id TEXT NOT NULL PRIMARY KEY,
+                    paused_at_utc TEXT NOT NULL
+                );
+                -- Operator queue priority: only reorders queued requests; never eligibility or capacity.
+                CREATE TABLE IF NOT EXISTS execution_priorities (
+                    execution_id TEXT NOT NULL PRIMARY KEY,
+                    prioritized_at_utc TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS execution_leases (
                     execution_id TEXT NOT NULL,
@@ -1228,7 +1249,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
 
         var noAssignmentReason = "no-eligible-work";
         command.Parameters.Clear();
-        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, workspace_recovery, managed_eligibility_state FROM execution_requests WHERE state = 'Queued' ORDER BY queue_order;";
+        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, workspace_recovery, managed_eligibility_state FROM execution_requests " +
+            "LEFT JOIN execution_priorities p ON p.execution_id=execution_requests.id WHERE state = 'Queued' ORDER BY p.prioritized_at_utc IS NULL, p.prioritized_at_utc DESC, queue_order;";
+        var pausedProjects = await ReadPausedProjectsAsync(command, cancellationToken);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var queued = new List<(string Id, string ProjectId, WorkReference Work, string Created, string? WorkspaceRecovery)>();
         while (await reader.ReadAsync(cancellationToken))
@@ -1237,6 +1260,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             if (!request.ProjectCapacities.TryGetValue(projectId, out var projectCapacity) || projectCapacity <= 0)
             { noAssignmentReason = "project-capacity-not-advertised"; continue; }
             if (reader.GetString(5) == "blocked") { noAssignmentReason = "managed-eligibility-blocked"; continue; }
+            if (pausedProjects.Contains(projectId)) { noAssignmentReason = "project-scheduling-paused"; continue; }
             queued.Add((reader.GetString(0), projectId,
                 JsonSerializer.Deserialize<WorkReference>(reader.GetString(2), ProjectJson) ?? throw new InvalidDataException("Stored work reference is invalid."),
                 reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4)));
@@ -1519,6 +1543,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         var projects = (await GetProjectsAsync(cancellationToken)).ToDictionary(project => project.Id, StringComparer.Ordinal);
         var workers = await GetWorkersAsync(cancellationToken);
         var projectActivity = await ReadProjectActivityAsync(cancellationToken);
+        var pausedProjects = (await GetProjectSchedulingPausesAsync(cancellationToken)).Select(pause => pause.ProjectId).ToHashSet(StringComparer.Ordinal);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -1529,7 +1554,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         {
             var execution = ReadExecution(reader);
             result.Add(execution.State == "Queued"
-                ? execution with { PendingReason = PendingReasonFor(execution, projects, workers, projectActivity),
+                ? execution with { PendingReason = PendingReasonFor(execution, projects, workers, projectActivity, pausedProjects),
                     MissingRequirements = MissingFor(execution, projects, workers) }
                 : execution);
         }
@@ -1584,8 +1609,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         var projects = (await GetProjectsAsync(cancellationToken)).ToDictionary(project => project.Id, StringComparer.Ordinal);
         var workers = await GetWorkersAsync(cancellationToken);
         var projectActivity = await ReadProjectActivityAsync(cancellationToken);
+        var pausedProjects = (await GetProjectSchedulingPausesAsync(cancellationToken)).Select(pause => pause.ProjectId).ToHashSet(StringComparer.Ordinal);
         return executions.Select(execution => execution.State == "Queued"
-            ? execution with { PendingReason = PendingReasonFor(execution, projects, workers, projectActivity),
+            ? execution with { PendingReason = PendingReasonFor(execution, projects, workers, projectActivity, pausedProjects),
                 MissingRequirements = MissingFor(execution, projects, workers) }
             : execution).ToArray();
     }
@@ -1593,6 +1619,36 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
     public Task<ExecutionRequest?> CancelQueuedExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default) =>
         ServerOperationalDiagnostics.RunAsync(_logger, "queue-cancel", () => CancelQueuedExecutionCoreAsync(executionRequestId, cancellationToken),
             cancellationToken, executionId: executionRequestId);
+
+    public async Task<ExecutionRequest?> PrioritizeQueuedExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = """
+            INSERT INTO execution_priorities (execution_id, prioritized_at_utc)
+            SELECT id, $now FROM execution_requests WHERE id=$id AND state='Queued'
+            ON CONFLICT(execution_id) DO UPDATE SET prioritized_at_utc=excluded.prioritized_at_utc;
+            """;
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$id", executionRequestId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
+        {
+            command.Parameters.Clear();
+            command.CommandText = "SELECT 1 FROM execution_requests WHERE id=$id;";
+            command.Parameters.AddWithValue("$id", executionRequestId);
+            var exists = await command.ExecuteScalarAsync(cancellationToken) is not null;
+            await transaction.CommitAsync(cancellationToken);
+            if (!exists) return null;
+            throw new ExecutionRequestPriorityException();
+        }
+        var result = await ReadExecutionInTransactionAsync(connection, (SqliteTransaction)transaction, executionRequestId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "queue-prioritize", "operator-prioritized", result?.ProjectId, result?.WorkReference, executionRequestId);
+        return result;
+    }
 
     private async Task<ExecutionRequest?> CancelQueuedExecutionCoreAsync(string executionRequestId,
         CancellationToken cancellationToken = default)
@@ -1763,6 +1819,55 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         return await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
     }
 
+    private static async Task<HashSet<string>> ReadPausedProjectsAsync(SqliteCommand command, CancellationToken cancellationToken)
+    {
+        var text = command.CommandText;
+        command.CommandText = "SELECT project_id FROM project_scheduling_pauses;";
+        var paused = new HashSet<string>(StringComparer.Ordinal);
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            while (await reader.ReadAsync(cancellationToken)) paused.Add(reader.GetString(0));
+        command.CommandText = text;
+        return paused;
+    }
+
+    public async Task<IReadOnlyList<ProjectSchedulingPause>> GetProjectSchedulingPausesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT project_id, paused_at_utc FROM project_scheduling_pauses ORDER BY project_id;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<ProjectSchedulingPause>();
+        while (await reader.ReadAsync(cancellationToken))
+            result.Add(new(reader.GetString(0), true, DateTimeOffset.Parse(reader.GetString(1), System.Globalization.CultureInfo.InvariantCulture)));
+        return result;
+    }
+
+    public async Task<ProjectSchedulingPause?> SetProjectSchedulingPausedAsync(string projectId, bool paused, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = "SELECT 1 FROM projects WHERE project_id=$project;";
+        command.Parameters.AddWithValue("$project", projectId);
+        if (await command.ExecuteScalarAsync(cancellationToken) is null) { await transaction.CommitAsync(cancellationToken); return null; }
+        var now = _timeProvider.GetUtcNow();
+        command.CommandText = paused
+            ? "INSERT INTO project_scheduling_pauses (project_id, paused_at_utc) VALUES ($project, $now) ON CONFLICT(project_id) DO NOTHING;"
+            : "DELETE FROM project_scheduling_pauses WHERE project_id=$project;";
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        command.Parameters.Clear();
+        command.CommandText = "SELECT paused_at_utc FROM project_scheduling_pauses WHERE project_id=$project;";
+        command.Parameters.AddWithValue("$project", projectId);
+        var pausedAt = await command.ExecuteScalarAsync(cancellationToken) as string;
+        await transaction.CommitAsync(cancellationToken);
+        ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "project-scheduling", paused ? "operator-paused" : "operator-resumed", projectId);
+        return new(projectId, pausedAt is not null, pausedAt is null ? null : DateTimeOffset.Parse(pausedAt, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     private async Task<IReadOnlyDictionary<string, int>> ReadProjectActivityAsync(CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection(ConnectionString);
@@ -1776,12 +1881,13 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
     }
 
     private string PendingReasonFor(ExecutionRequest execution, IReadOnlyDictionary<string, CentralProject> projects,
-        IReadOnlyList<WorkerRegistrationResponse> workers, IReadOnlyDictionary<string, int> projectActivity)
+        IReadOnlyList<WorkerRegistrationResponse> workers, IReadOnlyDictionary<string, int> projectActivity, IReadOnlySet<string> pausedProjects)
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return "project is unavailable";
         try { ExecutionRequestValidation.Canonicalize(execution.WorkReference, project.Repository); }
         catch (InvalidDataException) { return "work reference does not match project repository"; }
         if (!project.Enabled) return "project is disabled";
+        if (pausedProjects.Contains(project.Id)) return "project-scheduling-paused";
         if (execution.ManagedEligibilityState == "blocked") return "work is blocked by managed eligibility";
         if (execution.ManagedEligibilityState == "unavailable") return "managed eligibility is unavailable";
         var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project, execution.WorkReference.Selection.Engine), worker.Capabilities).IsEligible).ToArray();
@@ -2208,6 +2314,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (updated == 1 && !reconciliation && report is { State: "Failed", FailureClassification: "IntegrationConflict", IntegrationResult: CodexProvisioning.ManagedIntegrationResults.RebaseConflict } &&
             previous is { RetryOfExecutionId: null })
             await QueueFreshAttemptAfterRebaseConflictAsync(command, executionRequestId, cancellationToken);
+        if (updated == 1 && !reconciliation && report is { State: "Failed", FailureClassification: "PreparationFailed" })
+            await QueueRetryAfterPreparationFailureAsync(command, executionRequestId, cancellationToken);
         await using var read = connection.CreateCommand();
         read.Transaction = (SqliteTransaction)transaction;
         read.CommandText = ExecutionSelect + " WHERE id=$id;";
@@ -2243,6 +2351,36 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state, retry_of_execution_id, attempt_number, recovery_reason, workspace_recovery)
             SELECT $retry, project_id, work_type, work_id, work_reference_json, $created, 'Queued', id, attempt_number + 1,
                 'Fresh attempt after a rebase conflict with newer work on the base branch.', 'FreshWorkspaceRequired'
+            FROM execution_requests WHERE id=$id;
+            """;
+        command.Parameters.AddWithValue("$retry", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("$created", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$id", sourceId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>A refusal before any claim (checkout, labels, initialization) changed nothing in GitHub and is often a
+    /// passing outage, so it gets exactly one automatic attempt per chain. A second refusal stays failed for the operator.</summary>
+    private async Task QueueRetryAfterPreparationFailureAsync(SqliteCommand command, string sourceId, CancellationToken cancellationToken)
+    {
+        command.Parameters.Clear();
+        command.CommandText = """
+            UPDATE execution_requests SET recovery_state='PreparationRequeued',
+                recovery_reason='The Worker could not prepare the project before starting; one new attempt was queued automatically.'
+            WHERE id=$id AND state='Failed' AND recovery_state IS NULL
+              AND NOT EXISTS (SELECT 1 FROM execution_requests source JOIN execution_requests prior ON prior.id=source.retry_of_execution_id
+                  WHERE source.id=$id AND prior.recovery_state='PreparationRequeued')
+              AND NOT EXISTS (SELECT 1 FROM execution_requests other JOIN execution_requests source ON source.id=$id
+                  WHERE other.id!=source.id AND other.project_id=source.project_id AND other.work_type=source.work_type
+                  AND other.work_id=source.work_id AND other.state IN ('Queued','Assigned','Running'));
+            """;
+        command.Parameters.AddWithValue("$id", sourceId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return;
+        command.Parameters.Clear();
+        command.CommandText = """
+            INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state, retry_of_execution_id, attempt_number, recovery_reason)
+            SELECT $retry, project_id, work_type, work_id, work_reference_json, $created, 'Queued', id, attempt_number + 1,
+                'Automatic attempt after the Worker could not prepare the project.'
             FROM execution_requests WHERE id=$id;
             """;
         command.Parameters.AddWithValue("$retry", Guid.NewGuid().ToString("N"));
@@ -2287,7 +2425,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         null, null, reader.GetString(29), reader.IsDBNull(30) ? null : JsonSerializer.Deserialize<string[]>(reader.GetString(30), ProjectJson),
         reader.IsDBNull(31) ? null : DateTimeOffset.Parse(reader.GetString(31)),
         reader.IsDBNull(32) ? null : JsonSerializer.Deserialize<Dictionary<string, DateTimeOffset>>(reader.GetString(32), ProjectJson),
-        reader.IsDBNull(33) ? null : DateTimeOffset.Parse(reader.GetString(33), System.Globalization.CultureInfo.InvariantCulture));
+        reader.IsDBNull(33) ? null : DateTimeOffset.Parse(reader.GetString(33), System.Globalization.CultureInfo.InvariantCulture),
+        reader.IsDBNull(34) ? null : DateTimeOffset.Parse(reader.GetString(34), System.Globalization.CultureInfo.InvariantCulture));
 
     public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
     {

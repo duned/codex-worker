@@ -29,7 +29,7 @@ export interface ExecutionSummary {
   durationMilliseconds?: number; recoveryState?: string; recoveryReason?: string; pendingReason?: string;
   managedEligibilityState?: string; managedEligibilityReasons?: string[]; managedEligibilityCheckedAtUtc?: string;
   completionSummary?: string; validationResult?: string; integrationResult?: string; failureClassification?: string;
-  recoverable?: boolean; attemptNumber?: number; retryOfExecutionId?: string; workerExecutionId?: string; workspaceRecovery?: string; archivedAtUtc?: string;
+  recoverable?: boolean; attemptNumber?: number; retryOfExecutionId?: string; workerExecutionId?: string; workspaceRecovery?: string; archivedAtUtc?: string; prioritizedAtUtc?: string;
   workReference?: { type: string; id: string; url?: string; title?: string; selection?: { engine: 'codex' | 'ccc'; model?: string | null; effort?: string | null } };
 }
 export interface ExecutionArchiveResult { changed: string[]; refused: { id: string; reason: string }[] }
@@ -97,6 +97,7 @@ export interface WorkerProjectReadiness {
   projectId: string; projectName: string; isEligible: boolean; missingRequirements: string[];
   workerReportedRevision?: number; materializationState?: string; diagnosticCode?: string; observationStatus: string; detail?: string;
 }
+export interface ProjectSchedulingPause { projectId: string; paused: boolean; pausedAtUtc?: string | null }
 export interface ProjectResumeOperation { id: string; projectId: string; status: 'pending' | 'running' | 'succeeded' | 'failed'; deadlineUtc: string; diagnostic?: string }
 export interface DeliveryAuthorization { status: string; revokedAtUtc?: string }
 export interface PairingRequest { contractVersion: 1; workerId: string; operation: 'enroll' | 'associate'; server: string }

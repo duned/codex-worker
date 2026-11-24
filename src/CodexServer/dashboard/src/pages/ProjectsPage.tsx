@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../untitled/components/base/buttons/button';
-import { useExecutions, useProjects } from '../shared/data';
+import { useExecutions, useProjects, useSchedulingPauses } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
 import { attention, isActive } from '../shared/model';
 import { Card, Empty, Filters, HeadRow, matches, PageHeader, Pill, ReadState, RowLink, Rows } from '../shared/ui';
@@ -10,12 +10,13 @@ const columns = 'md:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_90px_90px_160px]';
 
 export function ProjectsPage() {
   useLanguage();
-  const projects = useProjects(), executions = useExecutions();
+  const projects = useProjects(), executions = useExecutions(), pauses = useSchedulingPauses();
+  const paused = new Set((pauses.data ?? []).map(pause => pause.projectId));
   const [query, setQuery] = useState(''), [status, setStatus] = useState(''), [creating, setCreating] = useState(false);
   const all = executions.data ?? [], failing = new Set(attention(all).map(item => item.projectId));
   const rows = (projects.data ?? []).map(project => {
     const own = all.filter(item => item.projectId === project.id);
-    const state = project.enabled === false ? 'paused' : failing.has(project.id) ? 'attention' : 'active';
+    const state = project.enabled === false || paused.has(project.id) ? 'paused' : failing.has(project.id) ? 'attention' : 'active';
     return { project, state, running: own.filter(isActive).length, queued: own.filter(item => item.state === 'Queued').length };
   }).filter(row => (!status || row.state === status) && matches(`${row.project.name} ${row.project.repository}`, query));
   return <>

@@ -95,7 +95,7 @@ test('tool progress shows a request until the Worker records it, then the comman
 
 test('execution actions offer only what can resolve the current state', () => {
   const failed = values => execution({ state: 'Failed', workReference: { type: 'github-issue', id: '60' }, ...values });
-  assert.deepEqual(model.executionActions(execution({ state: 'Queued' }), false), ['cancel']);
+  assert.deepEqual(model.executionActions(execution({ state: 'Queued' }), false), ['prioritize', 'cancel']);
   assert.deepEqual(model.executionActions(execution({ state: 'Running' }), false), []);
   assert.deepEqual(model.executionActions(execution({ state: 'Completed' }), false), []);
   assert.deepEqual(model.executionActions(failed({ recoveryState: 'LeaseExpiredUncertain' }), false), ['resolveUncertain']);
@@ -191,4 +191,21 @@ test('a Worker clock more than a minute off the Server is a health warning and a
   assert.equal(model.workerHealth(worker({ clockSkewSeconds: -120 })).cause.key, 'health.cause.clockBehind');
   assert.equal(model.workerHealth(worker({ clockSkewSeconds: 600, availability: 'offline' })).state, 'offline');
   assert.deepEqual(model.attentionInbox([], [worker({ clockSkewSeconds: 600 }), worker({ workerId: 'ok' })]).clock.map(item => item.workerId), ['w']);
+});
+
+test('a preparation failure the Server retried by itself needs no attention', () => {
+  const failed = execution({ state: 'Failed', failureClassification: 'PreparationFailed', recoveryState: 'PreparationRequeued' });
+  assert.equal(model.executionStatus(failed).label, 'status.preparationRetried');
+  assert.equal(model.explain(failed).todo, 'explain.preparationRetried.todo');
+  assert.equal(model.needsAttention(failed), false);
+  assert.deepEqual(model.executionActions(failed, false), []);
+});
+
+test('engine statistics compare finished attempts by engine', () => {
+  const run = (engine, state, minutes) => execution({ state, durationMilliseconds: minutes * 60000, workReference: { type: 'github-issue', id: '1', selection: engine ? { engine } : undefined } });
+  const stats = model.engineStats([run(undefined, 'Completed', 10), run('codex', 'Failed', 30), run('codex', 'Completed', 20),
+    run('ccc', 'Completed', 4), run('ccc', 'Running', 99)]);
+  assert.deepEqual(stats.map(item => [item.engine, item.finished, item.integrated, item.failed, item.medianMs / 60000, item.totalMs / 60000]),
+    [['ccc', 1, 1, 0, 4, 4], ['codex', 3, 2, 1, 20, 60]]);
+  assert.equal(model.totalDuration([run('codex', 'Failed', 3), run('codex', 'Completed', 7)]), 10 * 60000);
 });

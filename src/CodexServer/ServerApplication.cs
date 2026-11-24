@@ -1056,6 +1056,18 @@ public static partial class ServerApplication
             catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
+        app.MapGet("/api/v1/project-scheduling", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            return Results.Ok(await store.GetProjectSchedulingPausesAsync(context.RequestAborted));
+        });
+        app.MapPut("/api/v1/project-scheduling/{projectId}", async (string projectId, ProjectSchedulingRequest request,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            var result = await store.SetProjectSchedulingPausedAsync(projectId, request.Paused, context.RequestAborted);
+            return result is null ? Results.NotFound() : Results.Ok(result);
+        });
         app.MapPut("/api/v1/projects/{projectId}/lifecycle", async (string projectId, ProjectLifecycleUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
@@ -1140,6 +1152,17 @@ public static partial class ServerApplication
                 return execution is null ? Results.NotFound() : Results.Ok(execution);
             }
             catch (ExecutionRequestCancellationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/v1/executions/{executionRequestId}/prioritize", async (string executionRequestId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            try
+            {
+                var execution = await store.PrioritizeQueuedExecutionAsync(executionRequestId, context.RequestAborted);
+                return execution is null ? Results.NotFound() : Results.Ok(execution);
+            }
+            catch (ExecutionRequestPriorityException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         app.MapPost("/api/v1/executions/{executionRequestId}/reconcile", async (string executionRequestId,
             ExecutionReconciliationRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>

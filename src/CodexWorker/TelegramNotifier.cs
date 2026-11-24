@@ -88,7 +88,11 @@ public sealed class TelegramNotifier : IDisposable
         var lines = TaskHeader(project, repository, issue, "✅", "TAREA COMPLETADA");
         if (executionId is not null) lines.Add($"Ejecución {ExecutionFormatting.Display(executionId.Value)}");
         lines.AddRange(["", $"Duración: {WorkerConsole.FormatDuration(duration)}"]);
-        AddMatch(lines, summary, @"Committed as `([^`]+)`", "Commit");
+        // The integrated commit links straight to GitHub; anything that is not a commit id stays plain text.
+        var commit = Regex.Match(summary, @"Committed as `([0-9a-fA-F]{7,64})`");
+        if (commit.Success)
+            lines.Add($"Commit: <a href=\"{EscapeHtml($"https://github.com/{repository}/commit/{commit.Groups[1].Value}")}\">{EscapeHtml(commit.Groups[1].Value)}</a>");
+        else AddMatch(lines, summary, @"Committed as `([^`]+)`", "Commit");
         AddMatch(lines, summary, @"Merged into `([^`]+)`", "Integrada en");
         AddMatch(lines, summary, @"Preserved on origin as `([^`]+)`", "Rama completada preservada");
         AddMatch(lines, summary, @"Local feature branch: `([^`]+)`", "Rama completada local");

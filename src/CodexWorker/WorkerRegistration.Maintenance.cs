@@ -42,7 +42,7 @@ public sealed partial class WorkerRegistrationClient
             var command = await response.Content.ReadFromJsonAsync<ExecutionMaintenanceCommand>(cancellationToken: ct)
                 ?? throw new InvalidDataException("Empty maintenance command.");
             if (!ExecutionMaintenanceProtocol.Valid(command.Request) || command.Request.WorkerId != worker || command.Status is not ("running" or "uncertain") ||
-                command.DeadlineUtc is null || command.DeadlineUtc > DateTimeOffset.UtcNow.AddSeconds(command.Request.TimeoutSeconds + 5))
+                command.DeadlineUtc is null || command.DeadlineUtc > DateTimeOffset.UtcNow.AddSeconds(command.Request.TimeoutSeconds + 5).Add(ManagedClock.Tolerance))
                 throw new InvalidDataException("Invalid maintenance identity or deadline.");
             var retained = await history.ReadMaintenanceReceiptAsync(endpoint, command.Request.OperationId, ct);
             if (retained is not null)
