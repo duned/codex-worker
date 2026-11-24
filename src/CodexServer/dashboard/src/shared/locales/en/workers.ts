@@ -160,6 +160,7 @@ export const workers = {
   "health.cause.working": "{used} of {total} slots in use.", "workers.health": "Health",
   "health.clock": "Clock out of sync", "health.cause.clockAhead": "Its clock is {seconds} s ahead of the Server. Leases and deadlines depend on it: sync the machine's time (NTP).",
   "health.cause.clockBehind": "Its clock is {seconds} s behind the Server. Leases and deadlines depend on it: sync the machine's time (NTP).",
+  "workers.export": "Export diagnostics", "workers.exporting": "Collecting…", "workers.exportDone": "Diagnostics file saved. Attach it to the support Issue.",
   "workers.pausedTitle": "Projects paused on this Worker",
   "workers.pausedHint": "The Worker stopped taking work for these projects after a failure it could not resolve alone. Check the reason; resume when it is safe. Other projects keep working.",
   "workers.pausedPill": "Paused on this Worker",

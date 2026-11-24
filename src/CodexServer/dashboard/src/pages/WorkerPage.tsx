@@ -10,6 +10,7 @@ import { t, useLanguage } from '../shared/i18n';
 import { isActive, isOnline, pausedOnWorker, scheduling, schedulingBlockerText, slots, workerHealth } from '../shared/model';
 import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Tile, CopyValue } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow } from './ExecutionRow';
+import { WorkerExport } from './WorkerExport';
 import { WorkerMaintenance } from './WorkerMaintenance';
 import { WorkerPanel } from './WorkerPanel';
 import { WorkerPausedProjects } from './WorkerPausedProjects';
@@ -62,9 +63,12 @@ export function WorkerPage() {
     <WorkerPausedProjects workerId={worker.workerId} diagnostics={diagnostics.data} online={online} onResumed={refreshReadiness} />
     <WorkerMaintenance worker={worker} onProgress={refreshWorker} />
 
-    <div role="tablist" aria-label={t('workers.sections')} className="flex gap-6 border-b border-secondary">
-      {(['work', 'diagnostics'] as const).map(value => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)}
-        className={`-mb-px border-b-2 pb-2.5 text-sm font-semibold ${tab === value ? 'border-brand text-primary' : 'border-transparent text-tertiary hover:text-secondary'}`}>{t(value === 'work' ? 'workers.tabWork' : 'workers.tabDiagnostics')}</button>)}
+    <div className="flex flex-wrap items-end justify-between gap-3 border-b border-secondary">
+      <div role="tablist" aria-label={t('workers.sections')} className="flex gap-6">
+        {(['work', 'diagnostics'] as const).map(value => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)}
+          className={`-mb-px border-b-2 pb-2.5 text-sm font-semibold ${tab === value ? 'border-brand text-primary' : 'border-transparent text-tertiary hover:text-secondary'}`}>{t(value === 'work' ? 'workers.tabWork' : 'workers.tabDiagnostics')}</button>)}
+      </div>
+      {tab === 'diagnostics' && <div className="pb-2"><WorkerExport base={base} worker={worker} diagnostics={diagnostics.data} node={node} executions={mine} online={online} /></div>}
     </div>
 
     {tab === 'work' ? <>
