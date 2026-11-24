@@ -20,12 +20,16 @@ const conflictPreview: Validator<ConflictPreview> = value => {
   return item as unknown as ConflictPreview;
 };
 
+/** The Server posts guidance as one Issue comment; the Worker reads up to 4096 characters of each. */
+const guidanceLimit = 4000;
+
 export function ExecutionPage() {
   const language = useLanguage(), { executionId = '' } = useParams(), runtime = useRuntime(), action = useAction(), archive = useArchive(), names = useNames();
   const path = `/api/v1/executions/${encodeURIComponent(executionId)}`;
   const read = useApiRead(path, validateExecution), projects = useProjects();
-  const [conflictReason, setConflictReason] = useState<string>(), [panel, setPanel] = useState<'manualCompletion' | 'resolveUncertain'>();
+  const [conflictReason, setConflictReason] = useState<string>(), [panel, setPanel] = useState<'manualCompletion' | 'resolveUncertain' | 'retryGuidance'>();
   const [disposition, setDisposition] = useState<'NotIntegrated' | 'Integrated'>('NotIntegrated'), [evidence, setEvidence] = useState(''), [commit, setCommit] = useState('');
+  const [guidance, setGuidance] = useState('');
   const item = read.data;
   const attempts = useExecutions(item ? projectExecutionsPath(item.projectId, issueNumber(item) ?? undefined) : recentExecutionsPath);
   if (!item) return <><PageHeader title={t('executions.detail')} crumbs={[{ label: t('nav.executions'), to: '/executions' }]} /><Card flush><ReadState read={read}>{null}</ReadState></Card></>;
@@ -45,7 +49,13 @@ export function ExecutionPage() {
     await action.run(`${path}/conflict-recovery`, `${path}/conflict-recovery`, 'POST',
       { operationId: operationId(), workerId: preview.workerId, candidate: preview.candidate }, 'actions.integrationRetryQueued');
   }
-  function closePanel() { setPanel(undefined); setEvidence(''); setCommit(''); setDisposition('NotIntegrated'); }
+  function closePanel() { setPanel(undefined); setEvidence(''); setCommit(''); setGuidance(''); setDisposition('NotIntegrated'); }
+  // The guidance becomes an Issue comment, which the next attempt reads with the Issue.
+  async function retryWithGuidance() {
+    if (number && await action.run(`enqueue-${item!.projectId}-${number}`, retryIssuePath(item!.projectId, number), 'POST',
+      { guidance: guidance.trim() }, 'actions.retryGuidanceQueued')) closePanel();
+  }
+  const guidanceValid = guidance.trim().length > 0 && guidance.trim().length <= guidanceLimit && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(guidance);
   async function resolveUncertain() {
     const body = disposition === 'Integrated' ? { disposition, evidence: evidence.trim(), integrationCommit: commit.trim() } : { disposition, evidence: evidence.trim() };
     if (await action.run(`${path}/reconcile`, `${path}/reconcile`, 'POST', body,
@@ -61,7 +71,10 @@ export function ExecutionPage() {
       case 'cancel': return <Button key={kind} color="secondary-destructive" isDisabled={busy}
         onClick={() => void action.run(`cancel-${item.id}`, `${path}/cancel`, 'POST', {}, 'actions.cancelled')}>{t('actions.cancelQueued')}</Button>;
       case 'retryIntegration': return <Button key={kind} color={color} isDisabled={busy} onClick={() => void retryIntegration()}>{t('actions.retryIntegration')}</Button>;
-      case 'retryFresh': return number ? <Button key={kind} color={color} isDisabled={busy} onClick={() => void enqueue()}>{t('actions.retryFresh')}</Button> : null;
+      case 'retryFresh': return number ? <span key={kind} className="contents">
+        <Button color={color} isDisabled={busy} onClick={() => void enqueue()}>{t('actions.retryFresh')}</Button>
+        <Button color="secondary" isDisabled={busy || !!panel} onClick={() => setPanel('retryGuidance')}>{t('actions.retryWithGuidance')}</Button>
+      </span> : null;
       case 'resolveUncertain': return <Button key={kind} color={color} isDisabled={busy || !!panel} onClick={() => setPanel('resolveUncertain')}>{t('actions.resolveUncertain')}</Button>;
       case 'manualCompletion': return <Button key={kind} color={color} isDisabled={busy || !!panel} onClick={() => setPanel('manualCompletion')}>{t('actions.reconcileManually')}</Button>;
     }
@@ -100,6 +113,19 @@ export function ExecutionPage() {
       </div>
     </Notice>}
 
+    {panel === 'retryGuidance' && <Card title={t('actions.retryWithGuidance')}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-secondary">{t('actions.retryGuidanceHint')}</p>
+        <Field label={t('actions.retryGuidanceLabel')} hint={t('actions.retryGuidanceLimit', { n: guidanceLimit - guidance.trim().length })}>
+          <textarea className={inputClass} rows={5} maxLength={guidanceLimit + 200} value={guidance} autoFocus onChange={event => setGuidance(event.target.value)} />
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" color="primary" isDisabled={!!action.busy || !guidanceValid} onClick={() => void retryWithGuidance()}>{t('actions.retryGuidanceConfirm')}</Button>
+          <Button size="sm" color="secondary" isDisabled={!!action.busy} onClick={closePanel}>{t('actions.cancel')}</Button>
+        </div>
+      </div>
+    </Card>}
+
     {panel === 'resolveUncertain' && <Card title={t('actions.resolveUncertain')}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-secondary">{t('actions.resolveUncertainHint')}</p>
@@ -136,7 +162,7 @@ export function ExecutionPage() {
           {t('actions.recheckEligibility')}</Button></div>}
     </Notice>}
 
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:items-start">
       <div className="flex flex-col gap-6">
         <Card title={t('executions.result')}><KeyValues items={[
           [t('executions.implementation'), stepProgress(item)[1].state === 'done' ? t('executions.done') : isActive(item) ? t('executions.inProgress') : t('executions.pending')],

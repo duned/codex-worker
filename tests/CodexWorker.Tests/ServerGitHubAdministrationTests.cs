@@ -622,6 +622,42 @@ public sealed class ServerGitHubAdministrationTests
     }
 
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task RetryWithGuidancePostsItAsAnIssueCommentOnlyWhenTheRetryCanBeQueued()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "guidance-retry.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition(issueReadyLabel: "ready", issueBlockedLabel: "blocked"));
+        var read = new FakeServerGitHubReadService();
+        var writer = new FakeGitHubIssueWriteService();
+        writer.LabelAdded = (number, label) => read.Add(project.Repository, Issue(number, labels: [label]));
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+
+        read.Add(project.Repository, Issue(61, labels: ["blocked", "ready"]));
+        await Assert.ThrowsAsync<ManagedIssueIneligibleException>(() =>
+            service.EnqueueIssueWithGuidanceAsync(project.Id, 61, "Use the existing parser.", restoreReadyLabel: true));
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.EnqueueIssueWithGuidanceAsync(project.Id, 61, "  ", false));
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.EnqueueIssueWithGuidanceAsync(project.Id, 61, new string('x', 4001), false));
+        Assert.Empty(writer.Operations);
+
+        read.Add(project.Repository, Issue(62, labels: ["ready"]));
+        var queued = await service.EnqueueIssueWithGuidanceAsync(project.Id, 62, "  The test fails because the clock is real.\r\nUse TimeProvider.  ", false);
+        Assert.Equal(("62", "Queued"), (queued.WorkReference.Id, queued.State));
+        var (issue, body) = Assert.Single(writer.Comments);
+        Assert.Equal(62, issue);
+        Assert.Equal("**Guidance for the next attempt** (sent from the Codex Server dashboard with a retry)\n\nThe test fails because the clock is real.\nUse TimeProvider.", body);
+        Assert.False(CodexProvisioning.GeneratedMessageOrigin.IsGenerated(body));
+
+        // A lost ready label is restored after the comment, in the same retry.
+        read.Add(project.Repository, Issue(63, labels: ["worker:failed"]));
+        var relabelled = await service.EnqueueIssueWithGuidanceAsync(project.Id, 63, "Try again.", restoreReadyLabel: true);
+        Assert.Equal("Queued", relabelled.State);
+        Assert.Equal(["comment:add", "comment:add", "label:add"], writer.Operations);
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
     public async Task ApplyingCustomReadyLabelPreservesBlockersAndSkipsConcurrentOrClosedWrites()
@@ -903,6 +939,10 @@ public sealed class ServerGitHubAdministrationTests
             Assert.Empty(await registry.GetExecutionsAsync());
             Assert.Equal(HttpStatusCode.Conflict,
                 (await client.PostAsync($"/api/v1/projects/{project.Id}/github/issues/21/enqueue", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"/api/v1/projects/{project.Id}/github/issues/21/enqueue",
+                new IssueRetryRequest("Guidance for a blocked Issue."))).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync($"/api/v1/projects/{project.Id}/github/issues/22/enqueue",
+                new IssueRetryRequest(" "))).StatusCode);
             using var enqueued = await client.PostAsync($"/api/v1/projects/{project.Id}/github/issues/22/enqueue", null);
             Assert.Equal(HttpStatusCode.Created, enqueued.StatusCode);
             var execution = await enqueued.Content.ReadFromJsonAsync<ExecutionRequest>();
@@ -1577,6 +1617,15 @@ public sealed class ServerGitHubAdministrationTests
         {
             Operations.Add("label:add");
             LabelAdded?.Invoke(issueNumber, label);
+            return Task.CompletedTask;
+        }
+
+        public List<(int Issue, string Body)> Comments { get; } = [];
+
+        public Task AddCommentAsync(CentralProject project, int issueNumber, string body, CancellationToken cancellationToken = default)
+        {
+            Operations.Add("comment:add");
+            Comments.Add((issueNumber, body));
             return Task.CompletedTask;
         }
 

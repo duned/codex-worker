@@ -31,6 +31,8 @@ public interface IServerGitHubIssueWriteService
     Task<GitHubIssueWriteResponse> UpdateIssueAsync(CentralProject project, int issueNumber, string? title, string? body,
         CancellationToken cancellationToken = default);
     Task AddLabelAsync(CentralProject project, int issueNumber, string label, CancellationToken cancellationToken = default);
+    /// <summary>Adds a plain Issue comment. It carries no generated-message marker, so the Worker includes it as Issue context.</summary>
+    Task AddCommentAsync(CentralProject project, int issueNumber, string body, CancellationToken cancellationToken = default);
     Task RemoveLabelAsync(CentralProject project, int issueNumber, string label, CancellationToken cancellationToken = default);
     Task AddBlockedByAsync(CentralProject project, int issueNumber, int blockerIssueNumber,
         CancellationToken cancellationToken = default);
@@ -113,6 +115,15 @@ public static class GitHubIssueMutationValidation
     private static string? TitleError(string? title) => string.IsNullOrWhiteSpace(title) || title.Length > MaximumTitleLength ||
         title.Any(char.IsControl) ? "Issue title must contain 1 to 256 printable characters." : null;
 
+    public const int MaximumGuidanceLength = 4000;
+
+    /// <summary>Operator guidance becomes an Issue comment the next attempt reads; the Worker keeps at most 4096 characters of each.</summary>
+    public static string? GuidanceError(string? guidance) => string.IsNullOrWhiteSpace(guidance) || guidance.Trim().Length > MaximumGuidanceLength
+        ? $"Guidance must contain 1 to {MaximumGuidanceLength} characters."
+        : guidance.Any(character => char.IsControl(character) && character is not ('\r' or '\n' or '\t'))
+            ? "Guidance contains an unsupported control character."
+            : null;
+
     private static string? BodyError(string? body) => body is null || body.Length > MaximumBodyLength
         ? "Issue body must be supplied and contain at most 65536 characters."
         : body.Any(character => char.IsControl(character) && character is not ('\r' or '\n' or '\t'))
@@ -175,6 +186,18 @@ public sealed class ServerGitHubIssueWriteService : IServerGitHubIssueWriteServi
         await RunAsync(project.Repository,
             ["api", "--method", "POST", $"repos/{project.Repository}/issues/{issueNumber}/labels", "-f", $"labels[]={label}"],
             "add configured Issue label", cancellationToken);
+    }
+
+    public async Task AddCommentAsync(CentralProject project, int issueNumber, string body, CancellationToken cancellationToken = default)
+    {
+        ValidateProject(project);
+        ValidateIssueNumber(issueNumber);
+        if (string.IsNullOrWhiteSpace(body) || body.Length > GitHubIssueMutationValidation.MaximumGuidanceLength + 200 ||
+            body.Any(character => char.IsControl(character) && character is not ('\r' or '\n' or '\t')))
+            throw new InvalidDataException("Issue comment must contain bounded printable text.");
+        await RunAsync(project.Repository,
+            ["api", "--method", "POST", $"repos/{project.Repository}/issues/{issueNumber}/comments", "-f", $"body={body}", "--jq", ".id"],
+            "add Issue comment", cancellationToken);
     }
 
     public async Task RemoveLabelAsync(CentralProject project, int issueNumber, string label, CancellationToken cancellationToken = default)

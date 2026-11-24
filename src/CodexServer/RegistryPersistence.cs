@@ -118,6 +118,8 @@ public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference
     IReadOnlyDictionary<string, DateTimeOffset>? StageStartedAtUtc = null, DateTimeOffset? ArchivedAtUtc = null,
     DateTimeOffset? PrioritizedAtUtc = null, ExecutionMetrics? Metrics = null);
 public sealed record ProjectSchedulingPause(string ProjectId, bool Paused, DateTimeOffset? PausedAtUtc);
+/// <summary>Optional body of an Issue enqueue: guidance is posted as an Issue comment the next attempt reads.</summary>
+public sealed record IssueRetryRequest(string? Guidance = null);
 [System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public sealed record ProjectSchedulingRequest([property: System.Text.Json.Serialization.JsonRequired] bool Paused);
 public sealed record ExecutionLease(string ExecutionId, string WorkerId, long Generation,

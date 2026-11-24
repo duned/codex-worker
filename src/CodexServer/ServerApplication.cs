@@ -1000,14 +1000,18 @@ public static partial class ServerApplication
             catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
         app.MapPost("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/enqueue", async (string projectId,
-            int issueNumber, bool? restoreReadyLabel, HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            int issueNumber, bool? restoreReadyLabel, IssueRetryRequest? body, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
+            if (body?.Guidance is { } guidance && GitHubIssueMutationValidation.GuidanceError(guidance) is { } guidanceError)
+                return Results.BadRequest(new { error = guidanceError });
             try
             {
-                var created = restoreReadyLabel == true
+                var created = body?.Guidance is { } note
+                    ? await github.EnqueueIssueWithGuidanceAsync(projectId, issueNumber, note, restoreReadyLabel == true, context.RequestAborted)
+                    : restoreReadyLabel == true
                     ? await github.RelabelAndEnqueueIssueAsync(projectId, issueNumber, context.RequestAborted)
                     : await github.EnqueueIssueAsync(projectId, new WorkReference("github-issue", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), context.RequestAborted);
                 return Results.Created($"/api/v1/executions/{created.Id}", created);
