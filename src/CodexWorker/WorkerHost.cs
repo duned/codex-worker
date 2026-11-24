@@ -205,6 +205,8 @@ public sealed class WorkerHost
             var configurationService = _global.Projects.Ownership == "managed"
                 ? null
                 : new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
+            var events = runtimeReadModel.Events;
+            _registration.RecentEvents = limit => events.ReadRecent(limit);
             runtimeReadModel.Events.Publish("worker.starting", "Worker startup began.");
             managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct, configurationService);
             reporting = new StandaloneReporting(_global, runtimeReadModel, _timeProvider, ct);

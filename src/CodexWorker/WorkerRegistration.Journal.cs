@@ -21,16 +21,28 @@ public sealed partial class WorkerRegistrationClient
         }
     }
 
+    /// <summary>The Worker's recent runtime events, set once the runtime exists; the Server reads them on request.</summary>
+    internal Func<int, IReadOnlyList<RuntimeEvent>>? RecentEvents { get; set; }
+
     private async Task RetrieveJournalCoreAsync(WorkerServerSettings settings, string worker, CancellationToken ct)
     {
-        using var request = CreateAuthorizedRequest(HttpMethod.Get, settings, $"api/v1/workers/{worker}/journal/request");
+        await AnswerReadRequestAsync(settings, worker, WorkerJournalProtocol.Journal, lines => WorkerJournalReader.ReadAsync(lines, ct), ct);
+        if (RecentEvents is { } events)
+            await AnswerReadRequestAsync(settings, worker, WorkerJournalProtocol.Events,
+                lines => Task.FromResult(WorkerJournalReader.FormatEvents(events(lines), lines)), ct);
+    }
+
+    private async Task AnswerReadRequestAsync(WorkerServerSettings settings, string worker, string source,
+        Func<int, Task<WorkerJournalResult>> read, CancellationToken ct)
+    {
+        using var request = CreateAuthorizedRequest(HttpMethod.Get, settings, $"api/v1/workers/{worker}/{source}/request");
         using var response = await SendAsync(request, ct);
         if (response.StatusCode is HttpStatusCode.NoContent or HttpStatusCode.NotFound) return;
         response.EnsureSuccessStatusCode();
         var command = await response.Content.ReadFromJsonAsync<WorkerJournalRequest>(cancellationToken: ct);
         if (command is null || command.Id == Guid.Empty || command.Lines is < 1 or > WorkerJournalProtocol.MaximumLines) return;
-        var result = await WorkerJournalReader.ReadAsync(command.Lines, ct);
-        using var report = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{worker}/journal/{command.Id}");
+        var result = await read(command.Lines);
+        using var report = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{worker}/{source}/{command.Id}");
         report.Content = JsonContent.Create(result);
         using var acknowledgement = await SendAsync(report, ct);
         acknowledgement.EnsureSuccessStatusCode();
@@ -56,6 +68,15 @@ public static class WorkerJournalReader
         {
             return new("unavailable", []);
         }
+    }
+
+    /// <summary>One bounded, redacted line per runtime event, oldest first.</summary>
+    internal static WorkerJournalResult FormatEvents(IReadOnlyList<RuntimeEvent> events, int lines)
+    {
+        if (lines is < 1 or > WorkerJournalProtocol.MaximumLines) throw new ArgumentOutOfRangeException(nameof(lines));
+        return new("ready", events.TakeLast(lines).Select(item => SecretSanitizer.Sanitize(
+            $"{item.TimestampUtc:yyyy-MM-ddTHH:mm:ssZ} · {item.Type}{(item.Project is null ? "" : " · " + item.Project)} · {item.Message}",
+            Math.Min(1000, 100_000 / lines))).ToArray());
     }
 
     internal static WorkerJournalResult FormatResult(ProcessResult output, int lines)

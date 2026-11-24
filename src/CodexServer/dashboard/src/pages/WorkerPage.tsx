@@ -26,9 +26,8 @@ export function WorkerPage() {
   useLanguage();
   const { workerId = '' } = useParams(), base = `/api/v1/workers/${encodeURIComponent(workerId)}`;
   const read = useApiRead(base, validateWorker), diagnostics = useApiRead(`${base}/diagnostics`, validateDiagnostics);
-  const nodes = useNodes(), executions = useExecutions(), action = useAction(), runtime = useRuntime();
+  const nodes = useNodes(), executions = useExecutions(), action = useAction();
   const [tab, setTab] = useState<'work' | 'diagnostics'>('work'), [editing, setEditing] = useState(false);
-  const [log, setLog] = useState<{ state: string; lines: string[] }>(), [loadingLog, setLoadingLog] = useState(false);
   const refetchWorker = read.refetch;
   const refreshWorker = useCallback(() => { void refetchWorker(); }, [refetchWorker]);
   const refetchDiagnostics = diagnostics.refetch;
@@ -42,12 +41,6 @@ export function WorkerPage() {
   const node = nodes.data?.find(item => item.id === worker.workerId), resources = worker.hostResources;
   const paused = worker.schedulingPolicy === 'Disabled' || worker.schedulingPolicy === 'Draining';
   const setPolicy = (policy: 'Enabled' | 'Draining') => action.run(`worker-${worker.workerId}`, `${base}/scheduling-policy`, 'PUT', { policy }, policy === 'Enabled' ? 'workers.resumed' : 'workers.pausedDone');
-  async function loadJournal() {
-    setLoadingLog(true);
-    try { setLog(await runtime.read(`${base}/journal?lines=100&refresh=true`, new AbortController().signal, journal)); }
-    catch (error) { setLog({ state: error instanceof Error ? error.message : t('common.loadFailed'), lines: [] }); }
-    finally { setLoadingLog(false); }
-  }
   const blockers = [...(diagnostics.data?.reasons ?? []), ...(worker.schedulingBlocker ? [schedulingBlockerText(worker.schedulingBlocker)] : [])];
 
   return <>
@@ -99,13 +92,32 @@ export function WorkerPage() {
               : <Pill tone={project.isEligible ? 'ok' : 'warn'}>{t(project.isEligible ? 'workers.canRun' : 'workers.cannotRun')}</Pill>}
           </Row>) : <Empty>{t('workers.noProjects')}</Empty>}
         </Rows></ReadState></Card>
-        <Card title={t('workers.journal')} actions={<Button size="sm" color="secondary" isDisabled={loadingLog || !online} onClick={() => void loadJournal()}>{t(log ? 'common.refresh' : 'workers.loadJournal')}</Button>}>
-          {log ? log.lines.length ? <pre className="max-h-80 overflow-auto rounded-lg bg-secondary p-3 font-mono text-xs whitespace-pre-wrap text-secondary">{log.lines.join('\n')}</pre>
-            : <p className="text-sm text-tertiary">{log.state === 'pending' ? t('workers.journalPending') : log.state}</p>
-            : <p className="text-sm text-tertiary">{t(online ? 'workers.journalHint' : 'workers.journalOffline')}</p>}
-        </Card>
+        <WorkerLog base={base} source="events" online={online} />
+        <WorkerLog base={base} source="journal" online={online} />
       </div>
     </div>}
     <WorkerPanel open={editing} onClose={() => setEditing(false)} worker={worker} />
   </>;
+}
+
+/** A bounded log the Worker sends on request: its runtime events or its service journal. Nothing is stored on the Server. */
+function WorkerLog({ base, source, online }: { base: string; source: 'events' | 'journal'; online: boolean }) {
+  const runtime = useRuntime();
+  const [log, setLog] = useState<{ state: string; lines: string[] }>(), [loading, setLoading] = useState(false);
+  const keys = source === 'events'
+    ? { title: 'workers.events', load: 'workers.loadEvents', pending: 'workers.eventsPending', hint: 'workers.eventsHint' } as const
+    : { title: 'workers.journal', load: 'workers.loadJournal', pending: 'workers.journalPending', hint: 'workers.journalHint' } as const;
+  async function load() {
+    setLoading(true);
+    try { setLog(await runtime.read(`${base}/${source}?lines=100&refresh=true`, new AbortController().signal, journal)); }
+    catch (error) { setLog({ state: error instanceof Error ? error.message : t('common.loadFailed'), lines: [] }); }
+    finally { setLoading(false); }
+  }
+  // Events read newest first; the journal keeps its natural order.
+  const lines = source === 'events' ? [...(log?.lines ?? [])].reverse() : log?.lines ?? [];
+  return <Card title={t(keys.title)} actions={<Button size="sm" color="secondary" isDisabled={loading || !online} onClick={() => void load()}>{t(log ? 'common.refresh' : keys.load)}</Button>}>
+    {log ? lines.length ? <pre className="max-h-80 overflow-auto rounded-lg bg-secondary p-3 font-mono text-xs whitespace-pre-wrap text-secondary">{lines.join('\n')}</pre>
+      : <p className="text-sm text-tertiary">{log.state === 'pending' ? t(keys.pending) : log.state}</p>
+      : <p className="text-sm text-tertiary">{t(online ? keys.hint : 'workers.journalOffline')}</p>}
+  </Card>;
 }
