@@ -227,7 +227,11 @@ export function duration(ms: number | undefined) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
 }
 /** Finished attempts per engine, to compare engines on the same recent work: outcomes, median and total time. */
-export interface EngineStats { engine: 'codex' | 'ccc'; finished: number; integrated: number; failed: number; medianMs?: number; totalMs: number }
+export interface EngineStats {
+  engine: 'codex' | 'ccc'; finished: number; integrated: number; failed: number; medianMs?: number; totalMs: number;
+  /** Attempts that reported usage, and its totals; cost only from those that report one (Claude Code). */
+  withUsage: number; inputTokens: number; outputTokens: number; costUsd?: number;
+}
 export function engineStats(executions: ExecutionSummary[]): EngineStats[] {
   const groups = new Map<'codex' | 'ccc', ExecutionSummary[]>();
   for (const execution of executions.filter(item => item.state === 'Completed' || item.state === 'Failed')) {
@@ -240,10 +244,32 @@ export function engineStats(executions: ExecutionSummary[]): EngineStats[] {
     return {
       engine, finished: items.length, integrated: items.filter(item => item.state === 'Completed').length, failed: items.filter(item => item.state === 'Failed').length,
       medianMs: times.length ? times.length % 2 ? times[middle] : (times[middle - 1] + times[middle]) / 2 : undefined,
-      totalMs: times.reduce((sum, ms) => sum + ms, 0)
+      totalMs: times.reduce((sum, ms) => sum + ms, 0),
+      ...usageTotals(items)
     };
   }).sort((a, b) => a.engine.localeCompare(b.engine));
 }
+function usageTotals(items: ExecutionSummary[]) {
+  const usages = items.map(item => item.metrics?.usage).filter(usage => !!usage);
+  const costs = usages.map(usage => usage.costUsd).filter((cost): cost is number => typeof cost === 'number');
+  return { withUsage: usages.length, inputTokens: usages.reduce((sum, usage) => sum + usage.inputTokens, 0),
+    outputTokens: usages.reduce((sum, usage) => sum + usage.outputTokens, 0), costUsd: costs.length ? costs.reduce((sum, cost) => sum + cost, 0) : undefined };
+}
+/** Compact token counts: 950, 1.2 k, 34 k, 4.1 M. */
+export function tokens(count: number) {
+  return count >= 1e6 ? `${(count / 1e6).toFixed(1)} M` : count >= 1e4 ? `${Math.round(count / 1e3)} k` : count >= 1e3 ? `${(count / 1e3).toFixed(1)} k` : String(count);
+}
+export const usd = (amount: number) => '$' + (amount < 1 ? amount.toFixed(3) : amount.toFixed(2));
+/** One line for an execution's engine usage: tokens in (cached), out, cost and runs. */
+export function usageText(usage: NonNullable<NonNullable<ExecutionSummary['metrics']>['usage']>, values: (key: TranslationKey, values: Record<string, string | number>) => string) {
+  const parts = [values('usage.input', { tokens: tokens(usage.inputTokens), cached: tokens(usage.cachedInputTokens) }), values('usage.output', { tokens: tokens(usage.outputTokens) })];
+  if (typeof usage.costUsd === 'number') parts.push(usd(usage.costUsd));
+  if (usage.runs > 1) parts.push(values('usage.runs', { n: usage.runs }));
+  return parts.join(' · ');
+}
+/** Engine usage and cost across the attempts of one Issue, when any reported it. */
+export const issueUsage = (attempts: ExecutionSummary[]) => usageTotals(attempts);
+
 /** Time spent on one Issue across all its attempts. */
 export const totalDuration = (attempts: ExecutionSummary[]) => attempts.reduce((sum, item) => sum + (item.durationMilliseconds ?? 0), 0);
 

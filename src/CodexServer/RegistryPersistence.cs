@@ -116,7 +116,7 @@ public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference
     string ManagedEligibilityState = "eligible", IReadOnlyList<string>? ManagedEligibilityReasons = null,
     DateTimeOffset? ManagedEligibilityCheckedAtUtc = null,
     IReadOnlyDictionary<string, DateTimeOffset>? StageStartedAtUtc = null, DateTimeOffset? ArchivedAtUtc = null,
-    DateTimeOffset? PrioritizedAtUtc = null);
+    DateTimeOffset? PrioritizedAtUtc = null, ExecutionMetrics? Metrics = null);
 public sealed record ProjectSchedulingPause(string ProjectId, bool Paused, DateTimeOffset? PausedAtUtc);
 [System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public sealed record ProjectSchedulingRequest([property: System.Text.Json.Serialization.JsonRequired] bool Paused);
@@ -127,7 +127,8 @@ public sealed record ExecutionStateTransition(string State, string? AssignedWork
 public sealed record WorkerExecutionReport(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
-    string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0, string? CompletionReconciliationOperationId = null);
+    string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0, string? CompletionReconciliationOperationId = null,
+    ExecutionMetrics? Metrics = null);
 public sealed record WorkerAssignmentRequest(string WorkerId, bool WorkerEnabled, int AvailableCapacity, IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
 public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assignment,
     IReadOnlyDictionary<string, string>? IntegrationRecoveryRejections = null, string? Reason = null);
@@ -573,7 +574,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
 {
     private readonly ILogger _logger = logger ?? NullLogger<SqliteRegistryStore>.Instance;
 
-    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json, (SELECT archived_at_utc FROM execution_archive a WHERE a.execution_id=execution_requests.id), (SELECT prioritized_at_utc FROM execution_priorities p WHERE p.execution_id=execution_requests.id) FROM execution_requests";
+    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json, (SELECT archived_at_utc FROM execution_archive a WHERE a.execution_id=execution_requests.id), (SELECT prioritized_at_utc FROM execution_priorities p WHERE p.execution_id=execution_requests.id), (SELECT metrics_json FROM execution_metrics m WHERE m.execution_id=execution_requests.id) FROM execution_requests";
     public const int CurrentSchemaVersion = 21;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
@@ -854,6 +855,11 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 CREATE TABLE IF NOT EXISTS execution_priorities (
                     execution_id TEXT NOT NULL PRIMARY KEY,
                     prioritized_at_utc TEXT NOT NULL
+                );
+                -- Engine usage and change size a Worker reported with its final result; informational only.
+                CREATE TABLE IF NOT EXISTS execution_metrics (
+                    execution_id TEXT NOT NULL PRIMARY KEY,
+                    metrics_json TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS execution_leases (
                     execution_id TEXT NOT NULL,
@@ -2307,6 +2313,14 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 report.Generation, report.WorkerExecutionId);
             throw new ExecutionRequestOwnershipException();
         }
+        if (updated == 1 && report.State is ("Completed" or "Failed") && report.Metrics is { } metrics && ExecutionMetrics.Valid(metrics))
+        {
+            command.Parameters.Clear();
+            command.CommandText = "INSERT INTO execution_metrics (execution_id, metrics_json) VALUES ($id, $metrics) ON CONFLICT(execution_id) DO UPDATE SET metrics_json=excluded.metrics_json;";
+            command.Parameters.AddWithValue("$id", executionRequestId);
+            command.Parameters.AddWithValue("$metrics", JsonSerializer.Serialize(metrics, ProjectJson));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
         if (updated == 1 && report.State is ("Completed" or "Failed"))
         {
             command.Parameters.Clear();
@@ -2430,7 +2444,14 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         reader.IsDBNull(31) ? null : DateTimeOffset.Parse(reader.GetString(31)),
         reader.IsDBNull(32) ? null : JsonSerializer.Deserialize<Dictionary<string, DateTimeOffset>>(reader.GetString(32), ProjectJson),
         reader.IsDBNull(33) ? null : DateTimeOffset.Parse(reader.GetString(33), System.Globalization.CultureInfo.InvariantCulture),
-        reader.IsDBNull(34) ? null : DateTimeOffset.Parse(reader.GetString(34), System.Globalization.CultureInfo.InvariantCulture));
+        reader.IsDBNull(34) ? null : DateTimeOffset.Parse(reader.GetString(34), System.Globalization.CultureInfo.InvariantCulture),
+        reader.IsDBNull(35) ? null : ReadMetrics(reader.GetString(35)));
+
+    private static ExecutionMetrics? ReadMetrics(string json)
+    {
+        try { return JsonSerializer.Deserialize<ExecutionMetrics>(json, ProjectJson) is { } metrics && ExecutionMetrics.Valid(metrics) ? metrics : null; }
+        catch (JsonException) { return null; }
+    }
 
     public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
     {

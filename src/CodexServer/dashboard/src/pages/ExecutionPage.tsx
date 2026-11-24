@@ -7,7 +7,7 @@ import type { Validator } from '../shared/api/client';
 import { execution as validateExecution, record } from '../shared/api/validation';
 import { projectExecutionsPath, recentExecutionsPath, retryIssuePath, useExecutions, useNames, useProjects } from '../shared/data';
 import { t, tryT, useLanguage } from '../shared/i18n';
-import { canArchive, dateTime, duration, executionActions, executionStatus, explain, isActive, issueNumber, newerAttempt, stepProgress, type ExecutionAction } from '../shared/model';
+import { canArchive, dateTime, duration, executionActions, executionStatus, explain, isActive, issueNumber, newerAttempt, stepProgress, type ExecutionAction, usageText } from '../shared/model';
 import { Ago, Card, Check, Explanation, Field, inputClass, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps, TextLink, CopyValue } from '../shared/ui';
 import { executionLabel } from './ExecutionRow';
 
@@ -141,6 +141,7 @@ export function ExecutionPage() {
         [t('executions.validation'), item.validationResult ? <span className="font-mono text-xs">{item.validationResult}</span> : t('executions.pending')],
         [t('executions.integration'), integrationText],
         [t('executions.duration'), duration(item.durationMilliseconds ?? (item.startedAtUtc && item.completedAtUtc ? Date.parse(item.completedAtUtc) - Date.parse(item.startedAtUtc) : undefined))],
+        ...(item.metrics?.usage ? [[t('usage.title'), usageText(item.metrics.usage, t)] as [string, string]] : []),
         ...(item.state === 'Completed' && item.completionSummary ? [[t('executions.summary'), item.completionSummary] as [string, string]] : [])
       ]} /></Card>
       <Card title={t('common.details')}><KeyValues items={[

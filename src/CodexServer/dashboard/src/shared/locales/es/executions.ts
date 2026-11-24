@@ -1,5 +1,7 @@
 import type { executions as source } from '../en/executions';
 export const executions = {
+  "usage.title": "Uso del motor", "usage.input": "{tokens} tokens de entrada ({cached} en caché)", "usage.output": "{tokens} de salida", "usage.runs": "{n} ejecuciones",
+  "usage.engineTotals": "{input} entrada · {output} salida", "usage.partial": "{n} de {total} intentos informaron del uso",
   "executions.byEngine": "Por motor", "executions.byEngineScope": "Intentos terminados de esta lista",
   "executions.successRate": "Integradas", "executions.medianTime": "Tiempo mediano", "executions.totalTime": "Tiempo total",
   "executions.finishedCount": "{n} ({ok} integradas, {failed} fallidas)",

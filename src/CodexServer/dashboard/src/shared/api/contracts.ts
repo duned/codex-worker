@@ -37,6 +37,12 @@ export interface ExecutionSummary {
   completionSummary?: string; validationResult?: string; integrationResult?: string; failureClassification?: string;
   recoverable?: boolean; attemptNumber?: number; retryOfExecutionId?: string; workerExecutionId?: string; workspaceRecovery?: string; archivedAtUtc?: string; prioritizedAtUtc?: string;
   workReference?: { type: string; id: string; url?: string; title?: string; selection?: { engine: 'codex' | 'ccc'; model?: string | null; effort?: string | null } };
+  metrics?: ExecutionMetrics | null;
+}
+/** What the Worker reported with the final result: engine usage summed over every run, and the size of the integrated change. */
+export interface ExecutionMetrics {
+  usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; costUsd?: number | null; runs: number } | null;
+  changes?: { filesChanged: number; insertions: number; deletions: number; files: string[]; baseCommit?: string | null; commit?: string | null } | null;
 }
 export interface ExecutionArchiveResult { changed: string[]; refused: { id: string; reason: string }[] }
 export interface ExecutionMaintenanceRequest {

@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace CodexWorker;
 
 public sealed record CodexOutcome(string Status, string Summary, string[] TestsOrValidationPerformed, bool NeedsHumanInput, string? Question,
-    string? BlockerType = null);
+    string? BlockerType = null, CodexProvisioning.EngineUsage? Usage = null);
 
 public static class CodexResultParser
 {
@@ -312,7 +312,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             }
             var finalResponse = await File.ReadAllTextAsync(outputPath, ct);
             if (string.IsNullOrWhiteSpace(finalResponse)) throw IncompleteTurn(result, null);
-            try { return CodexResultParser.Parse(finalResponse); }
+            try { return CodexResultParser.Parse(finalResponse) with { Usage = EngineUsageParser.FromCodexEvents(result.StandardOutput) }; }
             catch (Exception ex) when (ex is not OperationCanceledException) { throw IncompleteTurn(result, ex); }
         }
         finally

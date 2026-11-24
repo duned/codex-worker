@@ -6,7 +6,7 @@ import { issue as validateIssue, project as validateProject } from '../shared/ap
 import { projectExecutionsPath, retryIssuePath, useExecutions, useNames } from '../shared/data';
 import { Markdown } from '../shared/Markdown';
 import { t, useLanguage } from '../shared/i18n';
-import { duration, executionActions, executionStatus, explain, isActive, issueStatus, totalDuration } from '../shared/model';
+import { duration, executionActions, executionStatus, explain, isActive, issueStatus, issueUsage, tokens, totalDuration, usd } from '../shared/model';
 import { Ago, Card, Empty, Explanation, KeyValues, PageHeader, ReadState, RowLink, Rows, StatusPill, Steps, TextLink } from '../shared/ui';
 
 export function IssuePage() {
@@ -16,6 +16,7 @@ export function IssuePage() {
   const project = useApiRead(base, validateProject), issue = useApiRead(`${base}/github/issues/${number}`, validateIssue, Number.isSafeInteger(number) && number > 0);
   const executions = useExecutions(projectExecutionsPath(projectId, number)), names = useNames(), action = useAction();
   const attempts = [...(executions.data ?? [])].sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc));
+  const usage = issueUsage(attempts);
   const latest = attempts[0], status = issueStatus(issue.data, latest, project.data?.issueReadyLabel ?? 'codex-ready');
   const reason = latest ? explain(latest) : undefined, title = issue.data?.title ?? latest?.workReference?.title ?? '';
   const enqueue = (done: 'actions.queued') => action.run(`enqueue-${projectId}-${number}`, `${base}/github/issues/${number}/enqueue`, 'POST', {}, done);
@@ -66,6 +67,8 @@ export function IssuePage() {
           [t('issues.dependsOn'), issue.data?.blockedBy.length ? issue.data.blockedBy.map(blocker => `#${blocker.number}`).join(', ') : t('issues.nothing')],
           [t('executions.engine'), `${selection?.engine === 'ccc' ? 'Claude Code' : 'Codex'}${selection?.effort ? ` · ${selection.effort}` : ''}${selection?.model ? ` · ${selection.model}` : ''}`],
           [t('issues.timeSpent'), attempts.length ? t('issues.timeSpentValue', { time: duration(totalDuration(attempts)), n: attempts.length }) : '—'],
+          ...(usage.withUsage ? [[t('usage.title'), t('usage.engineTotals', { input: tokens(usage.inputTokens), output: tokens(usage.outputTokens) }) +
+            (usage.costUsd !== undefined ? ` · ${usd(usage.costUsd)}` : '')] as [string, string]] : []),
           [t('issues.eligible'), issue.data ? (issue.data.isEligible ? t('issues.yes') : issue.data.eligibilityReasons.join(' · ') || t('issues.no')) : '—']
         ]} /></Card>
         <Card title={t('issues.actions')}><div className="flex flex-col gap-2">

@@ -3,7 +3,7 @@ import { Button } from '../untitled/components/base/buttons/button';
 import { useArchive } from '../shared/actions';
 import { archivedExecutionsPath, recentExecutionsPath, useExecutions, useNames } from '../shared/data';
 import { t, useLanguage, type TranslationKey } from '../shared/i18n';
-import { canArchive, duration, engineStats, executionStatus } from '../shared/model';
+import { canArchive, duration, engineStats, executionStatus, tokens, usd } from '../shared/model';
 import { Card, Empty, Filters, HeadRow, matches, PageHeader, ReadState, Row, Rows, Select } from '../shared/ui';
 import { ExecutionHead, ExecutionRow, executionLabel } from './ExecutionRow';
 
@@ -11,7 +11,7 @@ const states: { value: string; label: TranslationKey }[] = [
   { value: 'Queued', label: 'status.queued' }, { value: 'Running', label: 'status.running' }, { value: 'Completed', label: 'status.integrated' },
   { value: 'Failed', label: 'status.failed' }, { value: 'Cancelled', label: 'status.cancelled' }];
 
-const engineColumns = 'md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_100px_110px_110px]';
+const engineColumns = 'md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_90px_100px_100px_minmax(0,1.2fr)]';
 
 export function ExecutionsPage() {
   useLanguage();
@@ -54,13 +54,15 @@ export function ExecutionsPage() {
     </Card>
     {engines.length > 0 && <Card title={t('executions.byEngine')} actions={<span className="text-sm text-tertiary">{t('executions.byEngineScope')}</span>} flush><Rows>
       <HeadRow className={engineColumns}><span>{t('executions.engine')}</span><span>{t('executions.finished')}</span><span>{t('executions.successRate')}</span>
-        <span>{t('executions.medianTime')}</span><span>{t('executions.totalTime')}</span></HeadRow>
+        <span>{t('executions.medianTime')}</span><span>{t('executions.totalTime')}</span><span>{t('usage.title')}</span></HeadRow>
       {engines.map(item => <Row key={item.engine} className={`grid-cols-2 ${engineColumns}`}>
         <span className="font-medium text-primary">{item.engine === 'ccc' ? 'Claude Code' : 'Codex'}</span>
         <span className="text-sm text-secondary tabular-nums">{t('executions.finishedCount', { n: item.finished, ok: item.integrated, failed: item.failed })}</span>
         <span className="text-sm text-secondary tabular-nums">{Math.round(item.integrated * 100 / item.finished)} %</span>
         <span className="text-sm text-secondary tabular-nums">{duration(item.medianMs)}</span>
         <span className="text-sm text-secondary tabular-nums">{duration(item.totalMs)}</span>
+        <span className="text-sm text-secondary tabular-nums">{item.withUsage ? <>{t('usage.engineTotals', { input: tokens(item.inputTokens), output: tokens(item.outputTokens) })}
+          {item.costUsd !== undefined && <> · {usd(item.costUsd)}</>}{item.withUsage < item.finished && <span className="block text-xs text-tertiary">{t('usage.partial', { n: item.withUsage, total: item.finished })}</span>}</> : '—'}</span>
       </Row>)}
     </Rows></Card>}
   </>;

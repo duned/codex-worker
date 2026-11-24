@@ -80,7 +80,8 @@ public sealed record ProvisioningWorkerReportContract(string WorkerId, string St
 public sealed record WorkerExecutionReportContract(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
-    string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0, string? CompletionReconciliationOperationId = null);
+    string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0, string? CompletionReconciliationOperationId = null,
+    ExecutionMetrics? Metrics = null);
 public sealed record ExecutionLeaseRenewalContract(string WorkerId, long Generation);
 
 /// <summary>Loads or creates a stable, random worker identifier stored with restrictive permissions.</summary>
@@ -783,7 +784,8 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
                 "preparation-failed" => "PreparationFailed",
                 _ => Bound(entry.State, 100)
             } : null, entry.RecoveryState is "recoverable" or "integration-conflict" or "codex-interrupted",
-            Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation, completionReconciliationOperationId);
+            Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation, completionReconciliationOperationId,
+            final && ExecutionMetrics.Valid(entry.Metrics) ? entry.Metrics : null);
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"),
             $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);

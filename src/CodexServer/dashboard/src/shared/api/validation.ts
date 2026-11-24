@@ -71,6 +71,21 @@ export const executions = list<ExecutionSummary>(value => {
     const allowed = new Set(['claimed', 'preparing', 'codex', 'validation', 'integration', 'reporting']);
     if (Object.entries(stages).some(([stage, timestamp]) => !allowed.has(stage) || typeof timestamp !== 'string' || !Number.isFinite(Date.parse(timestamp)))) throw new Error('Invalid stage timestamps.');
   }
+  if (item.metrics != null) {
+    const metrics = record(item.metrics);
+    if (metrics.usage != null) {
+      const usage = record(metrics.usage);
+      optional(usage, [], [], ['inputTokens', 'cachedInputTokens', 'outputTokens', 'costUsd', 'runs']);
+      if (['inputTokens', 'cachedInputTokens', 'outputTokens', 'runs'].some(key => typeof usage[key] !== 'number' || Number(usage[key]) < 0) || Number(usage.costUsd ?? 0) < 0) throw new Error('Invalid engine usage.');
+    }
+    if (metrics.changes != null) {
+      const changes = record(metrics.changes);
+      optional(changes, ['baseCommit', 'commit'], [], ['filesChanged', 'insertions', 'deletions']);
+      if (['filesChanged', 'insertions', 'deletions'].some(key => typeof changes[key] !== 'number' || Number(changes[key]) < 0)) throw new Error('Invalid change summary.');
+      stringList(changes.files);
+      if ([changes.baseCommit, changes.commit].some(value => value != null && !/^[0-9a-f]{7,64}$/i.test(String(value)))) throw new Error('Invalid change commits.');
+    }
+  }
   if (item.managedEligibilityReasons != null && (!Array.isArray(item.managedEligibilityReasons) || item.managedEligibilityReasons.some(reason => typeof reason !== 'string'))) throw new Error('Invalid eligibility reasons.');
   if (item.workReference != null) {
     const work = fields(item.workReference, ['type', 'id']);

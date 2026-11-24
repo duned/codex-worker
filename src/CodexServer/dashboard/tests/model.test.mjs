@@ -207,6 +207,23 @@ test('a Worker whose engine quota is nearly used up shows it as its health, with
   assert.equal(model.quotaWindowKey(10080), 'quota.window.weekly');
 });
 
+test('engine comparison adds reported usage, and cost only from attempts that report one', () => {
+  const finished = (id, engine, usage) => execution({ id, state: 'Completed', durationMilliseconds: 60000,
+    workReference: { type: 'github-issue', id, selection: { engine } }, metrics: usage ? { usage } : undefined });
+  const stats = model.engineStats([
+    finished('1', 'ccc', { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 100, costUsd: 0.25, runs: 1 }),
+    finished('2', 'ccc', { inputTokens: 3000, cachedInputTokens: 0, outputTokens: 300, costUsd: 0.5, runs: 2 }),
+    finished('3', 'codex', { inputTokens: 12000, cachedInputTokens: 9000, outputTokens: 900, runs: 1 }),
+    finished('4', 'codex')]);
+  const [ccc, codex] = stats;
+  assert.deepEqual([ccc.withUsage, ccc.inputTokens, ccc.outputTokens, ccc.costUsd], [2, 4000, 400, 0.75]);
+  assert.deepEqual([codex.withUsage, codex.finished, codex.inputTokens, codex.costUsd], [1, 2, 12000, undefined]);
+  assert.deepEqual([model.tokens(950), model.tokens(1234), model.tokens(34567), model.tokens(4100000)], ['950', '1.2 k', '35 k', '4.1 M']);
+  assert.equal(model.usd(0.4567), '$0.457');
+  const text = model.usageText({ inputTokens: 1500, cachedInputTokens: 0, outputTokens: 20, costUsd: 1.5, runs: 3 }, (key, values) => `${key}:${Object.values(values).join('/')}`);
+  assert.equal(text, 'usage.input:1.5 k/0 · usage.output:20 · $1.50 · usage.runs:3');
+});
+
 test('a preparation failure the Server retried by itself needs no attention', () => {
   const failed = execution({ state: 'Failed', failureClassification: 'PreparationFailed', recoveryState: 'PreparationRequeued' });
   assert.equal(model.executionStatus(failed).label, 'status.preparationRetried');

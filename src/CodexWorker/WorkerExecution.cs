@@ -48,6 +48,13 @@ public sealed class WorkerExecution
     }
 
     public CodexQuotaObservation? QuotaAtEnd { get; set; }
+    /// <summary>Engine usage summed over every run of this execution; engine runs are sequential.</summary>
+    public CodexProvisioning.EngineUsage? Usage { get; private set; }
+    /// <summary>Size of the integrated change, measured before the base moved on.</summary>
+    public CodexProvisioning.ExecutionChanges? Changes { get; internal set; }
+    internal void RecordUsage(CodexProvisioning.EngineUsage usage) => Usage = Usage?.Add(usage) ?? usage;
+    internal CodexProvisioning.ExecutionMetrics? Metrics =>
+        Usage is null && Changes is null ? null : new(Usage, Changes);
     public Guid ExecutionId { get; private init; }
     public string Project { get; }
     public string Repository { get; }
