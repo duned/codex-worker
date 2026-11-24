@@ -193,6 +193,20 @@ test('a Worker clock more than a minute off the Server is a health warning and a
   assert.deepEqual(model.attentionInbox([], [worker({ clockSkewSeconds: 600 }), worker({ workerId: 'ok' })]).clock.map(item => item.workerId), ['w']);
 });
 
+test('a Worker whose engine quota is nearly used up shows it as its health, with the Server rule', () => {
+  const now = Date.now(), iso = offset => new Date(now + offset).toISOString();
+  const quota = (remaining, values = {}) => ({ engineQuotas: [{ engine: 'codex', observedAtUtc: iso(-60000), status: 'available',
+    windows: [{ durationMinutes: 300, remainingPercent: remaining, resetsAtUtc: iso(3600000) }, { durationMinutes: 10080, remainingPercent: 70 }], ...values }] });
+  const worker = values => ({ workerId: 'w', availability: 'online', lifecycleState: 'running', ...values });
+  const exhausted = model.workerHealth(worker(quota(5)));
+  assert.deepEqual([exhausted.state, exhausted.tone, exhausted.cause.key, exhausted.cause.values.reserve], ['quota', 'warn', 'health.cause.quota', 5]);
+  assert.equal(model.workerHealth(worker(quota(5.5))).state, 'ready');
+  assert.equal(model.workerHealth(worker(quota(0, { status: 'query failed' }))).state, 'ready');
+  assert.equal(model.workerHealth(worker(quota(0, { observedAtUtc: iso(-16 * 60000) }))).state, 'ready');
+  assert.equal(model.exhaustedQuota(worker(quota(1)), 'ccc'), undefined);
+  assert.equal(model.quotaWindowKey(10080), 'quota.window.weekly');
+});
+
 test('a preparation failure the Server retried by itself needs no attention', () => {
   const failed = execution({ state: 'Failed', failureClassification: 'PreparationFailed', recoveryState: 'PreparationRequeued' });
   assert.equal(model.executionStatus(failed).label, 'status.preparationRetried');

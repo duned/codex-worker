@@ -35,6 +35,18 @@ function validateWorker(value: unknown) {
     if (!Number.isFinite(Date.parse(resources.measuredAtUtc as string)) || Object.entries(resources).some(([key, value]) => typeof value === 'number' && (value < 0 || (key.endsWith('Percent') && value > 100)))) throw new Error('Invalid host resources.');
   }
   if (item.activeProjects != null) stringList(item.activeProjects);
+  if (item.engineQuotas != null) {
+    if (!Array.isArray(item.engineQuotas)) throw new Error('Invalid engine quotas.');
+    item.engineQuotas.forEach(value => {
+      const quota = fields(value, ['engine', 'observedAtUtc', 'status']);
+      if (!Array.isArray(quota.windows)) throw new Error('Invalid engine quota windows.');
+      quota.windows.forEach(window => {
+        const entry = record(window);
+        optional(entry, ['resetsAtUtc'], [], ['durationMinutes', 'remainingPercent']);
+        if (entry.remainingPercent != null && (Number(entry.remainingPercent) < 0 || Number(entry.remainingPercent) > 100)) throw new Error('Invalid engine quota window.');
+      });
+    });
+  }
 }
 function fields(value: unknown, strings: string[], booleans: string[] = []) {
   const item = record(value);

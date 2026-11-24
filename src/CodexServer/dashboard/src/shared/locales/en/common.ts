@@ -62,6 +62,7 @@ export const common = {
   "pending.work is blocked by managed eligibility": "The Issue is not ready to run in GitHub (see why below). Fix it in GitHub, then check it again.",
   "pending.managed eligibility is unavailable": "The Server could not read the Issue in GitHub. Check it again in a moment.",
   "pending.project-scheduling-paused": "The project is paused: no Worker takes its Issues until you resume it from the project page.",
+  "pending.engine-quota-exhausted": "Every Worker that could run it has used up its engine quota. It starts when a usage window resets; see the Worker page.",
   "pending.project-capacity": "The project is already running as many Issues in parallel as it allows.",
   "pending.project-capacity-not-advertised": "No Worker is offering this project right now. It may be paused or still being prepared on the Worker; see the Worker page.",
   "pending.scheduling-paused": "Scheduling is paused on the compatible Workers.",

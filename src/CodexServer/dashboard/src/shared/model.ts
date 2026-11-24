@@ -1,5 +1,6 @@
 import { tryT } from './i18n';
-import type { ArchivedBranch, Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerProjectReadiness, WorkerUpdate } from './api/contracts';
+import { usePreferences } from './preferences';
+import type { ArchivedBranch, Capability, EngineQuota, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerProjectReadiness, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
 /** Visual tone of a status. Semantic colours are fixed: ok, bad, warn, run (animated) and idle. */
@@ -16,7 +17,22 @@ export const pausedOnWorker = (project: Pick<WorkerProjectReadiness, 'materializ
 
 /** One health state per Worker with its main cause, most severe first. Connection, scheduling and paused projects
  *  stay separate facts underneath; this is what a list or a header shows. */
-export type Health = 'offline' | 'blocked' | 'clock' | 'paused' | 'pausing' | 'degraded' | 'working' | 'ready';
+export type Health = 'offline' | 'blocked' | 'clock' | 'paused' | 'pausing' | 'degraded' | 'quota' | 'working' | 'ready';
+/** The Server holds new work for an engine while a fresh reading shows a window at or below this share (EngineQuota.cs). */
+export const quotaReservePercent = 5;
+const quotaFreshMs = 15 * 60_000;
+export const engineQuota = (worker: WorkerObservation, engine = 'codex'): EngineQuota | undefined =>
+  worker.engineQuotas?.find(quota => quota.engine === engine);
+/** The window that keeps new work for the engine off this Worker, with the same rule the Server applies. */
+export function exhaustedQuota(worker: WorkerObservation, engine = 'codex', now = Date.now()) {
+  const quota = engineQuota(worker, engine);
+  if (!quota || quota.status !== 'available' || now - Date.parse(quota.observedAtUtc) > quotaFreshMs) return undefined;
+  return quota.windows.filter(window => window.remainingPercent != null && window.remainingPercent <= quotaReservePercent &&
+    (!window.resetsAtUtc || Date.parse(window.resetsAtUtc) > now))
+    .sort((a, b) => (b.resetsAtUtc ? Date.parse(b.resetsAtUtc) : Infinity) - (a.resetsAtUtc ? Date.parse(a.resetsAtUtc) : Infinity))[0];
+}
+/** Usage windows by their usual names; anything else keeps its length. */
+export const quotaWindowKey = (minutes?: number | null) => minutes === 300 ? 'quota.window.5h' : minutes === 10080 ? 'quota.window.weekly' : 'quota.window.other';
 /** Leases and operation deadlines tolerate this much difference between the Worker and Server clocks. */
 export const clockSkewToleranceSeconds = 60;
 export const clockSkewed = (worker: WorkerObservation) => isOnline(worker) && Math.abs(worker.clockSkewSeconds ?? 0) > clockSkewToleranceSeconds;
@@ -34,6 +50,9 @@ export function workerHealth(worker: WorkerObservation, projectName: (id: string
   const paused = (worker.managedDiagnostics?.projects ?? []).filter(project =>
     pausedOnWorker({ materializationState: project.state, diagnosticCode: project.diagnosticCode ?? undefined }));
   if (paused.length) return make('degraded', 'warn', 'health.cause.projectsPaused', { list: paused.map(project => projectName(project.projectId)).join(', ') });
+  const exhausted = exhaustedQuota(worker);
+  if (exhausted) return make('quota', 'warn', exhausted.resetsAtUtc ? 'health.cause.quota' : 'health.cause.quotaUnknownReset',
+    { reserve: quotaReservePercent, time: dateTime(exhausted.resetsAtUtc ?? undefined, usePreferences.getState().language) });
   const { used, total } = slots(worker);
   return used ? make('working', 'run', 'health.cause.working', { used, total }) : make('ready', 'ok', 'workers.idle');
 }

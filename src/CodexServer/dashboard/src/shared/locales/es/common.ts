@@ -63,6 +63,7 @@ export const common = {
   "pending.work is blocked by managed eligibility": "La issue no está lista para ejecutarse en GitHub (el motivo, abajo). Corrígela en GitHub y compruébala otra vez.",
   "pending.managed eligibility is unavailable": "El servidor no pudo leer la issue en GitHub. Vuelve a comprobarla en un momento.",
   "pending.project-scheduling-paused": "El proyecto está pausado: ningún Worker coge sus issues hasta que lo reanudes desde la página del proyecto.",
+  "pending.engine-quota-exhausted": "Todos los Workers que podrían ejecutarla han agotado la cuota del motor. Empezará cuando se reinicie una ventana de uso; mira la página del Worker.",
   "pending.project-capacity": "El proyecto ya ejecuta tantas issues en paralelo como permite.",
   "pending.project-capacity-not-advertised": "Ningún Worker ofrece este proyecto ahora mismo. Puede estar pausado o preparándose en el Worker; mira la página del Worker.",
   "pending.scheduling-paused": "La planificación está en pausa en los Workers compatibles.",

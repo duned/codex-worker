@@ -1287,7 +1287,7 @@ public static partial class ServerApplication
         request.ActiveExecutions is >= 0 and <= 8 && request.MaximumCapacity is >= 1 and <= 8 &&
         request.ActiveExecutions <= request.MaximumCapacity && request.Capabilities is not null && request.Capabilities.Count <= 32 &&
         request.Capabilities.All(ValidCapability) &&
-        ManagedWorkerDiagnostics.Valid(request.ManagedDiagnostics) && WorkerHostResources.Valid(request.HostResources) &&
+        ManagedWorkerDiagnostics.Valid(request.ManagedDiagnostics) && WorkerHostResources.Valid(request.HostResources) && EngineQuota.Valid(request.EngineQuotas) &&
         CapabilityCatalog.ValidInventory(request.CapabilityInventory) && request.ActiveProjects is not null && request.ActiveProjects.Count <= 32 &&
         (request.ConfigurationSynchronization is null or "synchronized" or "cached" or "unavailable" or "error" or "not-synchronized") &&
         (request.ConfigurationVersion is null || (request.ConfigurationVersion.Length <= 128 && !request.ConfigurationVersion.Any(char.IsControl))) &&

@@ -51,7 +51,7 @@ public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerI
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapabilityContract> Capabilities,
     IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null,
     IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null, string? InstanceId = null,
-    DateTimeOffset? SentAtUtc = null);
+    DateTimeOffset? SentAtUtc = null, IReadOnlyList<EngineQuota>? EngineQuotas = null);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
@@ -580,7 +580,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion,
             await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken), configurationSync?.Diagnostics, await WorkerHostResourceCollector.CollectAsync(cancellationToken), WorkerProcessIdentity.InstanceId,
             // The machine clock, deliberately: the Server compares it with its own to detect skew that breaks leases and deadlines.
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow, CodexQuotaReader.Local.CachedObservation is { } quota ? [quota.ToContract()] : null));
         using var response = await SendAsync(request, cancellationToken, TimeSpan.FromSeconds(10));
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}", null, response.StatusCode);

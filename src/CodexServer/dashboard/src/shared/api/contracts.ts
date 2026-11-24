@@ -8,7 +8,13 @@ export interface WorkerObservation {
   configuredMaximumCapacity?: number; workerExecutionSlots?: number; configurationRevision?: number;
   hostResources?: { measuredAtUtc: string; logicalCpuCount?: number; totalMemoryBytes?: number; usedMemoryBytes?: number; diskTotalBytes?: number; diskAvailableBytes?: number; cpuUsagePercent?: number; memoryUsagePercent?: number; sampleSeconds?: number };
   platform?: string; firstRegisteredAtUtc?: string; activeProjects?: string[]; clockSkewSeconds?: number;
+  engineQuotas?: EngineQuota[] | null;
   managedDiagnostics?: { projects?: { projectId: string; revision: number; state: string; diagnosticCode?: string | null; detail?: string | null }[] } | null;
+}
+/** A Worker's latest reading of an engine account's usage windows (5 h, weekly). */
+export interface EngineQuota {
+  engine: string; observedAtUtc: string; status: string;
+  windows: { durationMinutes?: number | null; remainingPercent?: number | null; resetsAtUtc?: string | null }[];
 }
 export interface ProjectSummary {
   id: string; name: string; repository: string; revision?: number; enabled?: boolean; requirements?: { type: string; name: string; version?: string }[];

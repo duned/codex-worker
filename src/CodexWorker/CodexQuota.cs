@@ -161,6 +161,11 @@ internal sealed class CodexQuotaTransport : ICodexQuotaTransport
 
 internal static class CodexQuotaFormatting
 {
+    /// <summary>The heartbeat contract for this observation; no account identifiers are present to begin with.</summary>
+    internal static CodexProvisioning.EngineQuota ToContract(this CodexQuotaObservation observation) =>
+        new("codex", observation.ObservedAtUtc, observation.Status.Length <= 64 ? observation.Status : observation.Status[..64],
+            observation.Windows.Take(8).Select(window => new CodexProvisioning.EngineQuotaWindow(window.DurationMinutes, window.RemainingPercent, window.ResetsAtUtc)).ToArray());
+
     internal static string Compact(CodexQuotaObservation observation, DateTimeOffset now)
     {
         if (observation.Status != "available" || now - observation.ObservedAtUtc > TimeSpan.FromMinutes(2))

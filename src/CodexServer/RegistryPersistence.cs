@@ -475,7 +475,7 @@ public sealed record WorkerRegistrationRequest(int ContractVersion, string Worke
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, [property: System.Text.Json.Serialization.JsonRequired] int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
     IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null, string? InstanceId = null,
-    DateTimeOffset? SentAtUtc = null);
+    DateTimeOffset? SentAtUtc = null, IReadOnlyList<EngineQuota>? EngineQuotas = null);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
@@ -485,7 +485,7 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
     string SchedulingPolicy = WorkerSchedulingPolicy.Enabled, int ActiveAssignments = 0,
     string AuthenticationCredentialStatus = "not-configured", DateTimeOffset? AuthenticationCredentialRevokedAtUtc = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null,
     int? ConfiguredMaximumCapacity = null, long ConfigurationRevision = 1, int? WorkerExecutionSlots = null, WorkerTelegramConfiguration? Telegram = null, string? SchedulingBlocker = null,
-    int? ClockSkewSeconds = null)
+    int? ClockSkewSeconds = null, IReadOnlyList<EngineQuota>? EngineQuotas = null)
 {
     /// <summary>Leases and operation deadlines tolerate this much difference between Worker and Server clocks.</summary>
     public const int ClockSkewToleranceSeconds = ManagedClock.ToleranceSeconds;
@@ -1304,6 +1304,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             { noAssignmentReason = "execution-selection-invalid"; continue; }
             if (!WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject, queuedItem.Work.Selection.Engine), workerCapabilities, heartbeat.CapabilityInventory).IsEligible)
             { noAssignmentReason = "worker-incompatible"; continue; }
+            if (EngineQuota.ExhaustedWindow(heartbeat.EngineQuotas, queuedItem.Work.Selection.Engine, _timeProvider.GetUtcNow()) is not null)
+            { noAssignmentReason = "engine-quota-exhausted"; continue; }
             WorkReference canonicalWork;
             try { canonicalWork = ExecutionRequestValidation.Canonicalize(queuedItem.Work, candidateProject.Repository); }
             catch (InvalidDataException) { noAssignmentReason = "work-reference-repository-mismatch"; continue; }
@@ -1904,6 +1906,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         var withCapacity = accepting.Where(worker => Math.Min(worker.MaximumCapacity,
             worker.ConfiguredMaximumCapacity ?? worker.MaximumCapacity) > Math.Max(worker.ActiveExecutions, worker.ActiveAssignments)).ToArray();
         if (withCapacity.Length == 0) return "compatible workers currently at capacity";
+        if (withCapacity.All(worker => EngineQuota.ExhaustedWindow(worker.EngineQuotas, execution.WorkReference.Selection.Engine, _timeProvider.GetUtcNow()) is not null))
+            return "engine-quota-exhausted";
         if (withCapacity.All(worker => worker.WorkerExecutionSlots is { } slots && slots != worker.MaximumCapacity))
             return "worker-configuration-pending";
         var decisions = withCapacity.Select(worker => RecentAssignmentDecision(worker.WorkerId)).ToArray();
@@ -2766,7 +2770,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             schedulingPolicy, activeAssignments, authenticationCredentialStatus, authenticationCredentialRevokedAtUtc, heartbeat?.ManagedDiagnostics, heartbeat?.HostResources,
             configuredMaximumCapacity, configurationRevision, workerExecutionSlots, telegram,
             // Worker clock at sending minus Server clock at receipt; network delay only makes it slightly negative.
-            ClockSkewSeconds: heartbeat?.SentAtUtc is { } sent ? (int)Math.Round((sent - seen).TotalSeconds) : null);
+            ClockSkewSeconds: heartbeat?.SentAtUtc is { } sent ? (int)Math.Round((sent - seen).TotalSeconds) : null,
+            EngineQuotas: online ? heartbeat!.EngineQuotas : null);
     }
 
     public async Task<ServerResourceStatus> GetResourceStatusAsync(CancellationToken cancellationToken = default)
