@@ -100,6 +100,17 @@ public sealed class ProjectRuntimeRegistry
 
     /// <summary>Lifts a failure pause (GitHub reconciliation, completion, preparation) on an operator's request.
     /// Capability gaps and local operator disables are not pauses this request may override.</summary>
+    /// <summary>Re-enables a project whose preparation succeeded again, unless its pause is held for an operator.</summary>
+    public bool EnableAfterPreparation(string name)
+    {
+        lock (_gate)
+        {
+            if (!_projects.TryGetValue(name, out var entry) || entry.State != ProjectLifecycleState.Unavailable || entry.OperatorHeld) return false;
+            Enable(name);
+            return true;
+        }
+    }
+
     public bool ResumePaused(string name)
     {
         lock (_gate)
@@ -110,12 +121,15 @@ public sealed class ProjectRuntimeRegistry
         }
     }
 
-    public ProjectLifecycleInfo? MarkUnavailable(string name, string reason)
+    /// <param name="operatorHeld">A safety pause (ambiguous completion, uncertain GitHub mutation) that only an operator
+    /// lifts; re-preparing the project after a tool or configuration change leaves it in place.</param>
+    public ProjectLifecycleInfo? MarkUnavailable(string name, string reason, bool operatorHeld = false)
     {
         lock (_gate)
         {
             if (!_projects.TryGetValue(name, out var entry)) return null;
             entry.CapabilityBlocked = false;
+            entry.OperatorHeld = operatorHeld;
             entry.UnavailableReason = reason;
             entry.State = ProjectLifecycleState.Unavailable;
             _events?.Publish("project.unavailable", reason, name);
@@ -340,6 +354,7 @@ public sealed class ProjectRuntimeRegistry
             {
                 entry.State = target;
                 entry.CapabilityBlocked = false;
+                entry.OperatorHeld = false;
                 if (target != ProjectLifecycleState.Unavailable) entry.UnavailableReason = null;
                 _events?.Publish(eventType, message, name);
                 if (target == ProjectLifecycleState.Enabled) SignalChanged();
@@ -374,6 +389,7 @@ public sealed class ProjectRuntimeRegistry
         public int Active = active;
         public bool Removing;
         public bool CapabilityBlocked;
+        public bool OperatorHeld;
         public string? UnavailableReason;
         public ProjectLifecycleState StateBeforeRemoval = state;
     }

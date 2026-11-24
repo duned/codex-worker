@@ -304,10 +304,11 @@ public sealed class WorkerHost
                         throw new WorkerInfrastructureException(message);
                     }
                 }
+                // Successful preparation lifts preparation and capability pauses only; reconciliation pauses wait for an operator.
                 foreach (var project in healthyRuntimes)
-                    if (runtimeReadModel.Registry.Status().Any(state => state.Name == project.Configuration.Project.Name &&
-                        state.State == ProjectLifecycleState.Unavailable))
-                        runtimeReadModel.Registry.Enable(project.Configuration.Project.Name);
+                    if (!runtimeReadModel.Registry.EnableAfterPreparation(project.Configuration.Project.Name) &&
+                        runtimeReadModel.Registry.Get(project.Configuration.Project.Name) is { State: ProjectLifecycleState.Unavailable })
+                        _operationalLog($"Scheduler · {project.Configuration.Project.Name} · prepared again · reconciliation pause kept until an operator resumes it.");
                 validatedConfigurations.UnionWith(healthyRuntimes
                     .Select(project => project.Configuration));
                 Volatile.Write(ref heartbeatCapabilities, heartbeatCapabilities.Concat(healthyRuntimes.SelectMany(project =>
@@ -463,7 +464,7 @@ public sealed class WorkerHost
                     {
                         var reason = $"Completion reconciliation required for Issue #{ex.IssueNumber}, execution {ex.ExecutionId}. " +
                             LimitCompletionDiagnostic(ex.Message, project.Configuration);
-                        runtimeReadModel.Registry.MarkUnavailable(ex.Project, reason);
+                        runtimeReadModel.Registry.MarkUnavailable(ex.Project, reason, operatorHeld: true);
                         runtimeReadModel.Events.Publish("project.github-reconciliation-required", reason, ex.Project);
                         _output.Warning(reason);
                         _operationalLog($"Scheduler · {ex.Project} · {reason} · only this project is paused; do not replay Codex.");
@@ -1204,7 +1205,7 @@ public sealed class WorkerHost
         {
             var reason = $"Completion reconciliation required for Issue #{entry.IssueNumber}, execution {entry.ExecutionId}: " +
                 LimitCompletionDiagnostic(ex.Message, worker.Configuration);
-            runtime.Registry.MarkUnavailable(worker.Configuration.Project.Name, reason);
+            runtime.Registry.MarkUnavailable(worker.Configuration.Project.Name, reason, operatorHeld: true);
             runtime.Events.Publish("project.github-reconciliation-required", reason, worker.Configuration.Project.Name);
             _output.Warning(reason);
             _operationalLog($"Scheduler · {worker.Configuration.Project.Name} · execution {entry.ExecutionId} · completion stopped because remote proof or reporting state is ambiguous · project scheduling paused. {reason}");
@@ -1272,7 +1273,7 @@ public sealed class WorkerHost
                             project.Configuration.Environment.Variables.Values.ToArray());
                         if (safeDetail.Length > 1200) safeDetail = safeDetail[..1180] + " … [truncated]";
                         var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remote state could not be verified for execution {entry.ExecutionId}: {safeDetail}";
-                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason, operatorHeld: true);
                         runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
                         _output.Warning(reason);
                         _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · startup GitHub reconciliation could not verify remote state · project scheduling paused.");
@@ -1289,7 +1290,7 @@ public sealed class WorkerHost
                     if (readyRemains)
                     {
                         var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remains open and ready after execution {entry.ExecutionId} had an uncertain mutation. Inspect the Issue and history, then explicitly enable the project after reconciliation.";
-                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason, operatorHeld: true);
                         runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
                         _output.Warning(reason);
                         _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · remote state verified as open and ready · scheduling paused pending manual reconciliation.");
@@ -1395,7 +1396,7 @@ public sealed class WorkerHost
         if (reason.Length > 1600) reason = reason[..1580] + " … [truncated]";
         if (!string.IsNullOrWhiteSpace(additionalContext)) reason += $" {additionalContext}";
         if (reason.Length > 1800) reason = reason[..1780] + " … [truncated]";
-        runtime.Registry.MarkUnavailable(projectName, reason);
+        runtime.Registry.MarkUnavailable(projectName, reason, operatorHeld: reconciliationRequired);
         runtime.Events.Publish(reconciliationRequired ? "project.github-reconciliation-required" : "project.github-failure",
             reason, projectName);
         _output.Warning($"Project '{projectName}' paused after a GitHub failure; unrelated projects will continue. {reason}");
