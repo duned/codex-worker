@@ -119,6 +119,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(services => new McpOAuthStore(databasePath, configuration, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
         builder.Services.AddSingleton(services => new TelegramTestStore(databasePath, services.GetRequiredService<TimeProvider>()));
+        builder.Services.AddSingleton(services => new ProjectResumeStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(services => new ExecutionMaintenanceStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new IssuePlanningOperations(databasePath));
         builder.Services.AddSingleton(services => new NodeProvisioningCommandExecutor(
@@ -171,6 +172,7 @@ public static partial class ServerApplication
             await app.Services.GetRequiredService<ProvisioningCommandStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ExecutionMaintenanceStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<TelegramTestStore>().InitializeAsync(cancellationToken);
+            await app.Services.GetRequiredService<ProjectResumeStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
         }
         catch
@@ -789,6 +791,7 @@ public static partial class ServerApplication
                 ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots, worker.Telegram), typedCommands, clock.GetUtcNow()));
         });
         MapTelegramTests(app);
+        MapProjectResume(app);
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {

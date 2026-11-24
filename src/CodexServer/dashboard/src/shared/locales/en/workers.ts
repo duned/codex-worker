@@ -150,5 +150,16 @@ export const workers = {
   "maintenance.check.required-capabilities": "Capabilities the Worker had before are missing.",
   "maintenance.check.required-capabilities.todo": "Restore them on the machine.",
   "maintenance.check.post-operation-heartbeat": "No signal has arrived since the operation started.",
-  "maintenance.check.post-operation-heartbeat.todo": "Wait for the Worker's next signal."
+  "maintenance.check.post-operation-heartbeat.todo": "Wait for the Worker's next signal.",
+  "workers.pausedTitle": "Projects paused on this Worker",
+  "workers.pausedHint": "The Worker stopped taking work for these projects after a failure it could not resolve alone. Check the reason; resume when it is safe. Other projects keep working.",
+  "workers.pausedPill": "Paused on this Worker",
+  "workers.pausedNoReason": "The Worker did not report a reason.",
+  "workers.resumeProject": "Resume on this Worker",
+  "workers.resumeRequested": "Resume sent. The Worker applies it on its next cycle.",
+  "workers.resume.pending": "Resume waiting for the Worker.",
+  "workers.resume.succeeded": "Resumed. The project takes work again.",
+  "workers.resume.not-paused": "The Worker no longer had it paused, or the pause is a missing capability or a local disable.",
+  "workers.resume.project-unknown": "The Worker does not have this project.",
+  "workers.resume.delivery-unavailable": "The Worker did not pick up the request in time. Try again when it is online."
 } as const;

@@ -5,7 +5,8 @@ using CodexProvisioning;
 /// <summary>Operational, secret-free view derived from the existing worker registry and project models.</summary>
 public sealed record WorkerProjectReadiness(string ProjectId, string ProjectName, bool IsEligible,
     IReadOnlyList<string> MissingRequirements, long? WorkerReportedRevision = null,
-    string? MaterializationState = null, string? DiagnosticCode = null, string ObservationStatus = "not-reported");
+    string? MaterializationState = null, string? DiagnosticCode = null, string ObservationStatus = "not-reported",
+    string? Detail = null);
 
 public sealed record ProvisioningOperationSummary(string Source, string Id, string Status, string? Action,
     string Diagnostic, DateTimeOffset CreatedAtUtc);
@@ -53,7 +54,8 @@ public static class WorkerDiagnosticsDerivation
                 observation?.Revision, observation?.State, observation?.DiagnosticCode, observation is null ? "not-reported" :
                     worker.Availability is "stale" or "offline" ? "stale-heartbeat" :
                     worker.ManagedDiagnostics?.Source == "cached" ? "cached-worker-observation" :
-                    observation.Revision == project.Revision ? "worker-reported-current-revision" : "stale-revision");
+                    observation.Revision == project.Revision ? "worker-reported-current-revision" : "stale-revision",
+                observation?.Detail);
         }).ToArray();
 
         var reasons = new List<string>();

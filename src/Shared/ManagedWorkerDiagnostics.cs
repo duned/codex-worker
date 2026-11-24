@@ -1,7 +1,7 @@
 namespace CodexProvisioning;
 
 /// <summary>Bounded Worker observations, never authority to schedule or raw process diagnostics.</summary>
-public sealed record ManagedProjectDiagnostic(string ProjectId, long Revision, string State, string? DiagnosticCode = null);
+public sealed record ManagedProjectDiagnostic(string ProjectId, long Revision, string State, string? DiagnosticCode = null, string? Detail = null);
 
 public sealed record ManagedWorkerDiagnostics(string Retrieval, string Synchronization, string Source,
     string? DesiredVersion, string? AppliedVersion, string? FailureStage, string? DiagnosticCode,
@@ -18,7 +18,8 @@ public sealed record ManagedWorkerDiagnostics(string Retrieval, string Synchroni
         value.Projects is { Count: <= 1000 } && value.Projects.All(project => project is not null &&
             !string.IsNullOrWhiteSpace(project.ProjectId) && project.ProjectId.Length <= 120 && !project.ProjectId.Any(char.IsControl) &&
             project.Revision > 0 && project.State is ("unverified" or "not-materialized" or "materializing" or "ready" or "blocked" or "failed") &&
-            ValidCode(project.DiagnosticCode)) && value.Projects.Select(project => project.ProjectId).Distinct(StringComparer.Ordinal).Count() == value.Projects.Count;
+            ValidCode(project.DiagnosticCode) && (project.Detail is null ||
+                project.Detail.Length is > 0 and <= ProjectResumeProtocol.DetailLength && !project.Detail.Any(char.IsControl))) && value.Projects.Select(project => project.ProjectId).Distinct(StringComparer.Ordinal).Count() == value.Projects.Count;
 
     private static bool ValidVersion(string? value) => value is null || value.Length <= 128 && !value.Any(char.IsControl);
     private static bool ValidCode(string? value) => value is null or "server-unavailable" or "server-unauthorized" or

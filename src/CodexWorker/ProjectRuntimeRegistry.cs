@@ -98,6 +98,18 @@ public sealed class ProjectRuntimeRegistry
     public ProjectLifecycleInfo? Enable(string name) => Transition(name, ProjectLifecycleState.Enabled, "project.enabled", "Project enabled.");
     public ProjectLifecycleInfo? Disable(string name) => Transition(name, ProjectLifecycleState.Disabled, "project.disabled", "Project disabled.");
 
+    /// <summary>Lifts a failure pause (GitHub reconciliation, completion, preparation) on an operator's request.
+    /// Capability gaps and local operator disables are not pauses this request may override.</summary>
+    public bool ResumePaused(string name)
+    {
+        lock (_gate)
+        {
+            if (!_projects.TryGetValue(name, out var entry) || entry.Removing || entry.State != ProjectLifecycleState.Unavailable || entry.CapabilityBlocked) return false;
+            Enable(name);
+            return true;
+        }
+    }
+
     public ProjectLifecycleInfo? MarkUnavailable(string name, string reason)
     {
         lock (_gate)

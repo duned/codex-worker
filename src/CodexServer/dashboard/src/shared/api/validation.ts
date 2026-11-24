@@ -1,4 +1,4 @@
-import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, ArchivedBranchPage, ArchivedBranchDeleteResult, BranchSelection } from './contracts';
+import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, ProjectResumeOperation, ArchivedBranchPage, ArchivedBranchDeleteResult, BranchSelection } from './contracts';
 import type { Validator } from './client';
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid object.');
@@ -86,7 +86,7 @@ export const diagnostics: Validator<WorkerDiagnostics> = value => {
     if (!Array.isArray(item.projects)) throw new Error('Invalid project readiness.');
     item.projects.forEach(value => {
       const project = fields(value, ['projectId', 'projectName', 'observationStatus'], ['isEligible']);
-      optional(project, ['materializationState', 'diagnosticCode'], [], ['workerReportedRevision']);
+      optional(project, ['materializationState', 'diagnosticCode', 'detail'], [], ['workerReportedRevision']);
       if (project.workerReportedRevision != null && (!Number.isSafeInteger(project.workerReportedRevision) || Number(project.workerReportedRevision) < 1)) throw new Error('Invalid project revision.');
       stringList(project.missingRequirements);
     });
@@ -220,6 +220,13 @@ export const workerRelease: Validator<WorkerRelease> = value => {
   return item as unknown as WorkerRelease;
 };
 /** A Worker restart/update operation, or null when none was ever requested. */
+export const projectResume: Validator<ProjectResumeOperation | null> = value => {
+  if (value === null) return null;
+  const item = fields(value, ['id', 'projectId', 'status', 'deadlineUtc']);
+  optional(item, ['diagnostic']);
+  if (!['pending', 'running', 'succeeded', 'failed'].includes(String(item.status))) throw new Error('Invalid project resume.');
+  return value as ProjectResumeOperation;
+};
 export const workerUpdate: Validator<WorkerUpdate | null> = value => {
   if (value === null) return null;
   const item = fields(value, ['operationId', 'workerId', 'state']);

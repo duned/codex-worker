@@ -1,5 +1,5 @@
 import { tryT } from './i18n';
-import type { ArchivedBranch, Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerUpdate } from './api/contracts';
+import type { ArchivedBranch, Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerProjectReadiness, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
 /** Visual tone of a status. Semantic colours are fixed: ok, bad, warn, run (animated) and idle. */
@@ -9,6 +9,10 @@ export interface Status { tone: Tone; label: TranslationKey }
 export const steps = ['prepare', 'implement', 'validate', 'integrate', 'report'] as const;
 const stageStep: Record<string, number> = { Claiming: 0, Preparing: 0, Codex: 1, Implementing: 1, Validation: 2, Integration: 3, Reporting: 4 };
 const stepTimingKeys = [['claimed', 'preparing'], ['codex'], ['validation'], ['integration'], ['reporting']] as const;
+
+/** A project the Worker paused in its own memory (GitHub reconciliation, ambiguous completion, failed preparation). */
+export const pausedOnWorker = (project: WorkerProjectReadiness) =>
+  project.materializationState === 'blocked' && project.diagnosticCode === 'project-recovery-verification-failed';
 
 export const isActive = (execution: ExecutionSummary) => execution.state === 'Assigned' || execution.state === 'Running';
 export const isConflict = (execution: ExecutionSummary) => execution.failureClassification === 'IntegrationConflict';

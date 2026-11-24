@@ -7,11 +7,12 @@ import type { Validator } from '../shared/api/client';
 import { diagnostics as validateDiagnostics, record, worker as validateWorker } from '../shared/api/validation';
 import { useExecutions, useNodes } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { isActive, isOnline, scheduling, schedulingBlockerText, schedulingTone, slots } from '../shared/model';
+import { isActive, isOnline, pausedOnWorker, scheduling, schedulingBlockerText, schedulingTone, slots } from '../shared/model';
 import { Ago, Card, Empty, KeyValues, PageHeader, Pill, ReadState, Row, Rows, Tile, CopyValue } from '../shared/ui';
 import { ActiveExecution, ExecutionHead, ExecutionRow } from './ExecutionRow';
 import { WorkerMaintenance } from './WorkerMaintenance';
 import { WorkerPanel } from './WorkerPanel';
+import { WorkerPausedProjects } from './WorkerPausedProjects';
 import { WorkerTools } from './WorkerTools';
 
 const journal: Validator<{ state: string; lines: string[] }> = value => {
@@ -65,6 +66,7 @@ export function WorkerPage() {
     {state === 'blocked' && blockers.length > 0 && <Card><p className="text-sm font-semibold text-primary">{t('workers.whyBlocked')}</p>
       <ul className="mt-2 list-disc pl-5 text-sm text-secondary">{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul></Card>}
 
+    <WorkerPausedProjects workerId={worker.workerId} diagnostics={diagnostics.data} online={online} onResumed={refreshReadiness} />
     <WorkerMaintenance worker={worker} onProgress={refreshWorker} />
 
     <div role="tablist" aria-label={t('workers.sections')} className="flex gap-6 border-b border-secondary">
@@ -93,7 +95,8 @@ export function WorkerPage() {
           {diagnostics.data?.projects?.length ? diagnostics.data.projects.map(project => <Row key={project.projectId} className="grid-cols-[minmax(0,1fr)_auto]">
             <span><span className="block font-medium text-primary">{project.projectName}</span>
               {!project.isEligible && project.missingRequirements.length > 0 && <span className="text-sm text-tertiary">{t('workers.missing', { list: project.missingRequirements.join(', ') })}</span>}</span>
-            <Pill tone={project.isEligible ? 'ok' : 'warn'}>{t(project.isEligible ? 'workers.canRun' : 'workers.cannotRun')}</Pill>
+            {pausedOnWorker(project) ? <Pill tone="warn">{t('workers.pausedPill')}</Pill>
+              : <Pill tone={project.isEligible ? 'ok' : 'warn'}>{t(project.isEligible ? 'workers.canRun' : 'workers.cannotRun')}</Pill>}
           </Row>) : <Empty>{t('workers.noProjects')}</Empty>}
         </Rows></ReadState></Card>
         <Card title={t('workers.journal')} actions={<Button size="sm" color="secondary" isDisabled={loadingLog || !online} onClick={() => void loadJournal()}>{t(log ? 'common.refresh' : 'workers.loadJournal')}</Button>}>

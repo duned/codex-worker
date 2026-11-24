@@ -151,5 +151,16 @@ export const workers = {
   "maintenance.check.required-capabilities": "Faltan capacidades que el Worker tenía antes.",
   "maintenance.check.required-capabilities.todo": "Restáuralas en la máquina.",
   "maintenance.check.post-operation-heartbeat": "No ha llegado ninguna señal desde que empezó la operación.",
-  "maintenance.check.post-operation-heartbeat.todo": "Espera a la siguiente señal del Worker."
+  "maintenance.check.post-operation-heartbeat.todo": "Espera a la siguiente señal del Worker.",
+  "workers.pausedTitle": "Proyectos pausados en este Worker",
+  "workers.pausedHint": "El Worker dejó de coger trabajo de estos proyectos tras un fallo que no podía resolver solo. Revisa el motivo y reactívalo cuando sea seguro. Los demás proyectos siguen trabajando.",
+  "workers.pausedPill": "Pausado en este Worker",
+  "workers.pausedNoReason": "El Worker no ha informado del motivo.",
+  "workers.resumeProject": "Reactivar en este Worker",
+  "workers.resumeRequested": "Reactivación enviada. El Worker la aplica en su siguiente ciclo.",
+  "workers.resume.pending": "Reactivación pendiente de que la recoja el Worker.",
+  "workers.resume.succeeded": "Reactivado. El proyecto vuelve a coger trabajo.",
+  "workers.resume.not-paused": "El Worker ya no lo tenía pausado, o la pausa es por una capacidad que falta o una desactivación local.",
+  "workers.resume.project-unknown": "El Worker no tiene este proyecto.",
+  "workers.resume.delivery-unavailable": "El Worker no recogió la petición a tiempo. Vuelve a intentarlo cuando esté conectado."
 } satisfies Record<keyof typeof source, string>;
