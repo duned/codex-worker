@@ -4,7 +4,7 @@ import { Button } from '../untitled/components/base/buttons/button';
 import { useAction } from '../shared/actions';
 import { useApiRead } from '../shared/api/session';
 import { issues as validateIssues, project as validateProject } from '../shared/api/validation';
-import { projectExecutionsPath, useExecutions, useWorkers } from '../shared/data';
+import { projectExecutionsPath, useExecutions, useSchedulingPauses, useWorkers } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
 import { issueStatus, latestByIssue, type Tone } from '../shared/model';
 import { Card, Empty, Filters, KeyValues, matches, PageHeader, Pill, ReadState, RowLink, Rows, StatusPill } from '../shared/ui';
@@ -24,7 +24,8 @@ export function ProjectPage() {
   const issues = useApiRead(`${base}/github/issues?state=${scope}&limit=100`, validateIssues);
   const executions = useExecutions(projectExecutionsPath(projectId));
   const [query, setQuery] = useState(''), [status, setStatus] = useState(''), [editing, setEditing] = useState(false), [enqueue, setEnqueue] = useState(false);
-  const item = project.data;
+  const pauses = useSchedulingPauses();
+  const item = project.data, schedulingPaused = !!pauses.data?.some(pause => pause.projectId === projectId);
   if (!item) return <><PageHeader title={t('projects.title')} crumbs={[{ label: t('nav.projects'), to: '/projects' }]} /><Card flush><ReadState read={project}>{null}</ReadState></Card></>;
   const latest = latestByIssue(executions.data ?? []);
   const known = new Map((issues.data ?? []).map(issue => [issue.number, issue]));
@@ -38,12 +39,16 @@ export function ProjectPage() {
 
   return <>
     <PageHeader crumbs={[{ label: t('nav.projects'), to: '/projects' }, { label: item.name }]} title={item.name}
-      badge={item.enabled === false ? <Pill tone="warn">{t('projects.paused')}</Pill> : undefined}
+      badge={item.enabled === false || schedulingPaused ? <Pill tone="warn">{t('projects.paused')}</Pill> : undefined}
       description={<>{item.repository} · {t('projects.integratesInto')} <span className="font-mono text-sm">{item.defaultBranch ?? 'main'}</span></>}
       actions={<>
-        <Button color="secondary" isDisabled={!!action.busy} onClick={() => void action.run(`project-${item.id}`, `${base}/lifecycle`, 'PUT',
-          { enabled: item.enabled === false, expectedRevision: item.revision }, item.enabled === false ? 'projects.resumed' : 'projects.pausedDone')}>
-          {t(item.enabled === false ? 'projects.resume' : 'projects.pause')}</Button>
+        {item.enabled === false
+          ? <Button color="secondary" isDisabled={!!action.busy} onClick={() => void action.run(`project-${item.id}`, `${base}/lifecycle`, 'PUT',
+            { enabled: true, expectedRevision: item.revision }, 'projects.resumed')}>{t('projects.resume')}</Button>
+          // Pausing only holds new assignments on every Worker; it does not change the project revision or its checkouts.
+          : <Button color="secondary" isDisabled={!!action.busy} onClick={() => void action.run(`project-scheduling-${item.id}`,
+            `/api/v1/project-scheduling/${encodeURIComponent(item.id)}`, 'PUT', { paused: !schedulingPaused }, schedulingPaused ? 'projects.resumed' : 'projects.pausedDone')
+            .then(() => void pauses.refetch())}>{t(schedulingPaused ? 'projects.resume' : 'projects.pause')}</Button>}
         <Button color="secondary" onClick={() => setEnqueue(true)}>{t('issues.enqueue')}</Button>
         <Button color="primary" onClick={() => setEditing(true)}>{t('projects.edit')}</Button>
       </>} />

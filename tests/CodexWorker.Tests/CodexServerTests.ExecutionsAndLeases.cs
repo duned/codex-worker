@@ -397,6 +397,37 @@ public sealed partial class CodexServerTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task PausedProjectSchedulingHoldsQueuedWorkWithoutChangingTheRevision()
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "project-pause.db"));
+        await store.InitializeAsync();
+        var paused = await store.CreateProjectAsync(new CentralProjectDefinition("Paused", "team/paused", "main", "", []));
+        var other = await store.CreateProjectAsync(new CentralProjectDefinition("Other", "team/other", "main", "", []));
+        var worker = Guid.NewGuid().ToString("N");
+        WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(paused.Repository), .. AuthenticationCapabilities(other.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 2, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 2, capabilities, []));
+        var held = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(paused.Id, new WorkReference("issue", "1")));
+        var free = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(other.Id, new WorkReference("issue", "2")));
+
+        Assert.True((await store.SetProjectSchedulingPausedAsync(paused.Id, true))?.Paused);
+        Assert.Null(await store.SetProjectSchedulingPausedAsync("missing", true));
+        Assert.Equal(paused.Revision, (await store.GetProjectAsync(paused.Id))?.Revision);
+        Assert.Equal("project-scheduling-paused", (await store.GetExecutionAsync(held.Id))?.PendingReason);
+
+        var request = new WorkerAssignmentRequest(worker, true, 2, new Dictionary<string, int> { [paused.Id] = 1, [other.Id] = 1 });
+        Assert.Equal(free.Id, (await store.RequestAssignmentAsync(request)).Assignment?.ServerExecutionId);
+        Assert.Null((await store.RequestAssignmentAsync(request)).Assignment);
+
+        Assert.False((await store.SetProjectSchedulingPausedAsync(paused.Id, false))?.Paused);
+        Assert.Empty(await store.GetProjectSchedulingPausesAsync());
+        Assert.Equal(held.Id, (await store.RequestAssignmentAsync(request)).Assignment?.ServerExecutionId);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task PrioritizedQueuedRequestsAreAssignedFirst()
     {
         using var temporary = new TemporaryDirectory();

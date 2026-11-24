@@ -97,6 +97,7 @@ export interface WorkerProjectReadiness {
   projectId: string; projectName: string; isEligible: boolean; missingRequirements: string[];
   workerReportedRevision?: number; materializationState?: string; diagnosticCode?: string; observationStatus: string; detail?: string;
 }
+export interface ProjectSchedulingPause { projectId: string; paused: boolean; pausedAtUtc?: string | null }
 export interface ProjectResumeOperation { id: string; projectId: string; status: 'pending' | 'running' | 'succeeded' | 'failed'; deadlineUtc: string; diagnostic?: string }
 export interface DeliveryAuthorization { status: string; revokedAtUtc?: string }
 export interface PairingRequest { contractVersion: 1; workerId: string; operation: 'enroll' | 'associate'; server: string }

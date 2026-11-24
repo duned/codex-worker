@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useApiRead } from './api/session';
-import { executions, nodes, projects, workers } from './api/validation';
+import { executions, nodes, projects, projectSchedulingPauses, workers } from './api/validation';
 import type { ExecutionSummary, ProjectSummary, WorkerObservation } from './api/contracts';
 
 // The Server hides archived executions unless a list asks for them.
@@ -8,6 +8,8 @@ export const recentExecutionsPath = '/api/v1/executions?limit=100&offset=0';
 export const archivedExecutionsPath = '/api/v1/executions?limit=100&offset=0&archived=only';
 export const useProjects = () => useApiRead('/api/v1/projects', projects);
 export const useWorkers = () => useApiRead('/api/v1/workers', workers);
+/** Projects whose scheduling the operator paused on every Worker (not part of the project revision). */
+export const useSchedulingPauses = () => useApiRead('/api/v1/project-scheduling', projectSchedulingPauses);
 export const useNodes = () => useApiRead('/api/v1/nodes', nodes);
 export const useExecutions = (path = recentExecutionsPath) => useApiRead(path, executions);
 /** A fresh retry restores the project's ready label when that is all the Issue is missing (for example after a failed attempt). */
