@@ -84,6 +84,7 @@ export function executionStatus(execution: ExecutionSummary): Status {
     case 'Failed':
       if (execution.recoveryState === 'RebaseConflictRequeued') return { tone: 'warn', label: 'status.conflictRetried' };
       if (execution.recoveryState === 'LeaseExpiredRequeued') return { tone: 'warn', label: 'status.workerLostRetried' };
+      if (execution.recoveryState === 'PreparationRequeued') return { tone: 'warn', label: 'status.preparationRetried' };
       if (isConflict(execution)) return { tone: 'bad', label: 'status.conflict' };
       if (execution.failureClassification === 'CodexInterruption') return { tone: 'warn', label: 'status.interrupted' };
       return { tone: 'bad', label: 'status.failed' };
@@ -126,6 +127,7 @@ export function explain(execution: ExecutionSummary): { what: TranslationKey; to
   if (execution.state !== 'Failed') return undefined;
   if (execution.recoveryState === 'RebaseConflictRequeued') return { what: 'explain.conflict.what', todo: 'explain.conflictRetried.todo' };
   if (execution.recoveryState === 'LeaseExpiredRequeued') return { what: 'explain.workerLost.what', todo: 'explain.workerLostRetried.todo' };
+  if (execution.recoveryState === 'PreparationRequeued') return { what: 'explain.preparation.what', todo: 'explain.preparationRetried.todo' };
   if (execution.recoveryState === 'LeaseExpiredUncertain') return isIntegrationStage(execution)
     ? { what: 'explain.integrationUncertain.what', todo: 'explain.uncertain.todo' }
     : { what: 'explain.workerLost.what', todo: 'explain.uncertain.todo' };
@@ -146,7 +148,7 @@ export const canArchive = (execution: ExecutionSummary) => !execution.archivedAt
   ['Completed', 'Failed', 'Cancelled'].includes(execution.state) && !(execution.state === 'Failed' && execution.recoveryState === 'LeaseExpiredUncertain');
 
 export const needsAttention = (execution: ExecutionSummary) => execution.state === 'Failed' &&
-  !['RebaseConflictRequeued', 'LeaseExpiredRequeued'].includes(execution.recoveryState ?? '');
+  !['RebaseConflictRequeued', 'LeaseExpiredRequeued', 'PreparationRequeued'].includes(execution.recoveryState ?? '');
 /** Only the latest attempt of each Issue can need attention: a newer attempt supersedes older failures. */
 export function attention(executions: ExecutionSummary[]) {
   const latest = new Map<string, ExecutionSummary>();
@@ -282,7 +284,7 @@ export const toolActionCommand = (operation: string): string =>
 /** The actions that can resolve an execution in its current state, best first. A finished execution with a newer
  * attempt for the same Issue has none: the newer attempt is the one to act on. */
 export type ExecutionAction = 'cancel' | 'retryIntegration' | 'retryFresh' | 'resolveUncertain' | 'manualCompletion';
-const settledRecovery = ['RebaseConflictRequeued', 'LeaseExpiredRequeued', 'OperatorRetryQueued', 'OperatorVerifiedIntegrated'];
+const settledRecovery = ['RebaseConflictRequeued', 'LeaseExpiredRequeued', 'PreparationRequeued', 'OperatorRetryQueued', 'OperatorVerifiedIntegrated'];
 export function executionActions(execution: ExecutionSummary, superseded: boolean): ExecutionAction[] {
   if (execution.state === 'Queued') return ['cancel'];
   if (execution.state !== 'Failed' || superseded || settledRecovery.includes(execution.recoveryState ?? '')) return [];

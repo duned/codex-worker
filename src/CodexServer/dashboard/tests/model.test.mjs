@@ -192,3 +192,11 @@ test('a Worker clock more than a minute off the Server is a health warning and a
   assert.equal(model.workerHealth(worker({ clockSkewSeconds: 600, availability: 'offline' })).state, 'offline');
   assert.deepEqual(model.attentionInbox([], [worker({ clockSkewSeconds: 600 }), worker({ workerId: 'ok' })]).clock.map(item => item.workerId), ['w']);
 });
+
+test('a preparation failure the Server retried by itself needs no attention', () => {
+  const failed = execution({ state: 'Failed', failureClassification: 'PreparationFailed', recoveryState: 'PreparationRequeued' });
+  assert.equal(model.executionStatus(failed).label, 'status.preparationRetried');
+  assert.equal(model.explain(failed).todo, 'explain.preparationRetried.todo');
+  assert.equal(model.needsAttention(failed), false);
+  assert.deepEqual(model.executionActions(failed, false), []);
+});

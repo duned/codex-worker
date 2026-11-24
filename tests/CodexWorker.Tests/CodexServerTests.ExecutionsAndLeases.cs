@@ -396,6 +396,52 @@ public sealed partial class CodexServerTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData("PreparationFailed", true)]
+    [InlineData("Blocked", false)]
+    public async Task PreparationRefusalQueuesExactlyOneAutomaticAttempt(string classification, bool requeued)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-03-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "preparation.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Prepare", "team/prepare", "main", "", []));
+        var worker = Guid.NewGuid().ToString("N");
+        WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "9")));
+        var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+
+        async Task<ExecutionRequest> RefuseAsync(string executionId)
+        {
+            var assignment = (await store.RequestAssignmentAsync(request)).Assignment!;
+            Assert.Equal(executionId, assignment.ServerExecutionId);
+            return (await store.ReportExecutionAsync(executionId, new WorkerExecutionReport(worker, assignment.AssignmentId,
+                Guid.NewGuid().ToString(), "Failed", CompletedAtUtc: clock.GetUtcNow(), FailureClassification: classification,
+                Generation: assignment.Lease!.Generation)))!;
+        }
+
+        var failed = await RefuseAsync(first.Id);
+        var queued = (await store.GetExecutionsAsync()).Where(item => item.State == "Queued").ToArray();
+        if (!requeued)
+        {
+            Assert.Null(failed.RecoveryState);
+            Assert.Empty(queued);
+            return;
+        }
+        Assert.Equal("PreparationRequeued", failed.RecoveryState);
+        var retry = Assert.Single(queued);
+        Assert.Equal((first.Id, 2, first.WorkReference), (retry.RetryOfExecutionId, retry.AttemptNumber, retry.WorkReference));
+
+        // A second refusal in the same chain stays failed for the operator.
+        var second = await RefuseAsync(retry.Id);
+        Assert.Null(second.RecoveryState);
+        Assert.DoesNotContain(await store.GetExecutionsAsync(), item => item.State == "Queued");
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LeaseRenewalIsGenerationAndOwnerBoundAndExpiryCreatesSafeRetry()
     {

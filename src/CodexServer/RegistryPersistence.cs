@@ -2208,6 +2208,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (updated == 1 && !reconciliation && report is { State: "Failed", FailureClassification: "IntegrationConflict", IntegrationResult: CodexProvisioning.ManagedIntegrationResults.RebaseConflict } &&
             previous is { RetryOfExecutionId: null })
             await QueueFreshAttemptAfterRebaseConflictAsync(command, executionRequestId, cancellationToken);
+        if (updated == 1 && !reconciliation && report is { State: "Failed", FailureClassification: "PreparationFailed" })
+            await QueueRetryAfterPreparationFailureAsync(command, executionRequestId, cancellationToken);
         await using var read = connection.CreateCommand();
         read.Transaction = (SqliteTransaction)transaction;
         read.CommandText = ExecutionSelect + " WHERE id=$id;";
@@ -2243,6 +2245,36 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state, retry_of_execution_id, attempt_number, recovery_reason, workspace_recovery)
             SELECT $retry, project_id, work_type, work_id, work_reference_json, $created, 'Queued', id, attempt_number + 1,
                 'Fresh attempt after a rebase conflict with newer work on the base branch.', 'FreshWorkspaceRequired'
+            FROM execution_requests WHERE id=$id;
+            """;
+        command.Parameters.AddWithValue("$retry", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("$created", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$id", sourceId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>A refusal before any claim (checkout, labels, initialization) changed nothing in GitHub and is often a
+    /// passing outage, so it gets exactly one automatic attempt per chain. A second refusal stays failed for the operator.</summary>
+    private async Task QueueRetryAfterPreparationFailureAsync(SqliteCommand command, string sourceId, CancellationToken cancellationToken)
+    {
+        command.Parameters.Clear();
+        command.CommandText = """
+            UPDATE execution_requests SET recovery_state='PreparationRequeued',
+                recovery_reason='The Worker could not prepare the project before starting; one new attempt was queued automatically.'
+            WHERE id=$id AND state='Failed' AND recovery_state IS NULL
+              AND NOT EXISTS (SELECT 1 FROM execution_requests source JOIN execution_requests prior ON prior.id=source.retry_of_execution_id
+                  WHERE source.id=$id AND prior.recovery_state='PreparationRequeued')
+              AND NOT EXISTS (SELECT 1 FROM execution_requests other JOIN execution_requests source ON source.id=$id
+                  WHERE other.id!=source.id AND other.project_id=source.project_id AND other.work_type=source.work_type
+                  AND other.work_id=source.work_id AND other.state IN ('Queued','Assigned','Running'));
+            """;
+        command.Parameters.AddWithValue("$id", sourceId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return;
+        command.Parameters.Clear();
+        command.CommandText = """
+            INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state, retry_of_execution_id, attempt_number, recovery_reason)
+            SELECT $retry, project_id, work_type, work_id, work_reference_json, $created, 'Queued', id, attempt_number + 1,
+                'Automatic attempt after the Worker could not prepare the project.'
             FROM execution_requests WHERE id=$id;
             """;
         command.Parameters.AddWithValue("$retry", Guid.NewGuid().ToString("N"));
