@@ -1,4 +1,7 @@
 export const executions = {
+  "executions.byEngine": "By engine", "executions.byEngineScope": "Finished attempts in this list",
+  "executions.successRate": "Integrated", "executions.medianTime": "Median time", "executions.totalTime": "Total time",
+  "executions.finishedCount": "{n} ({ok} integrated, {failed} failed)",
   "executions.title": "Executions", "executions.description": "Every attempt to implement an Issue, newest first (last 100).",
   "executions.search": "Search by Issue, project or Worker", "executions.issue": "Issue", "executions.project": "Project", "executions.worker": "Worker",
   "executions.started": "Started", "executions.detail": "Execution", "executions.attempt": "Attempt {n}", "executions.attemptOn": "Attempt {n} on {worker}",

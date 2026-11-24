@@ -200,3 +200,12 @@ test('a preparation failure the Server retried by itself needs no attention', ()
   assert.equal(model.needsAttention(failed), false);
   assert.deepEqual(model.executionActions(failed, false), []);
 });
+
+test('engine statistics compare finished attempts by engine', () => {
+  const run = (engine, state, minutes) => execution({ state, durationMilliseconds: minutes * 60000, workReference: { type: 'github-issue', id: '1', selection: engine ? { engine } : undefined } });
+  const stats = model.engineStats([run(undefined, 'Completed', 10), run('codex', 'Failed', 30), run('codex', 'Completed', 20),
+    run('ccc', 'Completed', 4), run('ccc', 'Running', 99)]);
+  assert.deepEqual(stats.map(item => [item.engine, item.finished, item.integrated, item.failed, item.medianMs / 60000, item.totalMs / 60000]),
+    [['ccc', 1, 1, 0, 4, 4], ['codex', 3, 2, 1, 20, 60]]);
+  assert.equal(model.totalDuration([run('codex', 'Failed', 3), run('codex', 'Completed', 7)]), 10 * 60000);
+});

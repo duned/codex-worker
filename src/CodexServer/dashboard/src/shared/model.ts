@@ -207,6 +207,27 @@ export function duration(ms: number | undefined) {
   const total = Math.round(ms / 1000), h = Math.floor(total / 3600), m = Math.floor(total % 3600 / 60), s = total % 60;
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
 }
+/** Finished attempts per engine, to compare engines on the same recent work: outcomes, median and total time. */
+export interface EngineStats { engine: 'codex' | 'ccc'; finished: number; integrated: number; failed: number; medianMs?: number; totalMs: number }
+export function engineStats(executions: ExecutionSummary[]): EngineStats[] {
+  const groups = new Map<'codex' | 'ccc', ExecutionSummary[]>();
+  for (const execution of executions.filter(item => item.state === 'Completed' || item.state === 'Failed')) {
+    const engine = execution.workReference?.selection?.engine ?? 'codex';
+    groups.set(engine, [...(groups.get(engine) ?? []), execution]);
+  }
+  return [...groups.entries()].map(([engine, items]) => {
+    const times = items.map(item => item.durationMilliseconds).filter((ms): ms is number => ms !== undefined && Number.isFinite(ms)).sort((a, b) => a - b);
+    const middle = Math.floor(times.length / 2);
+    return {
+      engine, finished: items.length, integrated: items.filter(item => item.state === 'Completed').length, failed: items.filter(item => item.state === 'Failed').length,
+      medianMs: times.length ? times.length % 2 ? times[middle] : (times[middle - 1] + times[middle]) / 2 : undefined,
+      totalMs: times.reduce((sum, ms) => sum + ms, 0)
+    };
+  }).sort((a, b) => a.engine.localeCompare(b.engine));
+}
+/** Time spent on one Issue across all its attempts. */
+export const totalDuration = (attempts: ExecutionSummary[]) => attempts.reduce((sum, item) => sum + (item.durationMilliseconds ?? 0), 0);
+
 export function dateTime(value: string | undefined, language: string) {
   if (!value) return '—';
   return new Date(value).toLocaleString(language === 'es' ? 'es-ES' : 'en-GB', { dateStyle: 'short', timeStyle: 'short' });

@@ -1,5 +1,8 @@
 import type { executions as source } from '../en/executions';
 export const executions = {
+  "executions.byEngine": "Por motor", "executions.byEngineScope": "Intentos terminados de esta lista",
+  "executions.successRate": "Integradas", "executions.medianTime": "Tiempo mediano", "executions.totalTime": "Tiempo total",
+  "executions.finishedCount": "{n} ({ok} integradas, {failed} fallidas)",
   "executions.title": "Ejecuciones", "executions.description": "Cada intento de implementar una issue, de la más reciente a la más antigua (últimas 100).",
   "executions.search": "Buscar por issue, proyecto o Worker", "executions.issue": "Issue", "executions.project": "Proyecto", "executions.worker": "Worker",
   "executions.started": "Inicio", "executions.detail": "Ejecución", "executions.attempt": "Intento {n}", "executions.attemptOn": "Intento {n} en {worker}",

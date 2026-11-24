@@ -1,4 +1,5 @@
 export const issues = {
+  "issues.timeSpent": "Time spent", "issues.timeSpentValue": "{time} in {n} attempts",
   "issues.title": "Issues", "issues.scope": "Which Issues", "issues.open": "Open", "issues.all": "All", "issues.search": "Search by number or title",
   "issues.filterWaiting": "Waiting", "issues.filterRunning": "Running", "issues.filterDone": "Done", "issues.filterBlocked": "Blocked or retried",
   "issues.waitsFor": "Waits for {list}", "issues.none": "No Issues found in GitHub.", "issues.enqueue": "Add Issue to the queue",
