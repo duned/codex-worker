@@ -67,6 +67,27 @@ public sealed class WorkerHost
         LogAssignment(assignment, "terminal outcome Blocked · Server report completed", configuration);
     }
 
+    /// <summary>Refuses an assignment this Worker cannot run and keeps the Worker running. When the refusal
+    /// cannot be reported, the assignment's Server lease expires and the Server requeues it.</summary>
+    private async Task RefuseAssignmentAsync(WorkerAssignmentContract assignment, WorkerConfiguration configuration,
+        ExecutionHistoryStore history, WorkerRuntimeReadModel runtime, string reason, CancellationToken token)
+    {
+        runtime.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId}: {reason}", configuration.Project.Name);
+        try { await RejectIncompatibleAssignmentAsync(assignment, configuration, history, reason, token); }
+        catch (Exception error) when (error is HttpRequestException or WorkerInfrastructureException or InvalidDataException or IOException ||
+            error is OperationCanceledException && !token.IsCancellationRequested)
+        {
+            LogAssignment(assignment, "assignment refusal could not be reported · its Server lease expires and the Server requeues it", configuration);
+        }
+    }
+
+    /// <summary>A placeholder configuration that identifies a project this Worker does not have, for refusing its assignment.</summary>
+    private static WorkerConfiguration UnconfiguredProject(ServerProjectContract project) => new()
+    {
+        Project = new() { Name = project.Name, Repository = project.Repository },
+        Git = new() { BaseBranch = project.DefaultBranch }
+    };
+
     public async Task RunAsync(CancellationToken ct)
     {
         var configuredProjects = _projects;
@@ -723,7 +744,12 @@ public sealed class WorkerHost
                         }
                         if (!assignmentResponse.HasWork && assignmentResponse.Assignment is null) { break; }
                         if (!assignmentResponse.HasWork || assignmentResponse.Assignment is null)
-                            throw new WorkerInfrastructureException("Codex Server returned an inconsistent assignment response; remote assignment state may be uncertain.");
+                        {
+                            // Nothing identifiable was assigned: keep running and ask again on the next cycle.
+                            runtimeReadModel.Events.Publish("assignment.rejected", "Codex Server returned an inconsistent assignment response.");
+                            _output.Warning("Codex Server returned an inconsistent assignment response; the Worker keeps running and asks again.");
+                            break;
+                        }
                         var assignment = assignmentResponse.Assignment!;
                         LogAssignment(assignment, "assignment received", includeCorrelation: true);
                         if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
@@ -731,8 +757,10 @@ public sealed class WorkerHost
                             lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
                             lease.ExecutionId != assignment.ServerExecutionId || lease.WorkerId != assignment.WorkerId)
                         {
-                            LogAssignment(assignment, "assignment rejected · infrastructure failure: invalid active ownership lease");
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} has no valid active ownership lease.");
+                            // Without a valid lease there is no authority to act or report; the Server lease expiry requeues it.
+                            LogAssignment(assignment, "assignment ignored · no valid active ownership lease · the Server requeues it when the lease expires");
+                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} has no valid active ownership lease.");
+                            break;
                         }
                         var assignedProject = runtimes.FirstOrDefault(candidate => MatchesManagedProject(candidate.Configuration, assignment.Project, managedConfiguration!.AppliedProjects));
                         if (assignedProject is null)
@@ -746,9 +774,10 @@ public sealed class WorkerHost
                                 nextManagedConfigurationSync = DateTimeOffset.MinValue;
                                 break;
                             }
-                            LogAssignment(assignment, "assignment rejected · infrastructure failure: project is outside the configured Worker registry");
-                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} references a project outside the configured Worker project registry.");
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} references a project that is not safely configured on this Worker; assignment remains owned by this Worker for inspection.");
+                            await RefuseAssignmentAsync(assignment, UnconfiguredProject(assignment.Project), history, runtimeReadModel,
+                                "The project is not configured on this Worker; the managed configuration is synchronized again.", executionToken);
+                            nextManagedConfigurationSync = DateTimeOffset.MinValue;
+                            break;
                         }
                         if (IssueExecutionMetadata.ValidationError(assignment.Work.Selection) is { } selectionError)
                         {
@@ -767,9 +796,9 @@ public sealed class WorkerHost
                         }
                         if (!runtimeReadModel.Registry.TryReserve(assignedProject.Configuration.Project.Name, assignedProject.Configuration))
                         {
-                            LogAssignment(assignment, "assignment rejected · infrastructure failure: project is draining", assignedProject.Configuration);
-                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} arrived after project '{assignment.Project.Name}' began draining.", assignedProject.Configuration.Project.Name);
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} arrived while project '{assignment.Project.Name}' was draining; assignment remains owned by this Worker for inspection.");
+                            await RefuseAssignmentAsync(assignment, assignedProject.Configuration, history, runtimeReadModel,
+                                $"Project '{assignment.Project.Name}' is draining or paused on this Worker.", executionToken);
+                            continue;
                         }
                         activeProject = assignedProject.Configuration.Project.Name;
                         Task<IssueProcessingResult?>? assignedExecution;
@@ -883,8 +912,11 @@ public sealed class WorkerHost
                                 leaseStop.Dispose();
                                 runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
                             }
-                            LogAssignment(assignment, "infrastructure failure · assignment did not create an execution", assignedProject.Configuration);
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} did not create an execution.");
+                            // A replayed or already-recorded assignment: leave its history untouched and let the Server lease
+                            // expiry decide, instead of stopping the Worker.
+                            LogAssignment(assignment, "assignment did not create an execution · left to Server lease expiry", assignedProject.Configuration);
+                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} did not create an execution.", assignedProject.Configuration.Project.Name);
+                            break;
                         }
                         active.Add(assignedExecution, assignedProject);
                         ReportCapacity();
