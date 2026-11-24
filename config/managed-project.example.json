@@ -4,6 +4,7 @@
   "defaultBranch": "main",
   "maxParallelTasks": null,
   "validationCommands": null,
+  "integrationMode": null,
   "description": "Server-owned managed project definition",
   "requirements": [],
   "issueReadyLabel": "ready",

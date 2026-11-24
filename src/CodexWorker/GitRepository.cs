@@ -4,7 +4,7 @@ namespace CodexWorker;
 
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
     string? IntegrationBranch = null, string? CompletedBranch = null, Guid? ResourceExecutionId = null, int? ResourceAttemptNumber = null,
-    CodexProvisioning.ExecutionChanges? Changes = null);
+    CodexProvisioning.ExecutionChanges? Changes = null, string? PullRequestBase = null, string? PullRequestUrl = null);
 public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary, string? IntegrationBase = null);
 public sealed record IntegrationRepairContext(ValidationFailure Failure, string BaseBranch, string OriginalBaseCommit,
     string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
@@ -763,6 +763,24 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                     var remoteBase = (await GitAsync(["rev-parse", $"refs/remotes/origin/{settings.BaseBranch}"], ct)).StandardOutput.Trim();
                     var containsCurrentBase = await GitAtAsync(ExecutionDirectory,
                         ["merge-base", "--is-ancestor", localBase, "HEAD"], ct, [0, 1]);
+                    if (localBase == remoteBase && containsCurrentBase.ExitCode == 0 && settings.PullRequest)
+                    {
+                        // Review mode: the rebased, validated branch is offered for review and the base is
+                        // left untouched. The head is the completed-branch name, never the base, and is
+                        // pushed without force; nothing is prepared for base-push reconciliation.
+                        commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+                        changesBase = localBase;
+                        try
+                        {
+                            await PushVerifiedAsync(_completedBranch!, commit, null, ct, ensureAuthority);
+                        }
+                        catch (GitPushRejectedException rejection)
+                        {
+                            throw new GitIntegrationConflictException(
+                                $"GitHub refused the review branch '{_completedBranch}' for Issue #{issue.Number}: {rejection.Message}", rejection);
+                        }
+                        break;
+                    }
                     if (localBase == remoteBase && containsCurrentBase.ExitCode == 0)
                     {
                         commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
@@ -799,7 +817,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                         throw new GitIntegrationConflictException($"The integration base kept advancing for Issue #{issue.Number}; bounded reconciliation stopped and the implementation was preserved.");
                 }
                 if (_integrationObserver is not null && prepared is not null) await _integrationObserver(prepared, true, ct);
-                if (settings.PushCompletedBranch)
+                if (settings.PushCompletedBranch && !settings.PullRequest)
                 {
                     try
                     {
@@ -817,7 +835,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 await RemoveExecutionWorktreeAsync(ct);
                 if (await GetCurrentBranchAsync(ct) != settings.BaseBranch)
                     throw new WorkerInfrastructureException("Refusing to delete feature branch while it is checked out.");
-                if (settings.PushCompletedBranch)
+                if (settings.PushCompletedBranch || settings.PullRequest)
                 {
                     try
                     {
@@ -845,6 +863,13 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 _executionId = null;
             }
             var summary = $"Committed as `{commit[..Math.Min(commit.Length, 12)]}`.";
+            if (settings.PullRequest)
+            {
+                // The Issue reporter opens the pull request; nothing was merged into the base.
+                return new GitIntegrationResult(true, summary + $" Pushed as `{_completedBranch}` for review into `{settings.BaseBranch}`.",
+                    commit, null, _completedBranch, _resourceExecutionId, _resourceAttemptNumber,
+                    await MeasureChangesAsync(changesBase, commit, ct), PullRequestBase: settings.BaseBranch);
+            }
             if (settings.AutoMerge) summary += $" Merged into `{settings.BaseBranch}`.";
             if (settings.AutoMerge && settings.PushCompletedBranch) summary += $" Preserved on origin as `{_completedBranch}`.";
             else if (!settings.AutoMerge) summary += $" Local feature branch: `{_featureBranch}`.";

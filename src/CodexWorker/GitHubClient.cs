@@ -485,6 +485,24 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
     public Task CloseAsync(int issueNumber, CancellationToken ct) =>
         RunGhAsync(["issue", "close", issueNumber.ToString(), "--repo", repository], ct);
 
+    public async Task<string> CreatePullRequestAsync(int issueNumber, string head, string baseBranch, string title, string body, CancellationToken ct)
+    {
+        // An open pull request for this exact head and base is the same review request: never open a second one.
+        var existing = (await RunGhAsync(["pr", "list", "--repo", repository, "--head", head, "--base", baseBranch,
+            "--state", "open", "--json", "url", "--jq", ".[0].url // \"\""], ct)).StandardOutput.Trim();
+        if (existing.Length > 0)
+            return CodexProvisioning.ProjectIntegrationMode.ValidPullRequestUrl(existing) ? existing : throw UnexpectedPullRequest(issueNumber);
+        // Created once: a failed or ambiguous create is uncertain remote state, never replayed.
+        var created = await RunGhOnceAsync(["pr", "create", "--repo", repository, "--base", baseBranch, "--head", head,
+            "--title", title, "--body", origin.Format(body)], ct);
+        var url = created.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault();
+        return CodexProvisioning.ProjectIntegrationMode.ValidPullRequestUrl(url) ? url! : throw UnexpectedPullRequest(issueNumber);
+    }
+
+    private static GitHubOperationException UnexpectedPullRequest(int issueNumber) => new("pull request create", issueNumber, true,
+        GitHubFailureKind.Unknown, GitHubRemoteState.Uncertain,
+        "GitHub CLI did not return a recognizable pull request URL; the pull request state requires manual reconciliation.");
+
     public async Task<IReadOnlyList<RequiredGitHubLabel>> FindMissingLabelsAsync(IReadOnlyList<RequiredGitHubLabel> required, CancellationToken ct)
     {
         var result = await RunLabelGhAsync(["label", "list", "--repo", repository, "--limit", "1000", "--json", "name"],
@@ -600,8 +618,8 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
     }
 
 
-    private static bool IsMutation(IReadOnlyList<string> args) => args.Count >= 2 && args[0] == "issue" &&
-        args[1] is "edit" or "comment" or "close";
+    private static bool IsMutation(IReadOnlyList<string> args) => args.Count >= 2 && (args[0] == "issue" &&
+        args[1] is "edit" or "comment" or "close" || args[0] == "pr" && args[1] == "create");
 
     private static int? IssueNumber(IReadOnlyList<string> args)
     {
@@ -625,8 +643,8 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
         return null;
     }
 
-    private static string DescribeOperation(IReadOnlyList<string> args) => args.Count >= 2 && args[0] == "issue"
-        ? $"issue {args[1]}"
+    private static string DescribeOperation(IReadOnlyList<string> args) => args.Count >= 2 && args[0] is "issue" or "pr"
+        ? $"{(args[0] == "pr" ? "pull request" : "issue")} {args[1]}"
         : args.Count > 0 && args[0] == "api" ? "Issue API read" : "Issue query";
 
     internal static GitHubFailureKind ClassifyFailure(string detail)

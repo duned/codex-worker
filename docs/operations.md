@@ -23,6 +23,8 @@ Server defaults to loopback `http://127.0.0.1:5090`, 90-second Worker staleness,
 
 Worker API defaults to loopback `http://127.0.0.1:5080`; it has no authentication and must remain behind the local boundary (use an SSH tunnel for operator access). Worker polling defaults to 60 seconds, heartbeat to 20 seconds and global capacity to one (supported range 1–8). Managed project concurrency is central; null means Automatic. Worker slots can be centrally set, applied when idle and confirmed by heartbeat; assignment limit is a separate Server admission control. [Upgrade compatibility](linux-installation.md#managed-project-concurrency-upgrade) covers snapshot contracts and obsolete local cap settings.
 
+Each project integrates validated work directly into its base branch by default, or opens a pull request for review instead; see [pull request integration](pull-request-integration.md).
+
 Worker-local settings retain checkout/instruction paths, labels, dotenv files, Codex settings, validation commands, recovery policy and provisioning authorization. YAML rejects duplicate/unknown keys and invalid values. Run `sudo codex-worker config validate` and `sudo codex-server config validate` before restarting after configuration changes. Use each command's `--help` for supported settings and options.
 
 ## Install and start

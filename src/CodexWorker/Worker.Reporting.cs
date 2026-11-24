@@ -158,9 +158,15 @@ public sealed partial class Worker
                     var completed = await history.ReadExecutionAsync(successId, ct);
                     return completed is null ? result.Report : ExecutionCompletion.Read(completed).Report;
                 }
+                // Review mode: the validated branch is offered as a pull request that closes the Issue
+                // when GitHub merges it, so the Worker leaves the Issue open.
+                var review = result.Report.Integration is { HasChanges: true, PullRequestBase: { } reviewBase, CompletedBranch: { } head } awaitingReview
+                    ? awaitingReview with { PullRequestUrl = await github.CreatePullRequestAsync(issue.Number, head, reviewBase,
+                        $"Implement #{issue.Number}: {issue.Title}", PullRequestBody(issue, result.Report), ct) } : null;
+                if (review is not null) result = result with { Report = result.Report with { Integration = review } };
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
-                await github.CloseAsync(issue.Number, ct);
+                if (review is null) await github.CloseAsync(issue.Number, ct);
                 result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
                 await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, TelegramCompletion(result.Report), ct);
@@ -238,5 +244,14 @@ public sealed partial class Worker
                 break;
         }
         return result.Report;
+    }
+
+    private static string PullRequestBody(GitHubIssue issue, IssueExecutionReport report)
+    {
+        var body = $"Closes #{issue.Number}.\n\nValidated by Codex Worker on the current `{report.Integration?.PullRequestBase}`" +
+            (report.ExecutionId is { } id ? $" · execution `{id}`" : "") + ".";
+        if (!string.IsNullOrWhiteSpace(report.ImplementationSummary))
+            body += "\n\n### Work performed\n\n" + Limit(FailureDiagnosticRedactor.Redact(report.ImplementationSummary, report.SecretValues ?? []), 4000);
+        return body;
     }
 }

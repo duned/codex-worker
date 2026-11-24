@@ -21,6 +21,8 @@ export interface ProjectSummary {
   defaultBranch?: string; description?: string; issueReadyLabel?: string | null; issueBlockedLabel?: string | null;
   automaticDiscovery?: { enabled: boolean; intervalSeconds: number; pageSize: number; deadlineSeconds: number } | null;
   maxParallelTasks?: number | null; validationCommands?: string[] | null; createdAtUtc?: string; updatedAtUtc?: string;
+  /** null or 'direct': merge into the base branch; 'pull-request': open a pull request for review. */
+  integrationMode?: 'direct' | 'pull-request' | null;
 }
 export interface GitHubIssue {
   number: number; title: string; body: string; state: string; createdAtUtc: string; updatedAtUtc: string; url: string;
@@ -43,6 +45,8 @@ export interface ExecutionSummary {
 export interface ExecutionMetrics {
   usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; costUsd?: number | null; runs: number } | null;
   changes?: { filesChanged: number; insertions: number; deletions: number; files: string[]; baseCommit?: string | null; commit?: string | null } | null;
+  /** The pull request a project in review mode opened instead of merging. */
+  pullRequestUrl?: string | null;
 }
 export interface ExecutionArchiveResult { changed: string[]; refused: { id: string; reason: string }[] }
 export interface ExecutionMaintenanceRequest {

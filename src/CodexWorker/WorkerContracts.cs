@@ -32,6 +32,9 @@ public interface IGitHubClient
     Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct) => Task.CompletedTask;
     Task CommentAsync(int issueNumber, string comment, CancellationToken ct);
     Task CloseAsync(int issueNumber, CancellationToken ct);
+    /// <summary>Opens (or finds the open) pull request from <paramref name="head"/> into <paramref name="baseBranch"/> and returns its URL.</summary>
+    Task<string> CreatePullRequestAsync(int issueNumber, string head, string baseBranch, string title, string body, CancellationToken ct) =>
+        throw new WorkerInfrastructureException("This GitHub client cannot open pull requests.");
     Task<GitHubIssueState> ReadIssueStateAsync(int issueNumber, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This GitHub client cannot verify completion state.");
     Task EnsureSuccessCommentAsync(int issueNumber, Guid executionId, string comment, CancellationToken ct, bool allowCreate = true) =>

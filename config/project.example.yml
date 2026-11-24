@@ -13,6 +13,10 @@ git:
   featurePrefix: feature/
   completedPrefix: done/feature/
   autoMerge: true
+  # direct (default): fast-forward the base branch and push it.
+  # pull-request: push the rebased, validated branch and open a pull request into the
+  # base for review; GitHub merges it and closes the Issue. Requires autoMerge: true.
+  integration: direct
   pushCompletedBranch: true
   deleteLocalFeatureBranch: true
 

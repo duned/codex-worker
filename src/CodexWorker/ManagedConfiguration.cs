@@ -257,7 +257,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         System.Text.RegularExpressions.Regex.IsMatch(project.Name, "^[\\p{L}\\p{N}][\\p{L}\\p{N} ._-]*$") &&
         !string.IsNullOrWhiteSpace(project.Repository) && System.Text.RegularExpressions.Regex.IsMatch(project.Repository, "^[^/\\s]+/[^/\\s]+$") &&
         !string.IsNullOrWhiteSpace(project.DefaultBranch) && project.DefaultBranch.Length <= 200 && !project.DefaultBranch.Any(char.IsControl) &&
-        project.MaxParallelTasks is not (< 1 or > 8) &&
+        project.MaxParallelTasks is not (< 1 or > 8) && CodexProvisioning.ProjectIntegrationMode.Valid(project.IntegrationMode) &&
         (project.ValidationCommands is null || (project.ValidationCommands.Count <= 64 &&
             project.ValidationCommands.All(command => !string.IsNullOrWhiteSpace(command) && command.Length <= 4000 && !command.Contains('\0')))) &&
         project.Description is not null && project.Description.Length <= 4000 &&
@@ -296,6 +296,11 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                 Append(materialBuilder, commands.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 foreach (var command in commands) Append(materialBuilder, command);
             }
+            if (project.IntegrationMode is { } integration)
+            {
+                Append(materialBuilder, "integration");
+                Append(materialBuilder, integration);
+            }
             Append(materialBuilder, "end-project");
         }
         if (workerExecutionSlots is { } slots) Append(materialBuilder, slots.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -318,8 +323,11 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             Git = new GitSettings
             {
                 BaseBranch = server.DefaultBranch, FeaturePrefix = defaults.Git.FeaturePrefix, CompletedPrefix = defaults.Git.CompletedPrefix,
-                AutoMerge = defaults.Git.AutoMerge, PushCompletedBranch = defaults.Git.PushCompletedBranch,
-                DeleteLocalFeatureBranch = defaults.Git.DeleteLocalFeatureBranch
+                // A pull request needs the rebase-and-validate path that auto-merge drives.
+                AutoMerge = defaults.Git.AutoMerge || server.IntegrationMode == CodexProvisioning.ProjectIntegrationMode.PullRequest,
+                PushCompletedBranch = defaults.Git.PushCompletedBranch,
+                DeleteLocalFeatureBranch = defaults.Git.DeleteLocalFeatureBranch,
+                Integration = server.IntegrationMode
             },
             GitHub = new GitHubSettings
             {

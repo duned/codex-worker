@@ -130,6 +130,12 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
                 if (commit.Success) result.Add($"- Commit: `{commit.Groups[1].Value}`");
                 if (branch.Success) result.Add($"- Merged into: `{branch.Groups[1].Value}`");
                 if (preserved.Success) result.Add($"- Preserved as: `{preserved.Groups[1].Value}`");
+                if (integration.PullRequestBase is { } reviewBase)
+                {
+                    result.Add($"- Awaiting review into: `{reviewBase}` from `{integration.CompletedBranch}`");
+                    if (integration.PullRequestUrl is { } url) result.Add($"- Pull request: {url}");
+                    result.Add("- The Issue closes when the pull request is merged.");
+                }
             }
             else if (integration is not null) result.Add("- Completed without code changes");
             sections.Add(string.Join("\n", result));

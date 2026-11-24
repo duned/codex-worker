@@ -1328,6 +1328,11 @@ public static partial class ServerApplication
                 Append(material, commands.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 foreach (var command in commands) Append(material, command);
             }
+            if (project.IntegrationMode is { } integration)
+            {
+                Append(material, "integration");
+                Append(material, integration);
+            }
             Append(material, "end-project");
         }
         if (workerExecutionSlots is { } slots) Append(material, slots.ToString(System.Globalization.CultureInfo.InvariantCulture));

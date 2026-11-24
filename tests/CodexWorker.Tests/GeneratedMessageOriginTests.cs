@@ -86,6 +86,39 @@ public sealed class GeneratedMessageOriginTests
         Assert.Equal(new[] { "issue", "close", "7", "--repo", "owner/repo" }, calls[2]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task PullRequestIsOpenedOnceAndAnOpenOneForTheSameHeadIsReused()
+    {
+        var calls = new List<string[]>();
+        var existing = "";
+        var client = new GitHubClient("owner/repo", (args, _) =>
+        {
+            calls.Add(args.ToArray());
+            return Task.FromResult(args.ElementAt(1) == "list" ? new ProcessResult(0, existing + "\n", "")
+                : new ProcessResult(0, "https://github.com/owner/repo/pull/12\n", ""));
+        }, new(CodexComponent.Worker, "codex2-vm"));
+
+        Assert.Equal("https://github.com/owner/repo/pull/12",
+            await client.CreatePullRequestAsync(7, "completed/7", "main", "Implement #7: Task", "Closes #7.", CancellationToken.None));
+        Assert.Equal(["pr", "list", "--repo", "owner/repo", "--head", "completed/7", "--base", "main", "--state", "open", "--json", "url", "--jq", ".[0].url // \"\""], calls[0]);
+        Assert.Equal(["pr", "create", "--repo", "owner/repo", "--base", "main", "--head", "completed/7", "--title", "Implement #7: Task"], calls[1][..10]);
+        Assert.Contains("Closes #7.", calls[1][^1]);
+
+        calls.Clear();
+        existing = "https://github.com/owner/repo/pull/9";
+        Assert.Equal(existing, await client.CreatePullRequestAsync(7, "completed/7", "main", "t", "b", CancellationToken.None));
+        Assert.Single(calls);
+
+        existing = "";
+        var unexpected = new GitHubClient("owner/repo", (args, _) => Task.FromResult(new ProcessResult(0, args.ElementAt(1) == "list" ? "" : "created", "")),
+            new(CodexComponent.Worker, "codex2-vm"));
+        var failure = await Assert.ThrowsAsync<GitHubOperationException>(() =>
+            unexpected.CreatePullRequestAsync(7, "completed/7", "main", "t", "b", CancellationToken.None));
+        Assert.True(failure.RemoteStateUncertain);
+    }
+
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     [Theory]

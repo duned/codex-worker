@@ -418,4 +418,30 @@ public sealed partial class WorkerV011Tests
         Assert.Equal(System.Text.Json.JsonSerializer.Serialize(entry),
             System.Text.Json.JsonSerializer.Serialize(await history.ReadExecutionAsync(entry.ExecutionId)));
     }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task PullRequestIntegrationOpensAReviewAndLeavesTheIssueOpen()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Git.Result = new GitIntegrationResult(true, "Committed as `0123456789ab`. Pushed as `completed/17` for review into `main`.",
+            "0123456789abcdef0123456789abcdef01234567", null, "completed/17", PullRequestBase: "main");
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+
+        var pullRequest = Assert.Single(h.GitHub.PullRequests);
+        Assert.Equal(("completed/17", "main"), (pullRequest.Head, pullRequest.Base));
+        Assert.StartsWith("Closes #17.", pullRequest.Body);
+        // GitHub closes the Issue when the pull request is merged; the Worker does not.
+        Assert.Equal(0, h.GitHub.CloseCalls);
+        Assert.Contains("working->done", h.GitHub.Labels);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("https://github.com/owner/repo/pull/41", StringComparison.Ordinal) &&
+            comment.Contains("Awaiting review into: `main`", StringComparison.Ordinal));
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Completed", entry.State);
+        Assert.Equal("https://github.com/owner/repo/pull/41", entry.Metrics?.PullRequestUrl);
+    }
 }

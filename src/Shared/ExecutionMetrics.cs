@@ -33,8 +33,10 @@ public sealed record ExecutionChanges(int FilesChanged, int Insertions, int Dele
     private static bool CommitId(string? value) => value is null || value.Length is >= 7 and <= 64 && value.All(Uri.IsHexDigit);
 }
 
-/// <summary>Optional facts a Worker adds to its final execution report. Invalid metrics are dropped, never the report.</summary>
-public sealed record ExecutionMetrics(EngineUsage? Usage = null, ExecutionChanges? Changes = null)
+/// <summary>Optional facts a Worker adds to its final execution report. Invalid metrics are dropped, never the report.
+/// <see cref="PullRequestUrl"/> is the pull request a project in pull-request integration mode opened for review.</summary>
+public sealed record ExecutionMetrics(EngineUsage? Usage = null, ExecutionChanges? Changes = null, string? PullRequestUrl = null)
 {
-    public static bool Valid(ExecutionMetrics? metrics) => metrics is null || EngineUsage.Valid(metrics.Usage) && ExecutionChanges.Valid(metrics.Changes);
+    public static bool Valid(ExecutionMetrics? metrics) => metrics is null || EngineUsage.Valid(metrics.Usage) &&
+        ExecutionChanges.Valid(metrics.Changes) && (metrics.PullRequestUrl is null || ProjectIntegrationMode.ValidPullRequestUrl(metrics.PullRequestUrl));
 }

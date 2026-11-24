@@ -69,6 +69,7 @@ export function ProjectPage() {
       </Card>
       <div className="flex flex-col gap-6"><Card title={t('projects.configuration')}><KeyValues items={[
         [t('projects.baseBranch'), <span className="font-mono text-sm">{item.defaultBranch ?? 'main'}</span>],
+        [t('projects.integration'), t(item.integrationMode === 'pull-request' ? 'projects.integrationPullRequest' : 'projects.integrationDirect')],
         [t('projects.parallel'), t('projects.upTo', { n: item.maxParallelTasks ?? 1 })],
         [t('projects.validation'), item.validationCommands?.length ? <span className="font-mono text-xs">{item.validationCommands.join(' && ')}</span> : t('projects.workerValidation')],
         [t('projects.pickup'), item.automaticDiscovery?.enabled ? t('projects.pickupAutomatic', { label: item.issueReadyLabel ?? 'codex-ready' }) : t('projects.pickupManual')],

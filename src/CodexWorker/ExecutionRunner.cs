@@ -407,7 +407,7 @@ public sealed partial class ExecutionRunner(WorkerConfiguration config, IGitRepo
             OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery,
             CodexThreadId: execution.CodexThreadId, CodexSessionOwner: execution.CodexSessionOwner,
             ParentIssueNumber: execution.ParentIssueNumber, ParentIssueCaptured: execution.ParentIssueCaptured, ParentProvenance: execution.ParentProvenance,
-            Metrics: execution.MetricsWith(report?.Integration?.Changes));
+            Metrics: execution.MetricsWith(report?.Integration));
 
     private static string? Extract(string? text, string pattern)
     {

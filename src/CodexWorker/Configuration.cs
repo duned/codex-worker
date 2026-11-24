@@ -60,6 +60,8 @@ public sealed class WorkerConfiguration
         Required(Git.BaseBranch, "git.baseBranch", errors);
         Required(Git.FeaturePrefix, "git.featurePrefix", errors);
         Required(Git.CompletedPrefix, "git.completedPrefix", errors);
+        if (!CodexProvisioning.ProjectIntegrationMode.Valid(Git.Integration)) errors.Add("git.integration must be direct or pull-request.");
+        else if (Git.PullRequest && !Git.AutoMerge) errors.Add("git.integration pull-request requires git.autoMerge: true (the branch is rebased and validated before the pull request opens).");
         Required(GitHub.ReadyLabel, "github.readyLabel", errors);
         Required(GitHub.WorkingLabel, "github.workingLabel", errors);
         Required(GitHub.BlockedLabel, "github.blockedLabel", errors);
@@ -375,6 +377,17 @@ public sealed class GitSettings
     public bool AutoMerge { get; set; } = true;
     public bool PushCompletedBranch { get; set; } = true;
     public bool DeleteLocalFeatureBranch { get; set; } = true;
+
+    private string? _integration;
+    /// <summary><c>direct</c> (default) or <c>pull-request</c>. The default is held as null so the completion
+    /// policy fingerprint of existing projects does not change.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Integration { get => _integration; set => _integration = CodexProvisioning.ProjectIntegrationMode.Normalize(value); }
+
+    /// <summary>Validated work is pushed as a branch and offered as a pull request instead of being merged into the base.</summary>
+    [YamlIgnore]
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool PullRequest => Integration == CodexProvisioning.ProjectIntegrationMode.PullRequest;
 }
 public sealed class GitHubSettings
 {
