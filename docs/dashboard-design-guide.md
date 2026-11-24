@@ -19,7 +19,7 @@ secondary *Diagnostics* tab or a collapsed *Technical detail* block, never on th
 
 | Screen | Route | Content |
 | --- | --- | --- |
-| Home | `/home` | One status line, **Needs your attention** (failed latest attempts and Workers that cannot take work, each with its cause in one sentence and an action), **Running now** with lifecycle steps, recently finished executions with filters. |
+| Home | `/home` | One status line, **Needs your attention** grouped by cause — projects paused on a Worker, unresolved restarts/updates, executions with an unknown outcome, queued requests that cannot be assigned, failed latest attempts and Workers that cannot take work — each item with its cause in one sentence and the action that resolves it, **Running now** with lifecycle steps, recently finished executions with filters. |
 | Projects | `/projects` | List with search and status filter; side panel to add a project. |
 | Project | `/projects/{id}` | Issues (open/all, search, status filter) with their derived status, configuration card, pause/resume, add an Issue to the queue, edit panel. |
 | Issue | `/projects/{id}/issues/{n}` | Status, *what happened / what you can do* when it failed, description (Markdown), attempts with steps, status card and actions card. |

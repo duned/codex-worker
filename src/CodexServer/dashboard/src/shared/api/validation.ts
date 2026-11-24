@@ -18,6 +18,11 @@ function validateWorker(value: unknown) {
   if (item.configuredMaximumCapacity != null && (!Number.isSafeInteger(item.configuredMaximumCapacity) || Number(item.configuredMaximumCapacity) < 1 || Number(item.configuredMaximumCapacity) > 8)) throw new Error('Invalid configured Worker capacity.');
   if (item.workerExecutionSlots != null && (!Number.isSafeInteger(item.workerExecutionSlots) || Number(item.workerExecutionSlots) < 1 || Number(item.workerExecutionSlots) > 8)) throw new Error('Invalid Worker execution slots.');
   if (item.configurationRevision != null && (!Number.isSafeInteger(item.configurationRevision) || Number(item.configurationRevision) < 1)) throw new Error('Invalid Worker configuration revision.');
+  if (item.managedDiagnostics != null && record(item.managedDiagnostics).projects != null) {
+    const projects = record(item.managedDiagnostics).projects;
+    if (!Array.isArray(projects)) throw new Error('Invalid Worker project observations.');
+    projects.forEach(value => { optional(fields(value, ['projectId', 'state']), ['diagnosticCode', 'detail']); });
+  }
   if (item.telegram != null) {
     const telegram = fields(item.telegram, []);
     if (typeof telegram.enabled !== 'boolean' || typeof telegram.tokenConfigured !== 'boolean' || 'botToken' in telegram || 'token' in telegram) throw new Error('Invalid Telegram settings.');

@@ -11,8 +11,37 @@ const stageStep: Record<string, number> = { Claiming: 0, Preparing: 0, Codex: 1,
 const stepTimingKeys = [['claimed', 'preparing'], ['codex'], ['validation'], ['integration'], ['reporting']] as const;
 
 /** A project the Worker paused in its own memory (GitHub reconciliation, ambiguous completion, failed preparation). */
-export const pausedOnWorker = (project: WorkerProjectReadiness) =>
+export const pausedOnWorker = (project: Pick<WorkerProjectReadiness, 'materializationState' | 'diagnosticCode'>) =>
   project.materializationState === 'blocked' && project.diagnosticCode === 'project-recovery-verification-failed';
+
+/** Everything that needs an operator, grouped by cause so each group carries one kind of action. */
+export interface AttentionInbox {
+  pausedProjects: { worker: WorkerObservation; projectId: string; detail?: string }[];
+  maintenance: WorkerObservation[];
+  uncertain: ExecutionSummary[];
+  ineligible: ExecutionSummary[];
+  failed: ExecutionSummary[];
+  workers: WorkerObservation[];
+}
+export function attentionInbox(executions: ExecutionSummary[], workers: WorkerObservation[]): AttentionInbox {
+  const latestFailures = attention(executions);
+  const pausedProjects = workers.filter(isOnline).flatMap(worker => (worker.managedDiagnostics?.projects ?? [])
+    .filter(project => pausedOnWorker({ materializationState: project.state, diagnosticCode: project.diagnosticCode ?? undefined }))
+    .map(project => ({ worker, projectId: project.projectId, detail: project.detail ?? undefined })));
+  const maintenance = workers.filter(worker => worker.schedulingBlocker === 'worker-operation-unresolved');
+  return {
+    pausedProjects, maintenance,
+    // An uncertain lease keeps its project slot until someone reconciles it.
+    uncertain: latestFailures.filter(item => item.recoveryState === 'LeaseExpiredUncertain'),
+    ineligible: executions.filter(item => item.state === 'Queued' && !!item.managedEligibilityState && item.managedEligibilityState !== 'eligible'),
+    failed: latestFailures.filter(item => item.recoveryState !== 'LeaseExpiredUncertain'),
+    // A Worker already listed for its own cause (unresolved operation, paused project) is not repeated as a generic blocker.
+    workers: workers.filter(worker => scheduling(worker) === 'blocked' && !maintenance.includes(worker) &&
+      !(isOnline(worker) && pausedProjects.some(item => item.worker === worker) && !worker.schedulingBlocker))
+  };
+}
+export const attentionCount = (inbox: AttentionInbox) =>
+  inbox.pausedProjects.length + inbox.maintenance.length + inbox.uncertain.length + inbox.ineligible.length + inbox.failed.length + inbox.workers.length;
 
 export const isActive = (execution: ExecutionSummary) => execution.state === 'Assigned' || execution.state === 'Running';
 export const isConflict = (execution: ExecutionSummary) => execution.failureClassification === 'IntegrationConflict';
