@@ -1,9 +1,19 @@
 # Worker Telegram notifications
 
 Telegram notifications belong to one Worker process and cover all of that Worker's
-projects and lifecycle notifications. The only supported settings are enabled,
-bot token and chat ID. Delivery formatting, the ten-second HTTP timeout and
-completion idempotency remain product behavior, not configurable settings.
+projects and lifecycle notifications. The supported settings are enabled, bot
+token and chat ID, plus the local `telegram.blockedAlertMinutes` threshold.
+Delivery formatting, the ten-second HTTP timeout and completion idempotency
+remain product behavior, not configurable settings.
+
+## Blockage alerts
+
+When the Worker is not ready to run Issues, or one of its projects is paused or
+unavailable, for longer than `telegram.blockedAlertMinutes` (default 15, `0`
+disables, at most 1440), the Worker sends one alert with the reason and a second
+one when it takes work again. Shorter interruptions stay silent. The threshold
+is local Worker YAML and is not part of the Server-managed Telegram override.
+A Worker that is offline cannot alert about itself; the Server dashboard shows it.
 
 The administration dashboard's Worker editor can explicitly manage these settings
 for that Worker. This is not a Server-wide notification destination. Until an

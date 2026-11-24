@@ -27,6 +27,19 @@ Corrupt or incompatible completion provenance and a failed remote fetch still
 pause the project. Repository gates and execution worktree ownership checks remain
 in force.
 
+### Resuming a paused project
+
+A pause lives only in the Worker's memory. The Worker reports it on every heartbeat
+(project state `blocked`, code `project-recovery-verification-failed`) together with a
+bounded, single-line reason, and the Worker detail page lists it under **Projects
+paused on this Worker** with **Resume on this Worker**. The Server accepts the request
+only while the latest heartbeat still reports that pause, keeps one pending request per
+Worker, and expires it after two minutes without replay. The Worker lifts only failure
+pauses (GitHub reconciliation, ambiguous completion, failed preparation); a missing
+capability or a local disable is reported back as `not-paused`. Resuming does not
+resolve the paused execution: the Server still refuses to reassign a quarantined
+Issue until it is reconciled.
+
 Operators should inspect the original execution history and correlated managed
 operational log, verify the original Issue and integration on the remote, and
 reconcile the original execution through the Server's existing lifecycle and

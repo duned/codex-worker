@@ -10,7 +10,7 @@ public sealed record WorkerConfigurationWorker(int PollingSeconds, int Preflight
 public sealed record WorkerConfigurationProvisioning(bool Enabled, bool AllowNonPrivileged, bool AllowCredentials,
     IReadOnlyList<string> AllowedPrivilegedActions, IReadOnlyList<string> DeniedActions);
 public sealed record WorkerConfigurationProjects(string Directory, string Ownership);
-public sealed record WorkerConfigurationTelegram(bool Enabled);
+public sealed record WorkerConfigurationTelegram(bool Enabled, int BlockedAlertMinutes = 15);
 public sealed record WorkerConfigurationApi(bool Enabled, string ListenUrl, int EventHistoryLimit);
 public sealed record WorkerConfigurationServer(bool Enabled, string Url, int HeartbeatIntervalSeconds, string? IdentityFile);
 public sealed record WorkerAdministrationDiagnostic(string Code, string Message);

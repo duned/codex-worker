@@ -4,6 +4,7 @@ using CodexProvisioning;
 using CodexServer;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
 
 [Collection("ServerTokenEnvironment")]
@@ -152,6 +153,81 @@ public sealed class WorkerJournalTests
         Assert.NotEqual(request.Id, refreshed.Id);
         Assert.True(requests.Complete("worker-a", refreshed.Id, new("ready", ["2026-01-03 latest"])));
         Assert.Equal("2026-01-03 latest", Assert.Single(requests.Read("worker-a", 100).Lines));
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void EventRequestsAreSeparateFromJournalRequests()
+    {
+        var requests = new WorkerJournalRequests();
+        requests.Read("worker-a", 100);
+        Assert.Null(requests.Pending("worker-a", WorkerJournalProtocol.Events));
+        Assert.Equal("pending", requests.Read("worker-a", 50, source: WorkerJournalProtocol.Events).State);
+        var events = Assert.IsType<WorkerJournalRequest>(requests.Pending("worker-a", WorkerJournalProtocol.Events));
+        Assert.NotEqual(requests.Pending("worker-a")?.Id, events.Id);
+        Assert.False(requests.Complete("worker-a", events.Id, new("ready", ["event"])));
+        Assert.True(requests.Complete("worker-a", events.Id, new("ready", ["event"]), WorkerJournalProtocol.Events));
+        Assert.Equal("event", Assert.Single(requests.Read("worker-a", 50, source: WorkerJournalProtocol.Events).Lines));
+        Assert.Equal("pending", requests.Read("worker-a", 100).State);
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void EventsAreFormattedBoundedAndRedacted()
+    {
+        var at = new DateTimeOffset(2026, 11, 24, 10, 0, 0, TimeSpan.Zero);
+        RuntimeEvent[] events = [new(1, at, "worker.started", "Worker control loop is online."),
+            new(2, at.AddMinutes(1), "project.unavailable", "GitHub failed token=sensitive", "Project")];
+        var result = WorkerJournalReader.FormatEvents(events, 1);
+        Assert.Equal("ready", result.State);
+        var line = Assert.Single(result.Lines);
+        Assert.StartsWith("2026-11-24T10:01:00Z · project.unavailable · Project · GitHub failed", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("sensitive", line, StringComparison.Ordinal);
+        Assert.True(WorkerJournalProtocol.Valid(WorkerJournalReader.FormatEvents(
+            Enumerable.Range(0, 300).Select(index => new RuntimeEvent(index, at, "type", new string('x', 5000))).ToArray(), 200)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => WorkerJournalReader.FormatEvents(events, 0));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task HeartbeatAnswersAPendingEventRequest()
+    {
+        using var temporary = new TemporaryDirectory();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile, CancellationToken.None);
+        var id = Guid.NewGuid();
+        WorkerJournalResult? reported = null;
+        using var handler = new RoutingHandler(async (request, token) =>
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/events/request", StringComparison.Ordinal))
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new WorkerJournalRequest(id, 2)) };
+            if (path.EndsWith($"/events/{id}", StringComparison.Ordinal))
+                reported = await (request.Content ?? throw new InvalidDataException("Missing events.")).ReadFromJsonAsync<WorkerJournalResult>(token);
+            return new(path.EndsWith("/journal/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
+        });
+        using var client = new HttpClient(handler);
+        var log = new RuntimeEventLog();
+        log.Publish("worker.started", "Worker control loop is online.");
+        log.Publish("codex.ready", "Codex execution readiness restored.");
+        log.Publish("project.resumed", "Project resumed by the Server operator.", "Project");
+        var registration = new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()) { RecentEvents = limit => log.ReadRecent(limit) };
+
+        await registration.HeartbeatAsync(settings, 1, 0, [], "running", CancellationToken.None, []);
+
+        Assert.NotNull(reported);
+        Assert.Equal("ready", reported.State);
+        Assert.Equal(2, reported.Lines.Count);
+        Assert.Contains("project.resumed · Project", reported.Lines[1], StringComparison.Ordinal);
+    }
+
+    private sealed class RoutingHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken);
     }
 
     [Trait("TestType", "Unit")]

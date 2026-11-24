@@ -591,6 +591,39 @@ public sealed class ServerGitHubAdministrationTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public async Task RetryRestoresOnlyALostReadyLabelBeforeEnqueueing()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "relabel-retry.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition(issueReadyLabel: "ready", issueBlockedLabel: "blocked"));
+        var read = new FakeServerGitHubReadService();
+        var writer = new FakeGitHubIssueWriteService();
+        writer.LabelAdded = (number, label) => read.Add(project.Repository, Issue(number, labels: ["worker:failed", label]));
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+
+        // Blocked, dependent and closed Issues keep their reasons and are never relabelled.
+        read.Add(project.Repository, Issue(51, labels: ["blocked"]));
+        read.Add(project.Repository, Issue(52, blockers: [BlockingIssue(50, "open")]));
+        read.Add(project.Repository, Issue(53) with { State = "CLOSED" });
+        foreach (var number in new[] { 51, 52, 53 })
+            await Assert.ThrowsAsync<ManagedIssueIneligibleException>(() => service.RelabelAndEnqueueIssueAsync(project.Id, number));
+        Assert.Empty(writer.Operations);
+
+        read.Add(project.Repository, Issue(54, labels: ["worker:failed"]));
+        var queued = await service.RelabelAndEnqueueIssueAsync(project.Id, 54);
+        Assert.Equal(("54", "Queued"), (queued.WorkReference.Id, queued.State));
+        Assert.Equal(["label:add"], writer.Operations);
+
+        // An Issue that already carries the label is enqueued without another write.
+        read.Add(project.Repository, Issue(55, labels: ["ready"]));
+        await service.RelabelAndEnqueueIssueAsync(project.Id, 55);
+        Assert.Single(writer.Operations);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task ApplyingCustomReadyLabelPreservesBlockersAndSkipsConcurrentOrClosedWrites()
     {
         using var temporary = new TemporaryDirectory();
@@ -1538,9 +1571,12 @@ public sealed class ServerGitHubAdministrationTests
                 $"https://github.com/{project.Repository}/issues/{issueNumber}"));
         }
 
+        public Action<int, string>? LabelAdded { get; set; }
+
         public Task AddLabelAsync(CentralProject project, int issueNumber, string label, CancellationToken cancellationToken = default)
         {
             Operations.Add("label:add");
+            LabelAdded?.Invoke(issueNumber, label);
             return Task.CompletedTask;
         }
 

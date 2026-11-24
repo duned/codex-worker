@@ -1,4 +1,4 @@
-import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, ArchivedBranchPage, ArchivedBranchDeleteResult, BranchSelection } from './contracts';
+import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics, GitHubIssue, Credential, ExecutionArchiveResult, WorkerRelease, WorkerUpdate, ProjectResumeOperation, ArchivedBranchPage, ArchivedBranchDeleteResult, BranchSelection } from './contracts';
 import type { Validator } from './client';
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid object.');
@@ -14,10 +14,15 @@ function optional(item: Record<string, unknown>, strings: string[] = [], boolean
 function validateWorker(value: unknown) {
   const item = fields(value, ['workerId', 'availability']);
   optional(item, ['workerVersion', 'displayName', 'lifecycleState', 'schedulingPolicy', 'schedulingBlocker', 'lastHeartbeatAtUtc', 'authenticationCredentialStatus', 'authenticationCredentialRevokedAtUtc', 'platform', 'firstRegisteredAtUtc'], [],
-    ['capacity', 'maximumCapacity', 'activeExecutions', 'availableCapacity', 'activeAssignments', 'configuredMaximumCapacity', 'workerExecutionSlots', 'configurationRevision']);
+    ['capacity', 'maximumCapacity', 'activeExecutions', 'availableCapacity', 'activeAssignments', 'configuredMaximumCapacity', 'workerExecutionSlots', 'configurationRevision', 'clockSkewSeconds']);
   if (item.configuredMaximumCapacity != null && (!Number.isSafeInteger(item.configuredMaximumCapacity) || Number(item.configuredMaximumCapacity) < 1 || Number(item.configuredMaximumCapacity) > 8)) throw new Error('Invalid configured Worker capacity.');
   if (item.workerExecutionSlots != null && (!Number.isSafeInteger(item.workerExecutionSlots) || Number(item.workerExecutionSlots) < 1 || Number(item.workerExecutionSlots) > 8)) throw new Error('Invalid Worker execution slots.');
   if (item.configurationRevision != null && (!Number.isSafeInteger(item.configurationRevision) || Number(item.configurationRevision) < 1)) throw new Error('Invalid Worker configuration revision.');
+  if (item.managedDiagnostics != null && record(item.managedDiagnostics).projects != null) {
+    const projects = record(item.managedDiagnostics).projects;
+    if (!Array.isArray(projects)) throw new Error('Invalid Worker project observations.');
+    projects.forEach(value => { optional(fields(value, ['projectId', 'state']), ['diagnosticCode', 'detail']); });
+  }
   if (item.telegram != null) {
     const telegram = fields(item.telegram, []);
     if (typeof telegram.enabled !== 'boolean' || typeof telegram.tokenConfigured !== 'boolean' || 'botToken' in telegram || 'token' in telegram) throw new Error('Invalid Telegram settings.');
@@ -86,7 +91,7 @@ export const diagnostics: Validator<WorkerDiagnostics> = value => {
     if (!Array.isArray(item.projects)) throw new Error('Invalid project readiness.');
     item.projects.forEach(value => {
       const project = fields(value, ['projectId', 'projectName', 'observationStatus'], ['isEligible']);
-      optional(project, ['materializationState', 'diagnosticCode'], [], ['workerReportedRevision']);
+      optional(project, ['materializationState', 'diagnosticCode', 'detail'], [], ['workerReportedRevision']);
       if (project.workerReportedRevision != null && (!Number.isSafeInteger(project.workerReportedRevision) || Number(project.workerReportedRevision) < 1)) throw new Error('Invalid project revision.');
       stringList(project.missingRequirements);
     });
@@ -220,6 +225,13 @@ export const workerRelease: Validator<WorkerRelease> = value => {
   return item as unknown as WorkerRelease;
 };
 /** A Worker restart/update operation, or null when none was ever requested. */
+export const projectResume: Validator<ProjectResumeOperation | null> = value => {
+  if (value === null) return null;
+  const item = fields(value, ['id', 'projectId', 'status', 'deadlineUtc']);
+  optional(item, ['diagnostic']);
+  if (!['pending', 'running', 'succeeded', 'failed'].includes(String(item.status))) throw new Error('Invalid project resume.');
+  return value as ProjectResumeOperation;
+};
 export const workerUpdate: Validator<WorkerUpdate | null> = value => {
   if (value === null) return null;
   const item = fields(value, ['operationId', 'workerId', 'state']);

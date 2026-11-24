@@ -5,7 +5,8 @@ using CodexProvisioning;
 /// <summary>Operational, secret-free view derived from the existing worker registry and project models.</summary>
 public sealed record WorkerProjectReadiness(string ProjectId, string ProjectName, bool IsEligible,
     IReadOnlyList<string> MissingRequirements, long? WorkerReportedRevision = null,
-    string? MaterializationState = null, string? DiagnosticCode = null, string ObservationStatus = "not-reported");
+    string? MaterializationState = null, string? DiagnosticCode = null, string ObservationStatus = "not-reported",
+    string? Detail = null);
 
 public sealed record ProvisioningOperationSummary(string Source, string Id, string Status, string? Action,
     string Diagnostic, DateTimeOffset CreatedAtUtc);
@@ -53,7 +54,8 @@ public static class WorkerDiagnosticsDerivation
                 observation?.Revision, observation?.State, observation?.DiagnosticCode, observation is null ? "not-reported" :
                     worker.Availability is "stale" or "offline" ? "stale-heartbeat" :
                     worker.ManagedDiagnostics?.Source == "cached" ? "cached-worker-observation" :
-                    observation.Revision == project.Revision ? "worker-reported-current-revision" : "stale-revision");
+                    observation.Revision == project.Revision ? "worker-reported-current-revision" : "stale-revision",
+                observation?.Detail);
         }).ToArray();
 
         var reasons = new List<string>();
@@ -64,6 +66,8 @@ public static class WorkerDiagnosticsDerivation
             reasons.Add(worker.ActiveAssignments == 0 ? "Drain complete; scheduling remains paused" :
                 $"Draining; {worker.ActiveAssignments} active assignments retain their leases");
         if (worker.Availability is "stale" or "offline") reasons.Add("Offline");
+        else if (worker.ClockSkewed)
+            reasons.Add($"Worker clock differs from the Server by {worker.ClockSkewSeconds} s; leases and deadlines need clocks within {WorkerRegistrationResponse.ClockSkewToleranceSeconds} s");
         if (worker.Availability == "draining" || worker.Availability == "online" && worker.LifecycleState == "draining") reasons.Add("Draining");
         if (worker.Availability == "online" && worker.AvailableCapacity == 0 && worker.LifecycleState == "running") reasons.Add("At capacity");
         if (readiness.Length > 0 && !readiness.Any(project => project.IsEligible))

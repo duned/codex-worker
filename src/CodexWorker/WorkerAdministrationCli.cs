@@ -159,6 +159,7 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
         _writer.WriteLine($"projects.directory: {configuration.Projects.Directory}");
         _writer.WriteLine($"projects.ownership: {configuration.Projects.Ownership}");
         _writer.WriteLine($"telegram.enabled: {configuration.Telegram.Enabled.ToString().ToLowerInvariant()}");
+        _writer.WriteLine($"telegram.blockedAlertMinutes: {configuration.Telegram.BlockedAlertMinutes}");
         _writer.WriteLine($"api.enabled: {configuration.Api.Enabled.ToString().ToLowerInvariant()}");
         _writer.WriteLine($"api.listenUrl: {configuration.Api.ListenUrl}");
         _writer.WriteLine($"api.eventHistoryLimit: {configuration.Api.EventHistoryLimit}");

@@ -7,7 +7,7 @@ import { t, useLanguage, type TranslationKey } from './i18n';
 import { usePreferences } from './preferences';
 import { useApiRead, useSession } from './api/session';
 import { executions as validateExecutions, serverStatus, workers as validateWorkers } from './api/validation';
-import { attention, dateTime, scheduling } from './model';
+import { attentionCount, attentionInbox, dateTime } from './model';
 import { inputClass, Notice } from './ui';
 import { Toasts } from './actions';
 
@@ -55,7 +55,8 @@ function Sidebar({ authenticated }: { authenticated: boolean }) {
 
 function AttentionCount() {
   const executions = useApiRead('/api/v1/executions?limit=100&offset=0', validateExecutions), workers = useApiRead('/api/v1/workers', validateWorkers);
-  const count = (executions.data ? attention(executions.data).length : 0) + (workers.data?.filter(worker => scheduling(worker) === 'blocked').length ?? 0);
+  // The same inbox Home shows, so the badge and the list always agree.
+  const count = attentionCount(attentionInbox(executions.data ?? [], workers.data ?? []));
   return count ? <span className="rounded-full bg-utility-red-50 px-2 text-xs font-semibold text-utility-red-700 ring-1 ring-utility-red-200 ring-inset tabular-nums">{count}</span> : null;
 }
 

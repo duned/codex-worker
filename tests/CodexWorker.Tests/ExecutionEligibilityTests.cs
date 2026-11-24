@@ -134,6 +134,30 @@ public sealed class ExecutionEligibilityTests
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     [Trait("ValidationProfile", "FastCandidate")]
+    [Theory]
+    [InlineData("failure", true)]
+    [InlineData("capabilities", false)]
+    [InlineData("disabled", false)]
+    [InlineData("enabled", false)]
+    public void OperatorResumeLiftsOnlyFailurePauses(string pause, bool resumed)
+    {
+        var configuration = new WorkerConfiguration { Project = new() { Name = "Project" } };
+        var registry = new ProjectRuntimeRegistry([("project.yml", configuration)]);
+        switch (pause)
+        {
+            case "failure": registry.MarkUnavailable("Project", "Completion reconciliation required."); break;
+            case "capabilities": registry.ApplyExecutionEligibility("Project", configuration, new(false, ["tool-missing"])); break;
+            case "disabled": registry.Disable("Project"); break;
+        }
+
+        Assert.Equal(resumed, registry.ResumePaused("Project"));
+        Assert.Equal(resumed || pause == "enabled", registry.TryReserve("Project", configuration));
+        Assert.False(registry.ResumePaused("Unknown"));
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void EligibilityMustMatchTheRegisteredConfiguration()
     {

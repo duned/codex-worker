@@ -108,12 +108,12 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         };
     }
 
-    public void RecordProjectState(ServerProjectContract project, string state, string? diagnosticCode = null)
+    public void RecordProjectState(ServerProjectContract project, string state, string? diagnosticCode = null, string? detail = null)
     {
         lock (_gate)
         {
             var observations = Diagnostics.Projects.Select(item => item.ProjectId == project.Id && item.Revision == project.Revision
-                ? item with { State = state, DiagnosticCode = diagnosticCode } : item).ToArray();
+                ? item with { State = state, DiagnosticCode = diagnosticCode, Detail = ProjectResumeProtocol.Detail(detail) } : item).ToArray();
             var updated = Diagnostics with { Projects = observations };
             if (!ManagedWorkerDiagnostics.Valid(updated)) throw new ArgumentException("Invalid managed project observation.");
             _status = _status with { Diagnostics = updated };

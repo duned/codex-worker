@@ -205,6 +205,8 @@ public sealed class WorkerHost
             var configurationService = _global.Projects.Ownership == "managed"
                 ? null
                 : new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
+            var events = runtimeReadModel.Events;
+            _registration.RecentEvents = limit => events.ReadRecent(limit);
             runtimeReadModel.Events.Publish("worker.starting", "Worker startup began.");
             managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct, configurationService);
             reporting = new StandaloneReporting(_global, runtimeReadModel, _timeProvider, ct);
@@ -371,12 +373,14 @@ public sealed class WorkerHost
                             project.Configuration, eligibility);
                         var observation = managedConfiguration.Status.Diagnostics?.Projects.FirstOrDefault(item => item.ProjectId == definition.Id);
                         // A project paused on this Worker (GitHub reconciliation) must not be reported as ready.
-                        var paused = eligibility.IsEligible && runtimeReadModel.Registry.Get(project.Configuration.Project.Name) is
+                        var lifecycleState = runtimeReadModel.Registry.Get(project.Configuration.Project.Name);
+                        var paused = eligibility.IsEligible && lifecycleState is
                             { State: ProjectLifecycleState.Unavailable or ProjectLifecycleState.Disabled };
                         if (observation?.State != "failed")
                             managedConfiguration.RecordProjectState(definition, paused ? "blocked" : eligibility.IsEligible
                                 ? preparedConfigurations.Contains(project.Configuration) ? "ready" : "not-materialized" : "blocked",
-                                paused ? "project-recovery-verification-failed" : eligibility.IsEligible ? null : "project-capabilities-missing");
+                                paused ? ProjectResumeProtocol.PausedCode : eligibility.IsEligible ? null : "project-capabilities-missing",
+                                paused ? lifecycleState?.UnavailableReason ?? "Project disabled on this Worker." : null);
                     }
                 }
                 var ready = agentReady && executionDependenciesReady && (managedConfiguration is null || managedConfiguration.Status.SynchronizationStatus == "synchronized") &&
@@ -425,6 +429,7 @@ public sealed class WorkerHost
             var scheduler = new ProjectScheduler(runtimes.Count);
             var capacityLog = new SchedulerCapacityLog(_global.Worker.MaxParallelTasks, _operationalLog);
             var idleNoWorkNotification = new IdleNoWorkNotificationState();
+            var blockageAlerts = new BlockageAlertState(TimeSpan.FromMinutes(_global.Telegram.BlockedAlertMinutes));
             void ReportCapacity() => capacityLog.Report(active.Count, active.Values
                 .GroupBy(project => project.Configuration.Project.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(group => (group.First().Configuration.Project.Name, group.Count(),
@@ -634,6 +639,30 @@ public sealed class WorkerHost
                         validatedConfigurations.Clear();
                         heartbeatCapabilities = WorkerAgentCapabilities.KeepAgentReadiness(discoveredCapabilities, heartbeatCapabilities);
                         await InitializeProjectsAsync(executionToken);
+                    }
+                }
+                // Pauses live only in this process; the operator lifts one from the dashboard without a restart.
+                if (managed && managedConfiguration?.Status.SynchronizationStatus == "synchronized" &&
+                    runtimeReadModel.Registry.Status().Any(project => project.State == ProjectLifecycleState.Unavailable))
+                {
+                    try
+                    {
+                        await _registration.ExecuteProjectResumeAsync(_global.Server, projectId =>
+                        {
+                            var project = runtimes.FirstOrDefault(item => ServerProjectId(item.Configuration.Project.Name) == projectId);
+                            if (project is null) return "project-unknown";
+                            var name = project.Configuration.Project.Name;
+                            if (!runtimeReadModel.Registry.ResumePaused(name)) return "not-paused";
+                            preparationRetries.Remove(name);
+                            runtimeReadModel.Events.Publish("project.resumed", "Project resumed by the Server operator.", name);
+                            _operationalLog($"Scheduler · {name} · pause lifted by the Server operator · project scheduling resumed.");
+                            return "resumed";
+                        }, executionToken);
+                    }
+                    catch (Exception error) when (error is HttpRequestException or InvalidDataException or System.Text.Json.JsonException ||
+                        error is OperationCanceledException && !executionToken.IsCancellationRequested)
+                    {
+                        _output.Warning($"Project resume request could not be read from Codex Server: {error.Message}");
                     }
                 }
                 var previouslyReady = agentReady;
@@ -908,6 +937,15 @@ public sealed class WorkerHost
                 if (ct.IsCancellationRequested) break;
                 if (idleNoWorkNotification.Observe(active.Count, foundWork))
                     await telegram.NoWorkAsync(ct);
+                var readinessSnapshot = runtimeReadModel.Registry.Lifecycle.Snapshot;
+                foreach (var alert in blockageAlerts.Observe(_timeProvider.GetUtcNow(),
+                    readinessSnapshot.State == "not-ready" ? readinessSnapshot.ReconnectReadinessResult : null,
+                    runtimeReadModel.Registry.Status().Where(project => project.State == ProjectLifecycleState.Unavailable)
+                        .ToDictionary(project => project.Name, project => project.UnavailableReason ?? "Project unavailable.", StringComparer.OrdinalIgnoreCase)))
+                {
+                    _operationalLog($"Scheduler · {alert.Project ?? "Worker"} · {(alert.Recovered ? "takes work again" : "has not taken work")} for {WorkerConsole.FormatDuration(alert.Duration)} · Telegram alert.");
+                    await telegram.BlockageAsync(alert, ct);
+                }
                 if (active.Count > 0)
                 {
                     using var changeWait = CancellationTokenSource.CreateLinkedTokenSource(ct);

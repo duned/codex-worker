@@ -144,3 +144,51 @@ test('branch deletions are split into Server-sized requests', () => {
   assert.deepEqual(model.branchBatches(items).map(batch => batch.length), [100, 100, 5]);
   assert.deepEqual(model.branchBatches([]), []);
 });
+
+test('the attention inbox groups problems by cause and lists each once', () => {
+  const worker = values => ({ workerId: 'w', availability: 'online', lifecycleState: 'running', ...values });
+  const paused = worker({ workerId: 'paused', managedDiagnostics: { projects: [
+    { projectId: 'p', revision: 1, state: 'blocked', diagnosticCode: 'project-recovery-verification-failed', detail: 'GitHub failed.' },
+    { projectId: 'q', revision: 1, state: 'blocked', diagnosticCode: 'project-capabilities-missing' }] } });
+  const operation = worker({ workerId: 'operation', schedulingBlocker: 'worker-operation-unresolved' });
+  const offline = worker({ workerId: 'offline', availability: 'offline' });
+  const inbox = model.attentionInbox([
+    execution({ id: 'uncertain', state: 'Failed', recoveryState: 'LeaseExpiredUncertain' }),
+    execution({ id: 'failed', state: 'Failed', workReference: { type: 'github-issue', id: '8' } }),
+    execution({ id: 'requeued', state: 'Failed', recoveryState: 'LeaseExpiredRequeued', workReference: { type: 'github-issue', id: '9' } }),
+    execution({ id: 'ineligible', state: 'Queued', managedEligibilityState: 'blocked', workReference: { type: 'github-issue', id: '10' } }),
+    execution({ id: 'eligible', state: 'Queued', managedEligibilityState: 'eligible', workReference: { type: 'github-issue', id: '11' } })
+  ], [paused, operation, offline, worker({ workerId: 'healthy' })]);
+  assert.deepEqual(inbox.pausedProjects.map(item => [item.worker.workerId, item.projectId, item.detail]), [['paused', 'p', 'GitHub failed.']]);
+  assert.deepEqual(inbox.maintenance.map(item => item.workerId), ['operation']);
+  assert.deepEqual(inbox.uncertain.map(item => item.id), ['uncertain']);
+  assert.deepEqual(inbox.ineligible.map(item => item.id), ['ineligible']);
+  assert.deepEqual(inbox.failed.map(item => item.id), ['failed']);
+  assert.deepEqual(inbox.workers.map(item => item.workerId), ['offline']);
+  assert.equal(model.attentionCount(inbox), 6);
+});
+
+test('each Worker has one health state with its most severe cause', () => {
+  const worker = values => ({ workerId: 'w', availability: 'online', lifecycleState: 'running', workerExecutionSlots: 2, ...values });
+  const paused = { managedDiagnostics: { projects: [{ projectId: 'p', revision: 1, state: 'blocked', diagnosticCode: 'project-recovery-verification-failed' }] } };
+  const state = values => model.workerHealth(worker(values), id => `Project ${id}`);
+  assert.equal(state({ availability: 'offline', schedulingBlocker: 'worker-operation-unresolved' }).state, 'offline');
+  assert.equal(state({ schedulingBlocker: 'worker-operation-unresolved', schedulingPolicy: 'Disabled' }).state, 'blocked');
+  assert.equal(state({ schedulingPolicy: 'Disabled', lifecycleState: 'drained' }).state, 'paused');
+  assert.equal(state({ schedulingPolicy: 'Draining', lifecycleState: 'draining' }).state, 'pausing');
+  assert.equal(state({ lifecycleState: 'not-ready' }).state, 'blocked');
+  const degraded = state({ ...paused, activeExecutions: 1 });
+  assert.deepEqual([degraded.state, degraded.tone, degraded.cause.values.list], ['degraded', 'warn', 'Project p']);
+  assert.deepEqual(state({ activeExecutions: 1 }).cause, { key: 'health.cause.working', values: { used: 1, total: 2 } });
+  assert.equal(state({}).state, 'ready');
+});
+
+test('a Worker clock more than a minute off the Server is a health warning and an inbox item', () => {
+  const worker = values => ({ workerId: 'w', availability: 'online', lifecycleState: 'running', ...values });
+  assert.equal(model.workerHealth(worker({ clockSkewSeconds: 60 })).state, 'ready');
+  const ahead = model.workerHealth(worker({ clockSkewSeconds: 90 }));
+  assert.deepEqual([ahead.state, ahead.cause.key, ahead.cause.values.seconds], ['clock', 'health.cause.clockAhead', 90]);
+  assert.equal(model.workerHealth(worker({ clockSkewSeconds: -120 })).cause.key, 'health.cause.clockBehind');
+  assert.equal(model.workerHealth(worker({ clockSkewSeconds: 600, availability: 'offline' })).state, 'offline');
+  assert.deepEqual(model.attentionInbox([], [worker({ clockSkewSeconds: 600 }), worker({ workerId: 'ok' })]).clock.map(item => item.workerId), ['w']);
+});

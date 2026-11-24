@@ -10,6 +10,9 @@ export const useProjects = () => useApiRead('/api/v1/projects', projects);
 export const useWorkers = () => useApiRead('/api/v1/workers', workers);
 export const useNodes = () => useApiRead('/api/v1/nodes', nodes);
 export const useExecutions = (path = recentExecutionsPath) => useApiRead(path, executions);
+/** A fresh retry restores the project's ready label when that is all the Issue is missing (for example after a failed attempt). */
+export const retryIssuePath = (projectId: string, issue: number | string) =>
+  `/api/v1/projects/${encodeURIComponent(projectId)}/github/issues/${issue}/enqueue?restoreReadyLabel=true`;
 export const projectExecutionsPath = (projectId: string, issue?: number) =>
   `/api/v1/executions?projectId=${encodeURIComponent(projectId)}&workType=github-issue${issue ? `&workId=${issue}` : ''}&limit=100&offset=0`;
 

@@ -1,5 +1,5 @@
 import { tryT } from './i18n';
-import type { ArchivedBranch, Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerUpdate } from './api/contracts';
+import type { ArchivedBranch, Capability, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerProjectReadiness, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
 /** Visual tone of a status. Semantic colours are fixed: ok, bad, warn, run (animated) and idle. */
@@ -9,6 +9,64 @@ export interface Status { tone: Tone; label: TranslationKey }
 export const steps = ['prepare', 'implement', 'validate', 'integrate', 'report'] as const;
 const stageStep: Record<string, number> = { Claiming: 0, Preparing: 0, Codex: 1, Implementing: 1, Validation: 2, Integration: 3, Reporting: 4 };
 const stepTimingKeys = [['claimed', 'preparing'], ['codex'], ['validation'], ['integration'], ['reporting']] as const;
+
+/** A project the Worker paused in its own memory (GitHub reconciliation, ambiguous completion, failed preparation). */
+export const pausedOnWorker = (project: Pick<WorkerProjectReadiness, 'materializationState' | 'diagnosticCode'>) =>
+  project.materializationState === 'blocked' && project.diagnosticCode === 'project-recovery-verification-failed';
+
+/** One health state per Worker with its main cause, most severe first. Connection, scheduling and paused projects
+ *  stay separate facts underneath; this is what a list or a header shows. */
+export type Health = 'offline' | 'blocked' | 'clock' | 'paused' | 'pausing' | 'degraded' | 'working' | 'ready';
+/** Leases and operation deadlines tolerate this much difference between the Worker and Server clocks. */
+export const clockSkewToleranceSeconds = 60;
+export const clockSkewed = (worker: WorkerObservation) => isOnline(worker) && Math.abs(worker.clockSkewSeconds ?? 0) > clockSkewToleranceSeconds;
+export interface WorkerHealth { state: Health; tone: Tone; label: TranslationKey; cause: { key: TranslationKey; values?: Record<string, string | number> } }
+export function workerHealth(worker: WorkerObservation, projectName: (id: string) => string = id => id): WorkerHealth {
+  const make = (state: Health, tone: Tone, key: TranslationKey, values?: Record<string, string | number>): WorkerHealth =>
+    ({ state, tone, label: `health.${state}` as TranslationKey, cause: { key, values } });
+  if (!isOnline(worker)) return make('offline', 'bad', 'workers.offlineReason');
+  if (worker.schedulingBlocker) return make('blocked', 'bad', 'health.cause.blocker', { text: schedulingBlockerText(worker.schedulingBlocker) });
+  if (clockSkewed(worker)) return make('clock', 'warn', (worker.clockSkewSeconds ?? 0) > 0 ? 'health.cause.clockAhead' : 'health.cause.clockBehind',
+    { seconds: Math.abs(worker.clockSkewSeconds ?? 0) });
+  if (worker.schedulingPolicy === 'Disabled') return make('paused', 'warn', 'scheduling.paused.detail');
+  if (worker.schedulingPolicy === 'Draining') return make('pausing', 'warn', 'scheduling.pausing.detail');
+  if (worker.lifecycleState && worker.lifecycleState !== 'running') return make('blocked', 'bad', 'workers.blockedReason');
+  const paused = (worker.managedDiagnostics?.projects ?? []).filter(project =>
+    pausedOnWorker({ materializationState: project.state, diagnosticCode: project.diagnosticCode ?? undefined }));
+  if (paused.length) return make('degraded', 'warn', 'health.cause.projectsPaused', { list: paused.map(project => projectName(project.projectId)).join(', ') });
+  const { used, total } = slots(worker);
+  return used ? make('working', 'run', 'health.cause.working', { used, total }) : make('ready', 'ok', 'workers.idle');
+}
+
+/** Everything that needs an operator, grouped by cause so each group carries one kind of action. */
+export interface AttentionInbox {
+  pausedProjects: { worker: WorkerObservation; projectId: string; detail?: string }[];
+  maintenance: WorkerObservation[];
+  clock: WorkerObservation[];
+  uncertain: ExecutionSummary[];
+  ineligible: ExecutionSummary[];
+  failed: ExecutionSummary[];
+  workers: WorkerObservation[];
+}
+export function attentionInbox(executions: ExecutionSummary[], workers: WorkerObservation[]): AttentionInbox {
+  const latestFailures = attention(executions);
+  const pausedProjects = workers.filter(isOnline).flatMap(worker => (worker.managedDiagnostics?.projects ?? [])
+    .filter(project => pausedOnWorker({ materializationState: project.state, diagnosticCode: project.diagnosticCode ?? undefined }))
+    .map(project => ({ worker, projectId: project.projectId, detail: project.detail ?? undefined })));
+  const maintenance = workers.filter(worker => worker.schedulingBlocker === 'worker-operation-unresolved');
+  return {
+    pausedProjects, maintenance, clock: workers.filter(clockSkewed),
+    // An uncertain lease keeps its project slot until someone reconciles it.
+    uncertain: latestFailures.filter(item => item.recoveryState === 'LeaseExpiredUncertain'),
+    ineligible: executions.filter(item => item.state === 'Queued' && !!item.managedEligibilityState && item.managedEligibilityState !== 'eligible'),
+    failed: latestFailures.filter(item => item.recoveryState !== 'LeaseExpiredUncertain'),
+    // A Worker already listed for its own cause (unresolved operation, paused project) is not repeated as a generic blocker.
+    workers: workers.filter(worker => scheduling(worker) === 'blocked' && !maintenance.includes(worker) &&
+      !(isOnline(worker) && pausedProjects.some(item => item.worker === worker) && !worker.schedulingBlocker))
+  };
+}
+export const attentionCount = (inbox: AttentionInbox) =>
+  inbox.pausedProjects.length + inbox.maintenance.length + inbox.clock.length + inbox.uncertain.length + inbox.ineligible.length + inbox.failed.length + inbox.workers.length;
 
 export const isActive = (execution: ExecutionSummary) => execution.state === 'Assigned' || execution.state === 'Running';
 export const isConflict = (execution: ExecutionSummary) => execution.failureClassification === 'IntegrationConflict';
