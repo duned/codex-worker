@@ -224,6 +224,15 @@ test('engine comparison adds reported usage, and cost only from attempts that re
   assert.equal(text, 'usage.input:1.5 k/0 · usage.output:20 · $1.50 · usage.runs:3');
 });
 
+test('the integrated change links to its comparison in the Issue repository', () => {
+  const changes = { filesChanged: 1, insertions: 2, deletions: 0, files: ['a'], baseCommit: 'abc1234', commit: 'def5678' };
+  const withChanges = (url, values = {}) => execution({ workReference: { type: 'github-issue', id: '7', url }, metrics: { changes: { ...changes, ...values } } });
+  assert.equal(model.compareUrl(withChanges('https://github.com/team/app/issues/7')), 'https://github.com/team/app/compare/abc1234...def5678');
+  assert.equal(model.compareUrl(withChanges('https://github.com/team/app/issues/7', { baseCommit: null })), 'https://github.com/team/app/commit/def5678');
+  assert.equal(model.compareUrl(withChanges('https://evil.example/team/app/issues/7')), undefined);
+  assert.equal(model.compareUrl(withChanges('https://github.com/team/app/issues/7', { commit: null })), undefined);
+});
+
 test('a preparation failure the Server retried by itself needs no attention', () => {
   const failed = execution({ state: 'Failed', failureClassification: 'PreparationFailed', recoveryState: 'PreparationRequeued' });
   assert.equal(model.executionStatus(failed).label, 'status.preparationRetried');

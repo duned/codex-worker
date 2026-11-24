@@ -1,5 +1,6 @@
 import type { executions as source } from '../en/executions';
 export const executions = {
+  "changes.title": "Cambios", "changes.compare": "Comparar en GitHub", "changes.files": "{n} ficheros cambiados", "changes.more": "y {n} ficheros más",
   "usage.title": "Uso del motor", "usage.input": "{tokens} tokens de entrada ({cached} en caché)", "usage.output": "{tokens} de salida", "usage.runs": "{n} ejecuciones",
   "usage.engineTotals": "{input} entrada · {output} salida", "usage.partial": "{n} de {total} intentos informaron del uso",
   "executions.byEngine": "Por motor", "executions.byEngineScope": "Intentos terminados de esta lista",

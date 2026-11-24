@@ -1,4 +1,5 @@
 export const executions = {
+  "changes.title": "Changes", "changes.compare": "Compare on GitHub", "changes.files": "{n} files changed", "changes.more": "and {n} more files",
   "usage.title": "Engine usage", "usage.input": "{tokens} tokens in ({cached} cached)", "usage.output": "{tokens} out", "usage.runs": "{n} runs",
   "usage.engineTotals": "{input} in · {output} out", "usage.partial": "{n} of {total} attempts reported usage",
   "executions.byEngine": "By engine", "executions.byEngineScope": "Finished attempts in this list",

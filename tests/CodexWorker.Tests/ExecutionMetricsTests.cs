@@ -62,4 +62,17 @@ public sealed class ExecutionMetricsTests
         using var reopened = new ExecutionHistoryStore(path);
         Assert.Equivalent(metrics, (await reopened.ReadExecutionAsync(entry.ExecutionId))!.Metrics);
     }
+
+    [Fact]
+    public void NumstatCountsTextAndBinaryFilesAndBoundsTheFileList()
+    {
+        var output = "3\t1\tsrc/a.cs\n-\t-\timage.png\n10\t0\tdocs/{old => new}.md\n";
+        var changes = GitRepository.ParseNumstat(output, "abcdef1", "1234567")!;
+        Assert.Equal((3, 13, 1), (changes.FilesChanged, changes.Insertions, changes.Deletions));
+        Assert.Equal(["src/a.cs", "image.png", "docs/{old => new}.md"], changes.Files);
+        var many = string.Concat(Enumerable.Range(0, 80).Select(index => $"1\t0\tf{index}.txt\n"));
+        var bounded = GitRepository.ParseNumstat(many, null, null)!;
+        Assert.Equal((80, ExecutionChanges.MaximumFiles), (bounded.FilesChanged, bounded.Files.Count));
+        Assert.True(ExecutionChanges.Valid(bounded));
+    }
 }

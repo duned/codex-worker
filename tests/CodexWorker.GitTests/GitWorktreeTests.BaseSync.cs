@@ -83,6 +83,12 @@ public sealed partial class GitWorktreeTests
             _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
 
         Assert.True(result.HasChanges);
+        // The change is measured against the base it landed on, so newer remote work is not counted.
+        var changes = Assert.IsType<CodexProvisioning.ExecutionChanges>(result.Changes);
+        Assert.Equal((1, 1, 0), (changes.FilesChanged, changes.Insertions, changes.Deletions));
+        Assert.Equal(["implemented.txt"], changes.Files);
+        Assert.Equal(result.CommitSha, changes.Commit);
+        Assert.Equal(await fixture.Git("rev-parse", "main~1"), changes.BaseCommit);
         var remote = Path.Combine(fixture._root, "origin.git");
         Assert.Equal(await fixture.GitAt(remote, "rev-parse", "main"), await fixture.Git("rev-parse", "main"));
         Assert.Equal("implementation", await fixture.GitAt(remote, "show", "main:implemented.txt"));

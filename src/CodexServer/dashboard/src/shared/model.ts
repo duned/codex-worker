@@ -267,6 +267,13 @@ export function usageText(usage: NonNullable<NonNullable<ExecutionSummary['metri
   if (usage.runs > 1) parts.push(values('usage.runs', { n: usage.runs }));
   return parts.join(' · ');
 }
+/** GitHub comparison of the integrated change, from the Issue's own repository URL. */
+export function compareUrl(execution: ExecutionSummary) {
+  const changes = execution.metrics?.changes, url = execution.workReference?.url;
+  const repository = url?.match(/^(https:\/\/github\.com\/[\w.-]+\/[\w.-]+)\/issues\/\d+$/)?.[1];
+  if (!repository || !changes?.commit) return undefined;
+  return changes.baseCommit ? `${repository}/compare/${changes.baseCommit}...${changes.commit}` : `${repository}/commit/${changes.commit}`;
+}
 /** Engine usage and cost across the attempts of one Issue, when any reported it. */
 export const issueUsage = (attempts: ExecutionSummary[]) => usageTotals(attempts);
 

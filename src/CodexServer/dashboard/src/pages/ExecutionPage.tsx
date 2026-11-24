@@ -4,10 +4,11 @@ import { Button } from '../untitled/components/base/buttons/button';
 import { useAction, useArchive } from '../shared/actions';
 import { useApiRead, useRuntime } from '../shared/api/session';
 import type { Validator } from '../shared/api/client';
+import type { ExecutionMetrics } from '../shared/api/contracts';
 import { execution as validateExecution, record } from '../shared/api/validation';
 import { projectExecutionsPath, recentExecutionsPath, retryIssuePath, useExecutions, useNames, useProjects } from '../shared/data';
 import { t, tryT, useLanguage } from '../shared/i18n';
-import { canArchive, dateTime, duration, executionActions, executionStatus, explain, isActive, issueNumber, newerAttempt, stepProgress, type ExecutionAction, usageText } from '../shared/model';
+import { canArchive, compareUrl, dateTime, duration, executionActions, executionStatus, explain, isActive, issueNumber, newerAttempt, stepProgress, type ExecutionAction, usageText } from '../shared/model';
 import { Ago, Card, Check, Explanation, Field, inputClass, KeyValues, Notice, PageHeader, Pill, ReadState, StatusPill, Steps, TextLink, CopyValue } from '../shared/ui';
 import { executionLabel } from './ExecutionRow';
 
@@ -136,14 +137,17 @@ export function ExecutionPage() {
     </Notice>}
 
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-      <Card title={t('executions.result')}><KeyValues items={[
-        [t('executions.implementation'), stepProgress(item)[1].state === 'done' ? t('executions.done') : isActive(item) ? t('executions.inProgress') : t('executions.pending')],
-        [t('executions.validation'), item.validationResult ? <span className="font-mono text-xs">{item.validationResult}</span> : t('executions.pending')],
-        [t('executions.integration'), integrationText],
-        [t('executions.duration'), duration(item.durationMilliseconds ?? (item.startedAtUtc && item.completedAtUtc ? Date.parse(item.completedAtUtc) - Date.parse(item.startedAtUtc) : undefined))],
-        ...(item.metrics?.usage ? [[t('usage.title'), usageText(item.metrics.usage, t)] as [string, string]] : []),
-        ...(item.state === 'Completed' && item.completionSummary ? [[t('executions.summary'), item.completionSummary] as [string, string]] : [])
-      ]} /></Card>
+      <div className="flex flex-col gap-6">
+        <Card title={t('executions.result')}><KeyValues items={[
+          [t('executions.implementation'), stepProgress(item)[1].state === 'done' ? t('executions.done') : isActive(item) ? t('executions.inProgress') : t('executions.pending')],
+          [t('executions.validation'), item.validationResult ? <span className="font-mono text-xs">{item.validationResult}</span> : t('executions.pending')],
+          [t('executions.integration'), integrationText],
+          [t('executions.duration'), duration(item.durationMilliseconds ?? (item.startedAtUtc && item.completedAtUtc ? Date.parse(item.completedAtUtc) - Date.parse(item.startedAtUtc) : undefined))],
+          ...(item.metrics?.usage ? [[t('usage.title'), usageText(item.metrics.usage, t)] as [string, string]] : []),
+          ...(item.state === 'Completed' && item.completionSummary ? [[t('executions.summary'), item.completionSummary] as [string, string]] : [])
+        ]} /></Card>
+        {item.metrics?.changes && <ChangesCard changes={item.metrics.changes} compare={compareUrl(item)} />}
+      </div>
       <Card title={t('common.details')}><KeyValues items={[
         [t('executions.project'), <TextLink to={`/projects/${encodeURIComponent(item.projectId)}`}>{names.project(item.projectId)}</TextLink>],
         [t('executions.worker'), item.assignedWorkerId ? <TextLink to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{names.worker(item.assignedWorkerId)}</TextLink> : names.worker(item.assignedWorkerId)],
@@ -156,4 +160,17 @@ export function ExecutionPage() {
       ]} /></Card>
     </div>
   </>;
+}
+
+/** Size of the integrated change and the files it touched, with the comparison on GitHub. */
+function ChangesCard({ changes, compare }: { changes: NonNullable<ExecutionMetrics['changes']>; compare?: string }) {
+  const hidden = changes.filesChanged - changes.files.length;
+  return <Card title={t('changes.title')} actions={compare && <Button size="sm" color="secondary" href={compare} target="_blank" rel="noreferrer">{t('changes.compare')}</Button>}>
+    <p className="text-sm text-secondary"><span className="font-medium text-primary">{t('changes.files', { n: changes.filesChanged })}</span>
+      {' · '}<span className="text-utility-green-500 tabular-nums">+{changes.insertions}</span>{' '}<span className="text-utility-red-500 tabular-nums">−{changes.deletions}</span></p>
+    {changes.files.length > 0 && <ul className="mt-3 flex flex-col gap-1 font-mono text-xs text-secondary">
+      {changes.files.map(file => <li key={file} className="truncate" title={file}>{file}</li>)}
+      {hidden > 0 && <li className="font-sans text-tertiary">{t('changes.more', { n: hidden })}</li>}
+    </ul>}
+  </Card>;
 }
