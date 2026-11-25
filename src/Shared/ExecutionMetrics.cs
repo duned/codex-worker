@@ -34,9 +34,14 @@ public sealed record ExecutionChanges(int FilesChanged, int Insertions, int Dele
 }
 
 /// <summary>Optional facts a Worker adds to its final execution report. Invalid metrics are dropped, never the report.
-/// <see cref="PullRequestUrl"/> is the pull request a project in pull-request integration mode opened for review.</summary>
+/// <see cref="PullRequestUrl"/> is the pull request a project in pull-request integration mode opened for review;
+/// <see cref="ParentBranch"/> is the parent's integration branch a sub-issue was delivered into instead.</summary>
 public sealed record ExecutionMetrics(EngineUsage? Usage = null, ExecutionChanges? Changes = null, string? PullRequestUrl = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentBranch { get; init; }
+
     public static bool Valid(ExecutionMetrics? metrics) => metrics is null || EngineUsage.Valid(metrics.Usage) &&
-        ExecutionChanges.Valid(metrics.Changes) && (metrics.PullRequestUrl is null || ProjectIntegrationMode.ValidPullRequestUrl(metrics.PullRequestUrl));
+        ExecutionChanges.Valid(metrics.Changes) && (metrics.PullRequestUrl is null || ProjectIntegrationMode.ValidPullRequestUrl(metrics.PullRequestUrl)) &&
+        (metrics.ParentBranch is null || ProjectIntegrationMode.ValidParentBranch(metrics.ParentBranch));
 }

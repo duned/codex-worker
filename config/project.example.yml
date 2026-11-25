@@ -16,6 +16,8 @@ git:
   # direct (default): fast-forward the base branch and push it.
   # pull-request: push the rebased, validated branch and open a pull request into the
   # base for review; GitHub merges it and closes the Issue. Requires autoMerge: true.
+  # Sub-issues collect in integration/<parent> instead, and the parent opens one pull
+  # request for all of them (docs/pull-request-integration.md).
   integration: direct
   pushCompletedBranch: true
   deleteLocalFeatureBranch: true

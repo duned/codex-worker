@@ -86,6 +86,7 @@ export const executions = list<ExecutionSummary>(value => {
       if ([changes.baseCommit, changes.commit].some(value => value != null && !/^[0-9a-f]{7,64}$/i.test(String(value)))) throw new Error('Invalid change commits.');
     }
     if (metrics.pullRequestUrl != null && !/^https:\/\/github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(String(metrics.pullRequestUrl))) throw new Error('Invalid pull request link.');
+    if (metrics.parentBranch != null && !/^integration\/[1-9][0-9]{0,9}$/.test(String(metrics.parentBranch))) throw new Error('Invalid integration branch.');
   }
   if (item.managedEligibilityReasons != null && (!Array.isArray(item.managedEligibilityReasons) || item.managedEligibilityReasons.some(reason => typeof reason !== 'string'))) throw new Error('Invalid eligibility reasons.');
   if (item.workReference != null) {

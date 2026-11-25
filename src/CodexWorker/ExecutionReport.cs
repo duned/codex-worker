@@ -136,6 +136,11 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
                     if (integration.PullRequestUrl is { } url) result.Add($"- Pull request: {url}");
                     result.Add("- The Issue closes when the pull request is merged.");
                 }
+                if (integration.ParentBranch is { } parentBranch)
+                {
+                    result.Add($"- Integrated into: `{parentBranch}`" + (integration.ParentIssueNumber is { } parent ? $" (parent Issue #{parent})" : ""));
+                    result.Add("- The Issue stays open and closes when the parent's pull request is merged.");
+                }
             }
             else if (integration is not null) result.Add("- Completed without code changes");
             sections.Add(string.Join("\n", result));

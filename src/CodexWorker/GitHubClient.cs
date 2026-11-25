@@ -14,6 +14,11 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
     private readonly Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand;
     private readonly CodexProvisioning.GeneratedMessageOrigin origin;
 
+    /// <summary>Pull-request integration: the done label. An open prerequisite carrying it that is a sibling (same
+    /// parent) or a sub-issue of the candidate is already in the shared integration branch the candidate starts
+    /// from, so it no longer blocks. Any other prerequisite must be closed. Null keeps "closed" as the only rule.</summary>
+    public string? IntegrationBranchDoneLabel { get; set; }
+
     public GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds, bool requireManagedAuthentication = false)
         : this(runner, repository, timeoutSeconds, requireManagedAuthentication, null) { }
 
@@ -73,7 +78,8 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
                 cancellationToken.ThrowIfCancellationRequested();
                 if (excludedIssueNumbers.Contains(candidate.Number)) continue;
                 using var dependencies = await GetBlockingDependenciesAsync(candidate.Number, cancellationToken);
-                if (DependenciesAreClosed(dependencies)) return candidate;
+                if (DependenciesAreClosed(dependencies) ||
+                    await DependenciesAreInSharedIntegrationBranchAsync(candidate.Number, dependencies, cancellationToken)) return candidate;
             }
             return null;
         }
@@ -319,6 +325,72 @@ public sealed partial class GitHubClient : IGitHubClient, IGitHubLabelClient
         }
         if (pages.Count == 0) throw new JsonException("GitHub API returned no JSON pages.");
         return JsonSerializer.Serialize(pages);
+    }
+
+    private async Task<bool> DependenciesAreInSharedIntegrationBranchAsync(int issueNumber, JsonDocument pages, CancellationToken ct)
+    {
+        if (IntegrationBranchDoneLabel is not { Length: > 0 } done) return false;
+        var open = new List<int>();
+        foreach (var page in pages.RootElement.EnumerateArray())
+            foreach (var dependency in page.EnumerateArray())
+            {
+                if (!string.Equals(dependency.GetProperty("state").GetString(), "open", StringComparison.OrdinalIgnoreCase)) continue;
+                var labels = dependency.TryGetProperty("labels", out var array) && array.ValueKind == JsonValueKind.Array
+                    ? array.EnumerateArray().Select(label => label.TryGetProperty("name", out var name) ? name.GetString() : null) : [];
+                if (!labels.Contains(done, StringComparer.OrdinalIgnoreCase)) return false;
+                open.Add(dependency.GetProperty("number").GetInt32());
+            }
+        if (open.Count is 0 or > 20) return false;
+        var parent = await GetParentIssueNumberAsync(issueNumber, ct);
+        foreach (var blocker in open)
+        {
+            var blockerParent = await GetParentIssueNumberAsync(blocker, ct);
+            if (blockerParent != issueNumber && (parent is null || blockerParent != parent)) return false;
+        }
+        return true;
+    }
+
+    public async Task<IReadOnlyList<int>> ListOpenSubIssuesAsync(int issueNumber, CancellationToken ct)
+    {
+        if (issueNumber <= 0) throw new ArgumentOutOfRangeException(nameof(issueNumber));
+        const string query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number subIssues(first:100){nodes{number state repository{nameWithOwner}} pageInfo{hasNextPage}}}}}";
+        var parts = repository.Split('/');
+        var result = new List<int>();
+        var seen = new HashSet<int> { issueNumber };
+        var level = new List<int> { issueNumber };
+        for (var depth = 0; depth < 5 && level.Count > 0; depth++)
+        {
+            var next = new List<int>();
+            foreach (var parent in level)
+            {
+                var response = await RunGhAsync(["api", "graphql", "-f", $"query={query}", "-f", $"owner={parts[0]}", "-f", $"name={parts[1]}",
+                    "-F", $"number={parent.ToString(System.Globalization.CultureInfo.InvariantCulture)}"], ct, allowGracefulCancellation: true);
+                try
+                {
+                    using var document = JsonDocument.Parse(response.StandardOutput);
+                    var root = document.RootElement;
+                    if (root.TryGetProperty("errors", out var errors) && (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() > 0))
+                        throw new JsonException("GitHub returned GraphQL errors.");
+                    var issue = root.GetProperty("data").GetProperty("repository").GetProperty("issue");
+                    if (issue.GetProperty("number").GetInt32() != parent) throw new JsonException("GitHub returned a different Issue.");
+                    foreach (var child in issue.GetProperty("subIssues").GetProperty("nodes").EnumerateArray())
+                    {
+                        var number = child.GetProperty("number").GetInt32();
+                        if (number <= 0 || !string.Equals(repository, child.GetProperty("repository").GetProperty("nameWithOwner").GetString(),
+                            StringComparison.OrdinalIgnoreCase) || !seen.Add(number)) continue;
+                        if (string.Equals(child.GetProperty("state").GetString(), "OPEN", StringComparison.OrdinalIgnoreCase)) result.Add(number);
+                        next.Add(number);
+                    }
+                }
+                catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+                {
+                    throw ReadFailure("issue sub-issues", parent, "Could not reliably read the Issue's sub-issues.", ex);
+                }
+                if (result.Count >= 200) return result;
+            }
+            level = next;
+        }
+        return result;
     }
 
     private static bool DependenciesAreClosed(JsonDocument pages)

@@ -47,6 +47,8 @@ export interface ExecutionMetrics {
   changes?: { filesChanged: number; insertions: number; deletions: number; files: string[]; baseCommit?: string | null; commit?: string | null } | null;
   /** The pull request a project in review mode opened instead of merging. */
   pullRequestUrl?: string | null;
+  /** The parent's integration branch a sub-issue was delivered into; the parent's pull request carries it to the base. */
+  parentBranch?: string | null;
 }
 export interface ExecutionArchiveResult { changed: string[]; refused: { id: string; reason: string }[] }
 export interface ExecutionMaintenanceRequest {

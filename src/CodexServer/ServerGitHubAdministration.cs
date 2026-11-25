@@ -7,7 +7,14 @@ using System.Text;
 using System.Text.Json;
 
 public sealed record GitHubIssueQuery(string State = "open", int Limit = 50, string? Label = null);
-public sealed record GitHubBlockingIssue(int Number, string Title, string State, string Url);
+public sealed record GitHubBlockingIssue(int Number, string Title, string State, string Url)
+{
+    /// <summary>Labels and parent, when read: they decide whether an open prerequisite is already in a shared integration branch.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Labels { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ParentNumber { get; init; }
+}
 public sealed record GitHubRelationshipIssue(int Number, string Title, string State, string Url)
 {
     public IReadOnlyList<string> Labels { get; init; } = [];
@@ -28,6 +35,8 @@ public sealed record ManagedGitHubIssue(int Number, string Title, string Body, s
     public CodexProvisioning.IssueExecutionMetadata? Selection { get; init; }
     public string? Author { get; init; }
     public string? Milestone { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ParentNumber { get; init; }
 }
 public sealed record GitHubRepositoryAccess(string Repository, bool CliAuthenticated, bool RepositoryReadable,
     string? Diagnostic, DateTimeOffset CheckedAtUtc);
@@ -126,7 +135,7 @@ internal static class ManagedGitHubIssueEligibility
             !issue.Labels.Contains(ready, StringComparer.OrdinalIgnoreCase)) reasons.Add($"Issue is missing ready label '{ready}'.");
         if (project.IssueBlockedLabel is { Length: > 0 } blocked &&
             issue.Labels.Contains(blocked, StringComparer.OrdinalIgnoreCase)) reasons.Add($"Issue has blocked label '{blocked}'.");
-        var openBlockers = issue.BlockedBy.Where(blocker => string.Equals(blocker.State, "open", StringComparison.OrdinalIgnoreCase))
+        var openBlockers = issue.BlockedBy.Where(blocker => !Satisfied(project, issue, blocker))
             .Select(blocker => blocker.Number).ToArray();
         if (openBlockers.Length > 0)
         {
@@ -141,6 +150,13 @@ internal static class ManagedGitHubIssueEligibility
         catch (InvalidDataException ex) { reasons.Add(ex.Message); }
         return issue with { IsEligible = reasons.Count == 0, EligibilityReasons = reasons, Selection = selection };
     }
+
+    /// <summary>A prerequisite is satisfied when closed or, in pull-request mode, already delivered into the
+    /// integration branch the Issue starts from.</summary>
+    internal static bool Satisfied(CentralProject project, ManagedGitHubIssue issue, GitHubBlockingIssue blocker) =>
+        !string.Equals(blocker.State, "open", StringComparison.OrdinalIgnoreCase) ||
+        CodexProvisioning.ProjectIntegrationMode.DeliveredToSharedBranch(project.IntegrationMode, issue.Number, issue.ParentNumber,
+            blocker.Labels, blocker.ParentNumber);
 }
 
 /// <summary>Read-only Server GitHub integration using the Server service account's gh authentication.</summary>
@@ -210,7 +226,7 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
             {
                 var issue = ReadIssue(item, project.Repository);
                 var blockers = await ReadBlockingIssuesAsync(project.Repository, issue.Number, linked.Token);
-                issues.Add(Evaluate(project, issue, blockers));
+                issues.Add(await EvaluateWithParentsAsync(project, issue, blockers, linked.Token));
             }
             return issues;
         }
@@ -234,7 +250,52 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
         var issue = await ReadIssueFieldsAsync(project, issueNumber, cancellationToken);
         if (issue is null) return null;
         var blockers = await ReadBlockingIssuesAsync(project.Repository, issueNumber, cancellationToken);
-        return Evaluate(project, issue, blockers);
+        return await EvaluateWithParentsAsync(project, issue, blockers, cancellationToken);
+    }
+
+    /// <summary>In pull-request mode, an open prerequisite carrying the done label may already be in the integration
+    /// branch the Issue starts from. Only then are the parents read (one query), to apply that rule.</summary>
+    private async Task<ManagedGitHubIssue> EvaluateWithParentsAsync(CentralProject project, IssueFields issue,
+        IReadOnlyList<GitHubBlockingIssue> blockers, CancellationToken cancellationToken)
+    {
+        var candidates = project.IntegrationMode != CodexProvisioning.ProjectIntegrationMode.PullRequest ? [] : blockers
+            .Where(blocker => blocker.State == "open" && blocker.Labels?.Contains(CodexProvisioning.ProjectIntegrationMode.DoneLabel,
+                StringComparer.OrdinalIgnoreCase) == true).Select(blocker => blocker.Number).Distinct().Take(20).ToArray();
+        if (candidates.Length == 0) return Evaluate(project, issue, blockers);
+        var parents = await ReadParentNumbersAsync(project, [issue.Number, .. candidates], cancellationToken);
+        var enriched = blockers.Select(blocker => parents.TryGetValue(blocker.Number, out var parent) ? blocker with { ParentNumber = parent } : blocker).ToArray();
+        var evaluated = Evaluate(project, issue, enriched);
+        return parents.GetValueOrDefault(issue.Number) is { } issueParent
+            ? ManagedGitHubIssueEligibility.Evaluate(project, evaluated with { ParentNumber = issueParent }) : evaluated;
+    }
+
+    private async Task<IReadOnlyDictionary<int, int?>> ReadParentNumbersAsync(CentralProject project, IReadOnlyList<int> numbers,
+        CancellationToken cancellationToken)
+    {
+        var owner = project.Repository.Split('/');
+        var selections = numbers.Distinct().Select(number =>
+            $"i{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}:issue(number:{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}){{number parent{{number}}}}");
+        var data = await QueryAsync(project.Repository, $"query{{repository(owner:{JsonSerializer.Serialize(owner[0])},name:{JsonSerializer.Serialize(owner[1])}){{{string.Join(" ", selections)}}}}}",
+            cancellationToken);
+        try
+        {
+            var repository = data.GetProperty("repository");
+            var result = new Dictionary<int, int?>();
+            foreach (var number in numbers.Distinct())
+            {
+                var item = repository.GetProperty($"i{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+                if (item.ValueKind == JsonValueKind.Null) continue;
+                if (item.GetProperty("number").GetInt32() != number) throw new JsonException("Issue identity did not match.");
+                var parent = item.GetProperty("parent");
+                result[number] = parent.ValueKind == JsonValueKind.Null ? null : parent.GetProperty("number").GetInt32();
+            }
+            return result;
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            throw new GitHubReadUnavailableException(project.Repository,
+                $"GitHub Issue parents could not be read for '{project.Repository}'.", "invalid-response", ex);
+        }
     }
 
     private async Task<IssueFields?> ReadIssueFieldsAsync(CentralProject project, int issueNumber,
@@ -417,7 +478,11 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
                     var url = RequiredString(item, "html_url");
                     if (number <= 0 || state is not ("open" or "closed") || !ValidIssueUrl(url, repository, number))
                         throw new JsonException("GitHub dependency fields were invalid.");
-                    blockers.Add(new(number, title, state, url));
+                    var labels = item.TryGetProperty("labels", out var labelArray) && labelArray.ValueKind == JsonValueKind.Array
+                        ? labelArray.EnumerateArray().Select(label => label.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "")
+                            .Where(name => name.Length > 0).ToArray()
+                        : null;
+                    blockers.Add(new(number, title, state, url) { Labels = labels });
                     if (blockers.Count > 2500) throw new JsonException("GitHub returned too many blocking Issues.");
                 }
             }
@@ -1087,7 +1152,7 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                 if (issue?.IsEligible == true || recovery && issue is not null &&
                     issue.State.Equals("open", StringComparison.OrdinalIgnoreCase) &&
                     (assignment.Project.IssueBlockedLabel is null || !issue.Labels.Contains(assignment.Project.IssueBlockedLabel, StringComparer.OrdinalIgnoreCase)) &&
-                    issue.BlockedBy.All(blocker => blocker.State.Equals("closed", StringComparison.OrdinalIgnoreCase)))
+                    issue.BlockedBy.All(blocker => ManagedGitHubIssueEligibility.Satisfied(assignment.Project, issue, blocker)))
                 {
                     await registry.UpdateManagedEligibilityAsync(assignment.ServerExecutionId,
                         recovery ? new("eligible", [], _clock.GetUtcNow()) : update, CancellationToken.None);

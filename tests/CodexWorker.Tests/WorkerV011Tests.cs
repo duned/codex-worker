@@ -226,6 +226,8 @@ public sealed partial class WorkerV011Tests
         public Task CommentAsync(int issueNumber, string comment, CancellationToken ct)
         { Comments.Add(comment); return CommentAction?.Invoke() ?? Task.CompletedTask; }
         public List<(string Head, string Base, string Title, string Body)> PullRequests { get; } = [];
+        public IReadOnlyList<int> OpenSubIssues { get; set; } = [];
+        public Task<IReadOnlyList<int>> ListOpenSubIssuesAsync(int issueNumber, CancellationToken ct) => Task.FromResult(OpenSubIssues);
         public Task<string> CreatePullRequestAsync(int issueNumber, string head, string baseBranch, string title, string body, CancellationToken ct)
         {
             PullRequests.Add((head, baseBranch, title, body));

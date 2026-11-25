@@ -1402,7 +1402,10 @@ public sealed class WorkerHost
         Func<string, bool> engineReady)
     {
         var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds,
-            requireManagedAuthentication: _global.Server.Enabled && _global.Projects.Ownership == "managed");
+            requireManagedAuthentication: _global.Server.Enabled && _global.Projects.Ownership == "managed")
+        {
+            IntegrationBranchDoneLabel = config.Git.PullRequest ? config.GitHub.DoneLabel : null
+        };
         var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker,
             requireManagedAuthentication: _global.Server.Enabled && _global.Projects.Ownership == "managed");
         var codex = new CodexExecutor(_runner, config.Codex, config.Environment.Variables);

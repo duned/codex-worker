@@ -444,4 +444,46 @@ public sealed partial class WorkerV011Tests
         Assert.Equal("Completed", entry.State);
         Assert.Equal("https://github.com/owner/repo/pull/41", entry.Metrics?.PullRequestUrl);
     }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task SubIssueDeliveredToItsParentBranchStaysOpenWithoutAPullRequest()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Git.Result = new GitIntegrationResult(true, "Committed as `0123456789ab`. Integrated into `integration/5` for parent Issue #5.",
+            "0123456789abcdef0123456789abcdef01234567", null, "completed/17", ParentBranch: "integration/5", ParentIssueNumber: 5);
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+
+        Assert.Empty(h.GitHub.PullRequests);
+        // The parent's pull request closes it on merge; until then it is done but open.
+        Assert.Equal(0, h.GitHub.CloseCalls);
+        Assert.Contains("working->done", h.GitHub.Labels);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Integrated into: `integration/5` (parent Issue #5)", StringComparison.Ordinal));
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Completed", entry.State);
+        Assert.Equal("integration/5", entry.Metrics?.ParentBranch);
+        Assert.Null(entry.Metrics?.PullRequestUrl);
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task ParentPullRequestClosesItsOpenSubIssuesOnMerge()
+    {
+        using var h = new Harness();
+        h.GitHub.OpenSubIssues = [18, 19];
+        h.Git.Result = new GitIntegrationResult(true, "Committed as `0123456789ab`. Pushed as `completed/17` for review into `main`.",
+            "0123456789abcdef0123456789abcdef01234567", null, "completed/17", PullRequestBase: "main");
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+
+        var body = Assert.Single(h.GitHub.PullRequests).Body;
+        Assert.StartsWith("Closes #17.\nCloses #18.\nCloses #19.", body.Replace("\r\n", "\n", StringComparison.Ordinal));
+        Assert.Contains("`integration/17`", body);
+        Assert.Equal(0, h.GitHub.CloseCalls);
+    }
 }
