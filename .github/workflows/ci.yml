@@ -39,7 +39,15 @@ jobs:
       - name: Restore
         run: dotnet restore CodexWorker.sln
       - name: Validate (build, analyzers and full test suite)
-        run: python3 tools/validate.py --base origin/main --full
+        # Interrupted-execution recovery refuses to reuse a workspace while a process it cannot inspect shares
+        # the Worker's cgroup (it could be a surviving child). On hosted runners the job step shares its cgroup
+        # with root-owned runner services, so the suite runs in a scope of its own, as the Worker does under
+        # systemd. The environment is passed through explicitly because sudo resets it.
+        run: |
+          echo "Job cgroup: $(cat /proc/self/cgroup)"
+          sudo systemd-run --scope --quiet --collect --uid="$(id -u)" --gid="$(id -g)" \
+            env "PATH=$PATH" "HOME=$HOME" "DOTNET_ROOT=${DOTNET_ROOT:-}" "DOTNET_CLI_TELEMETRY_OPTOUT=1" \
+            bash -c 'echo "Validation cgroup: $(cat /proc/self/cgroup)" && python3 tools/validate.py --base origin/main --full'
       - name: Dashboard model tests
         working-directory: src/CodexServer/dashboard
         run: npm test
