@@ -65,6 +65,8 @@ public sealed class ServerArchivedBranchTests
 
     private static ServerArchivedBranchService Service(FakeGitHub github) => new(github.RunAsync, new Clock(Now));
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InventoryOffersOnlyOldBranchesWhoseTipIsAlreadyInTheBase()
     {
@@ -81,6 +83,8 @@ public sealed class ServerArchivedBranchTests
         Assert.DoesNotContain(github.Calls, call => call.Contains("DELETE"));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InventoryPagesAreStableAndBounded()
     {
@@ -96,6 +100,8 @@ public sealed class ServerArchivedBranchTests
         Assert.Empty(first.Branches.Select(b => b.Branch).Intersect(second.Branches.Select(b => b.Branch)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UnknownCommitsAreKeptRatherThanGuessed()
     {
@@ -105,6 +111,8 @@ public sealed class ServerArchivedBranchTests
         Assert.Equal(("unknown", "commit-not-found"), page.Branches.Where(b => b.Branch == "done/feature/1-old").Select(b => (b.Decision, b.Reason)).Single());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DeletionRechecksEveryBranchAndDeletesOnlyProvenOnes()
     {
@@ -124,6 +132,8 @@ public sealed class ServerArchivedBranchTests
             result.Branches.Select(b => (b.Outcome, b.Reason)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ARefusedDeletionStopsTheRest()
     {
@@ -135,6 +145,8 @@ public sealed class ServerArchivedBranchTests
         Assert.Equal([("failed", "permission"), ("not-attempted", "stopped-after-failure")], result.Branches.Select(b => (b.Outcome, b.Reason)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("main")]
     [InlineData("feature/1-active")]
@@ -149,6 +161,8 @@ public sealed class ServerArchivedBranchTests
         Assert.Empty(github.Calls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RequestsAreBounded()
     {
@@ -167,6 +181,8 @@ public sealed class ServerArchivedBranchTests
 [Trait("Duration", "Fast")]
 public sealed class ServerArchivedBranchApiTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EndpointsRequireManagementAndRejectInvalidRequestsBeforeReachingGitHub()
     {

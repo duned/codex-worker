@@ -192,6 +192,8 @@ public sealed partial class GitWorktreeTests
         Assert.Equal(await fixture.GitAt(remote, "rev-parse", "main"), await fixture.Git("rev-parse", "main"));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(" ! [rejected]        abc -> main (fetch first)", GitPushRejection.NonFastForward)]
     [InlineData(" ! [rejected]        abc -> main (non-fast-forward)", GitPushRejection.NonFastForward)]

@@ -9,15 +9,17 @@ namespace CodexWorker.Tests;
 /// longer blocks it; every other prerequisite still has to be closed (merged into the base).</summary>
 public sealed class ParentIntegrationEligibilityTests
 {
+    // Cases: a sibling under the same parent; the parent's own sub-issue; another parent's sub-issue (waits for
+    // the merge); no parent; not delivered yet; direct mode, where closed is the only rule.
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     [Theory]
-    [InlineData("pull-request", 31, 30, "codex-done", 30, true)]   // sibling under the same parent
-    [InlineData("pull-request", 30, null, "codex-done", 30, true)] // the parent's own sub-issue
-    [InlineData("pull-request", 31, 30, "codex-done", 40, false)]  // another parent's sub-issue: wait for the merge
+    [InlineData("pull-request", 31, 30, "codex-done", 30, true)]
+    [InlineData("pull-request", 30, null, "codex-done", 30, true)]
+    [InlineData("pull-request", 31, 30, "codex-done", 40, false)]
     [InlineData("pull-request", 31, null, "codex-done", null, false)]
-    [InlineData("pull-request", 31, 30, "codex-ready", 30, false)] // not delivered yet
-    [InlineData(null, 31, 30, "codex-done", 30, false)]            // direct mode: closed is the only rule
+    [InlineData("pull-request", 31, 30, "codex-ready", 30, false)]
+    [InlineData(null, 31, 30, "codex-done", 30, false)]
     public void DeliveredPrerequisitesOnlyUnblockTheirOwnIntegrationBranch(string? mode, int issue, int? issueParent,
         string label, int? blockerParent, bool expected) =>
         Assert.Equal(expected, ProjectIntegrationMode.DeliveredToSharedBranch(mode, issue, issueParent, [label], blockerParent));

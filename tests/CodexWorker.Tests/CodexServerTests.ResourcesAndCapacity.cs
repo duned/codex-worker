@@ -562,6 +562,8 @@ public sealed partial class CodexServerTests
         Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void EngineQuotaBlocksOnlyFreshExhaustedWindowsOfTheSelectedEngine()
     {

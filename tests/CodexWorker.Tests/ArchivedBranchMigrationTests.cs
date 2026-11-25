@@ -40,6 +40,8 @@ public sealed class ArchivedBranchMigrationTests
         return command;
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ServerKeepsOtherMaintenanceHistoryAndDropsBranchCommandsAndGrants()
     {
@@ -84,6 +86,8 @@ public sealed class ArchivedBranchMigrationTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task WorkerReceiptsFromEarlierBuildsStillReadAndBranchReceiptsAreDropped()
     {
@@ -121,6 +125,8 @@ public sealed class ArchivedBranchMigrationTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SnapshotsFromStandaloneWorkersThatAdvertisedBranchMaintenanceAreStillAccepted()
     {
