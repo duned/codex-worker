@@ -544,6 +544,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         var details = new List<string>();
         if (QuotaNotification(report) is { Length: > 0 } quota) details.Add(quota.Trim());
         if (report.Integration is not null) details.Add(report.Integration.Summary);
+        if (report.Integration?.PullRequestUrl is { } pullRequest) details.Add($"Pull request: {pullRequest}");
         var integrationRepairs = report.ValidationRepairs.Count(repair => repair.IntegrationRepair);
         if (integrationRepairs > 0) details.Add($"Integration repair succeeded after {integrationRepairs} attempt(s).");
         if (!string.IsNullOrWhiteSpace(report.ImplementationSummary)) details.Add($"{(report.Engine == "ccc" ? "CCC" : "Codex")} summary: {report.ImplementationSummary}");
