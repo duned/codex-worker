@@ -1,0 +1,53 @@
+# Pull request and base-branch validation. It runs the same repository-owned command
+# the Worker runs before integrating (tools/validate.py), forced to the full suite, plus
+# the dashboard's model tests. Projects in pull-request integration mode can require
+# this check before GitHub merges a Worker's pull request.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Git identity for repository tests
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.invalid"
+          git config --global init.defaultBranch main
+      - name: Restore
+        run: dotnet restore CodexWorker.sln
+      - name: Validate (build, analyzers and full test suite)
+        # Interrupted-execution recovery refuses to reuse a workspace while a process it cannot inspect shares
+        # the Worker's cgroup (it could be a surviving child). On hosted runners the job step shares its cgroup
+        # with root-owned runner services, so the suite runs in a scope of its own, as the Worker does under
+        # systemd. The environment is passed through explicitly because sudo resets it.
+        run: |
+          echo "Job cgroup: $(cat /proc/self/cgroup)"
+          sudo systemd-run --scope --quiet --collect --uid="$(id -u)" --gid="$(id -g)" \
+            env "PATH=$PATH" "HOME=$HOME" "DOTNET_ROOT=${DOTNET_ROOT:-}" "DOTNET_CLI_TELEMETRY_OPTOUT=1" \
+            bash -c 'echo "Validation cgroup: $(cat /proc/self/cgroup)" && python3 tools/validate.py --base origin/main --full'
+      - name: Dashboard model tests
+        working-directory: src/CodexServer/dashboard
+        run: npm test

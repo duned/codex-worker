@@ -9,7 +9,7 @@ export const common = {
   "nav.darkTheme": "Switch to dark theme", "nav.signOut": "Sign out", "nav.serverReady": "Server ready", "nav.serverChecking": "Checking Server…",
   "nav.serverUnavailable": "Server unavailable", "nav.updated": "Updated {time}",
   "signIn.title": "Sign in", "signIn.description": "Use the Server management token. Your session is kept when you reload.",
-  "signIn.token": "Management token", "signIn.submit": "Sign in",
+  "signIn.token": "Management token", "signIn.operator": "Your name", "signIn.operatorHint": "Recorded with the changes you make, in Settings → Activity. The token is shared, so this is how changes are told apart.", "signIn.submit": "Sign in",
   "status.queued": "Queued", "status.starting": "Starting", "status.preparing": "Preparing", "status.implementing": "Implementing", "status.validating": "Validating",
   "status.integrating": "Integrating", "status.reporting": "Reporting", "status.integrated": "Integrated", "status.cancelled": "Cancelled", "status.failed": "Failed",
   "status.conflict": "Integration conflict", "status.conflictRetried": "Conflict · retried", "status.workerLostRetried": "Worker lost · retried", "status.preparationRetried": "Preparation failed · retried",

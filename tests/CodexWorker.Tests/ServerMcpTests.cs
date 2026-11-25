@@ -240,6 +240,12 @@ public sealed class ServerMcpTests
             var cancelArguments = new { executionRequestId = cancellable.GetProperty("executionRequestId").GetString() };
             Assert.Equal("Cancelled", (await Call(client, "cancel_execution", cancelArguments)).GetProperty("state").GetString());
             Assert.Equal("rejected", (await Call(client, "cancel_execution", cancelArguments)).GetProperty("outcome").GetString());
+            // Tools that change state are audited with their identifying arguments; reads are not.
+            var audited = (await app.Services.GetRequiredService<AuditLogStore>().ListAsync(200, null, null)).Events;
+            Assert.Contains(audited, item => item is { Channel: "mcp", Method: "TOOL", Outcome: "succeeded" } &&
+                item.Action == $"mcp/dispatch_execution projectId={project.Id} issueNumber=42");
+            Assert.Contains(audited, item => item.Action.StartsWith("mcp/cancel_execution executionRequestId=", StringComparison.Ordinal));
+            Assert.DoesNotContain(audited, item => item.Action.StartsWith("mcp/get_", StringComparison.Ordinal));
             Assert.Equal("worker-execution-proof-missing", (await Call(client, "retry_execution_report", new { executionRequestId = queued.Id, operationId = Guid.NewGuid().ToString("N") })).GetProperty("reason").GetString());
             await store.UpdateProjectLifecycleAsync(project.Id, false, project.Revision);
             Assert.Equal("project-disabled", (await Call(client, "dispatch_execution", new { projectId = project.Id, issueNumber = 44 })).GetProperty("reason").GetString());

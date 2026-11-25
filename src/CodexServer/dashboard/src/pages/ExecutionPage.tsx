@@ -79,7 +79,9 @@ export function ExecutionPage() {
       case 'manualCompletion': return <Button key={kind} color={color} isDisabled={busy || !!panel} onClick={() => setPanel('manualCompletion')}>{t('actions.reconcileManually')}</Button>;
     }
   };
-  const integrationText = item.state === 'Completed' ? t('executions.integratedInto', { branch: project?.defaultBranch ?? 'main' })
+  const pullRequest = item.metrics?.pullRequestUrl;
+  const integrationText = item.state === 'Completed' && pullRequest ? <a className="text-brand-secondary underline" href={pullRequest} target="_blank" rel="noreferrer">{t('executions.pullRequestOpened', { n: pullRequest.split('/').pop() ?? '' })}</a>
+    : item.state === 'Completed' ? t('executions.integratedInto', { branch: item.metrics?.parentBranch ?? project?.defaultBranch ?? 'main' })
     : item.integrationResult === 'rebase-conflict' || item.failureClassification === 'IntegrationConflict' ? t('executions.notIntegratedConflict')
     : item.currentStage === 'Integration' && isActive(item) ? t('executions.integrating') : t('executions.pending');
 

@@ -158,9 +158,19 @@ public sealed partial class Worker
                     var completed = await history.ReadExecutionAsync(successId, ct);
                     return completed is null ? result.Report : ExecutionCompletion.Read(completed).Report;
                 }
+                // Review mode: the validated branch is offered as a pull request that closes the Issue
+                // when GitHub merges it, so the Worker leaves the Issue open.
+                var review = result.Report.Integration is { HasChanges: true, PullRequestBase: { } reviewBase, CompletedBranch: { } head } awaitingReview
+                    ? awaitingReview with { PullRequestUrl = await github.CreatePullRequestAsync(issue.Number, head, reviewBase,
+                        $"Implement #{issue.Number}: {issue.Title}",
+                        PullRequestBody(issue, result.Report, await OpenSubIssuesForPullRequestAsync(issue.Number, ct)), ct) } : null;
+                if (review is not null) result = result with { Report = result.Report with { Integration = review } };
+                // A sub-issue delivered into its parent's integration branch stays open with the done label:
+                // its code reaches the base with the parent's pull request, which closes it on merge.
+                var deliveredToParent = result.Report.Integration is { HasChanges: true, ParentBranch: not null };
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
-                await github.CloseAsync(issue.Number, ct);
+                if (review is null && !deliveredToParent) await github.CloseAsync(issue.Number, ct);
                 result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
                 await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, TelegramCompletion(result.Report), ct);
@@ -238,5 +248,30 @@ public sealed partial class Worker
                 break;
         }
         return result.Report;
+    }
+
+    /// <summary>Open sub-issues (at any depth) whose work the pull request carries, so merging it closes them too.
+    /// A read failure leaves them out of the body rather than failing a delivery that already happened.</summary>
+    private async Task<IReadOnlyList<int>> OpenSubIssuesForPullRequestAsync(int issueNumber, CancellationToken ct)
+    {
+        try { return await github.ListOpenSubIssuesAsync(issueNumber, ct); }
+        catch (Exception ex) when (ex is WorkerInfrastructureException && !ct.IsCancellationRequested)
+        {
+            _operationalLog($"Issue #{issueNumber} · sub-issues could not be read for the pull request body; close them after merging. {ex.Message}");
+            return [];
+        }
+    }
+
+    internal static string PullRequestBody(GitHubIssue issue, IssueExecutionReport report, IReadOnlyList<int>? subIssues = null)
+    {
+        var closes = new[] { issue.Number }.Concat(subIssues ?? []).Distinct()
+            .Select(number => $"Closes #{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}.");
+        var body = string.Join("\n", closes) + $"\n\nValidated by Codex Worker on the current `{report.Integration?.PullRequestBase}`" +
+            (report.ExecutionId is { } id ? $" · execution `{id}`" : "") + ".";
+        if (subIssues is { Count: > 0 })
+            body += $"\n\nIncludes the work of {subIssues.Count} sub-issue(s), integrated into `{GitRepository.IntegrationBranchName(issue.Number)}` before this review.";
+        if (!string.IsNullOrWhiteSpace(report.ImplementationSummary))
+            body += "\n\n### Work performed\n\n" + Limit(FailureDiagnosticRedactor.Redact(report.ImplementationSummary, report.SecretValues ?? []), 4000);
+        return body;
     }
 }

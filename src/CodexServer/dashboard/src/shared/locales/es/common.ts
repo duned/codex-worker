@@ -10,7 +10,7 @@ export const common = {
   "nav.darkTheme": "Cambiar a tema oscuro", "nav.signOut": "Salir", "nav.serverReady": "Servidor listo", "nav.serverChecking": "Comprobando servidor…",
   "nav.serverUnavailable": "Servidor no disponible", "nav.updated": "Actualizado {time}",
   "signIn.title": "Iniciar sesión", "signIn.description": "Usa el token de administración del servidor. La sesión se conserva al recargar.",
-  "signIn.token": "Token de administración", "signIn.submit": "Iniciar sesión",
+  "signIn.token": "Token de administración", "signIn.operator": "Tu nombre", "signIn.operatorHint": "Se guarda con los cambios que hagas, en Ajustes → Actividad. El token es compartido: así se distingue quién hizo qué.", "signIn.submit": "Iniciar sesión",
   "status.queued": "En cola", "status.starting": "Arrancando", "status.preparing": "Preparando", "status.implementing": "Implementando", "status.validating": "Validando",
   "status.integrating": "Integrando", "status.reporting": "Informando", "status.integrated": "Integrada", "status.cancelled": "Cancelada", "status.failed": "Fallida",
   "status.conflict": "Conflicto al integrar", "status.conflictRetried": "Conflicto · reintentada", "status.workerLostRetried": "Worker perdido · reintentada", "status.preparationRetried": "Fallo al preparar · reintentada",

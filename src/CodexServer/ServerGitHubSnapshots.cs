@@ -38,7 +38,9 @@ public sealed partial class ServerGitHubReadService
             throw new InvalidDataException("Snapshot batches require 1 to 10 positive Issue numbers.");
         var repositoryParts = project.Repository.Split('/');
         var connectionFields = $"nodes{{{ReferenceFields}}} pageInfo{{hasNextPage endCursor}}";
-        var fields = $"{SnapshotFields} timelineItems(last:100,itemTypes:[LABELED_EVENT]){{nodes{{... on LabeledEvent{{createdAt label{{name}}}}}}}} parent{{{ReferenceFields}}} subIssues(first:100){{{connectionFields}}} blockedBy(first:100){{{connectionFields}}} blocking(first:100){{{connectionFields}}}";
+        // Prerequisites also carry their parent: in pull-request mode a sibling's delivered work no longer blocks.
+        var blockerFields = $"nodes{{{ReferenceFields} parent{{number}}}} pageInfo{{hasNextPage endCursor}}";
+        var fields = $"{SnapshotFields} timelineItems(last:100,itemTypes:[LABELED_EVENT]){{nodes{{... on LabeledEvent{{createdAt label{{name}}}}}}}} parent{{{ReferenceFields}}} subIssues(first:100){{{connectionFields}}} blockedBy(first:100){{{blockerFields}}} blocking(first:100){{{connectionFields}}}";
         var selections = identities.Select(pair => pair.Value is { } id
             ? $"i{pair.Key}:node(id:{JsonSerializer.Serialize(id)}){{... on Issue{{{fields}}}}}"
             : $"i{pair.Key}:repository(owner:{JsonSerializer.Serialize(repositoryParts[0])},name:{JsonSerializer.Serialize(repositoryParts[1])}){{issue(number:{pair.Key}){{{fields}}}}}");
@@ -64,8 +66,19 @@ public sealed partial class ServerGitHubReadService
                 var relationships = new GitHubIssueRelationships(1, project.Repository, issue.Number,
                     new(issue.Number, issue.Title, issue.State.ToLowerInvariant(), issue.Url) { Labels = issue.Labels },
                     parentIssue, children, blockedBy, blocking);
-                issue = issue with { BlockedBy = blockedBy.Select(reference => new GitHubBlockingIssue(reference.Number,
-                    reference.Title, reference.State, reference.Url)).ToArray() };
+                var blockerParents = new Dictionary<int, int>();
+                foreach (var node in item.GetProperty("blockedBy").GetProperty("nodes").EnumerateArray())
+                    if (node.TryGetProperty("parent", out var blockerParent) && blockerParent.ValueKind == JsonValueKind.Object)
+                        blockerParents[node.GetProperty("number").GetInt32()] = blockerParent.GetProperty("number").GetInt32();
+                issue = issue with
+                {
+                    ParentNumber = parentIssue?.Number,
+                    BlockedBy = blockedBy.Select(reference => new GitHubBlockingIssue(reference.Number, reference.Title, reference.State, reference.Url)
+                    {
+                        Labels = reference.Labels,
+                        ParentNumber = blockerParents.TryGetValue(reference.Number, out var number) ? number : null
+                    }).ToArray()
+                };
                 snapshots.Add(new(known[issue.Number], issue, relationships, known));
             }
             return snapshots;

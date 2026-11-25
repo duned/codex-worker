@@ -14,6 +14,8 @@ using System.Text.RegularExpressions;
 /// <summary>Persistence boundary for future worker and project registry services.</summary>
 public interface IRegistryStore
 {
+    /// <summary>Weekly finished-execution history per project for the last <paramref name="weeks"/> weeks (1 to 52).</summary>
+    Task<ExecutionStatisticsReport> GetExecutionStatisticsAsync(int weeks, string? projectId, CancellationToken cancellationToken = default);
     Task<ObserverPairingAuthorization?> CreateObserverAuthorizationAsync(ObserverPairingRequest request, CancellationToken ct = default);
     Task<ObserverRegistration?> RedeemObserverAuthorizationAsync(ObserverPairingRequest request, string authorization, string reportingCredential, CancellationToken ct = default);
     Task<ObserverRegistration?> AuthenticateObserverAsync(string observerId, string server, string reportingCredential, CancellationToken ct = default);
@@ -296,11 +298,13 @@ public static class ExecutionAdministrationValidation
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement>? Requirements = null, string? IssueReadyLabel = null,
-    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null, IReadOnlyList<string>? ValidationCommands = null);
+    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null, IReadOnlyList<string>? ValidationCommands = null,
+    string? IntegrationMode = null);
 public sealed record CentralProject(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement> Requirements, long Revision,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true, string? IssueReadyLabel = null,
-    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null, IReadOnlyList<string>? ValidationCommands = null);
+    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null, IReadOnlyList<string>? ValidationCommands = null,
+    string? IntegrationMode = null);
 public sealed record ProjectLifecycleUpdateRequest(bool Enabled, long ExpectedRevision);
 
 /// <summary>A centrally declared capability required by a project.</summary>
@@ -373,6 +377,8 @@ public static class CentralProjectValidation
     {
         if (value is null) return "Project definition is required.";
         if (value.MaxParallelTasks is < 1 or > 8) return "maxParallelTasks must be null (Automatic) or 1 to 8.";
+        if (!ProjectIntegrationMode.Valid(ProjectIntegrationMode.Normalize(value.IntegrationMode)))
+            return "integrationMode must be null (direct), direct or pull-request.";
         if (string.IsNullOrWhiteSpace(value.Name) || value.Name.Length > 120) return "name must contain 1 to 120 characters.";
         if (!Regex.IsMatch(value.Name, "^[\\p{L}\\p{N}][\\p{L}\\p{N} ._-]*$")) return "name contains unsupported characters.";
         if (string.IsNullOrWhiteSpace(value.Repository) || !Regex.IsMatch(value.Repository, "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\\.{1,2}$)[A-Za-z0-9_.-]+$")) return "repository must be a GitHub owner/repository identifier.";
@@ -2487,7 +2493,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (id.Length == 0) throw new InvalidDataException("Project name does not produce a valid project identifier.");
         var project = new CentralProject(id, definition.Name.Trim(), definition.Repository.Trim(), definition.DefaultBranch.Trim(),
             definition.Description.Trim(), (definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), 1, now, now,
-            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel), AutomaticDiscovery: definition.AutomaticDiscovery, MaxParallelTasks: definition.MaxParallelTasks, ValidationCommands: definition.ValidationCommands?.ToArray());
+            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel), AutomaticDiscovery: definition.AutomaticDiscovery, MaxParallelTasks: definition.MaxParallelTasks, ValidationCommands: definition.ValidationCommands?.ToArray(),
+            IntegrationMode: ProjectIntegrationMode.Normalize(definition.IntegrationMode));
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -2511,7 +2518,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         await connection.OpenAsync(cancellationToken);
         var now = _timeProvider.GetUtcNow();
         await using var write = connection.CreateCommand();
-        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.maxParallelTasks', $parallelism, '$.validationCommands', json($validationCommands), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision RETURNING project_id, configuration_json, created_at_utc;";
+        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.maxParallelTasks', $parallelism, '$.validationCommands', json($validationCommands), '$.integrationMode', $integrationMode, '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision RETURNING project_id, configuration_json, created_at_utc;";
         write.Parameters.AddWithValue("$name", definition.Name.Trim());
         write.Parameters.AddWithValue("$repository", definition.Repository.Trim());
         write.Parameters.AddWithValue("$branch", definition.DefaultBranch.Trim());
@@ -2521,6 +2528,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         write.Parameters.AddWithValue("$blockedLabel", (object?)NormalizeLabel(definition.IssueBlockedLabel) ?? DBNull.Value);
         write.Parameters.AddWithValue("$validationCommands", JsonSerializer.Serialize(definition.ValidationCommands, ProjectJson));
         write.Parameters.AddWithValue("$parallelism", (object?)definition.MaxParallelTasks ?? DBNull.Value);
+        write.Parameters.AddWithValue("$integrationMode", (object?)ProjectIntegrationMode.Normalize(definition.IntegrationMode) ?? DBNull.Value);
         write.Parameters.AddWithValue("$discovery", JsonSerializer.Serialize(definition.AutomaticDiscovery, ProjectJson));
         write.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);
         write.Parameters.AddWithValue("$updated", now.ToString("O"));

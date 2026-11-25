@@ -43,7 +43,7 @@ export class DashboardRuntime {
     void this.queries.cancelQueries(); this.queries.clear(); this.fences.clear();
     this.publish({ authenticated: false, pending: false, message, generation: this.state.generation + 1, live: t("shared.liveSignedOut"), logoutAvailable: !!this.logoutCsrf });
   }
-  async session(method: 'GET' | 'POST' | 'DELETE', token?: string) {
+  async session(method: 'GET' | 'POST' | 'DELETE', token?: string, operator?: string) {
     if (method === 'DELETE') this.logoutCsrf = this.csrf || this.logoutCsrf;
     else this.logoutCsrf = '';
     this.reset(method === 'DELETE' ? t("api.signingOut") : t("api.checkingAdministrationSession"));
@@ -51,7 +51,7 @@ export class DashboardRuntime {
     this.publish({ pending: true });
     try {
       const result = await this.http.request('/api/v1/administration/session', {
-        method, token, csrf: method === 'DELETE' ? this.logoutCsrf : undefined, signal: this.controller.signal, session: true
+        method, token, operator, csrf: method === 'DELETE' ? this.logoutCsrf : undefined, signal: this.controller.signal, session: true
       }, method === 'DELETE' ? () => null : sessionDocument);
       if (!this.current(generation)) return;
       this.logoutCsrf = '';

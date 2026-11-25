@@ -13,7 +13,8 @@ public sealed class AdministrationSessions(ServerConfiguration configuration, Ti
     public const string CsrfHeader = "X-Codex-CSRF";
     public string CookieName => Secure ? "__Host-CodexAdministration" : "CodexLocalAdministration";
     private bool Secure => configuration.AdministrationOrigin?.StartsWith("https://", StringComparison.OrdinalIgnoreCase) == true;
-    public sealed record Session(string CsrfToken, DateTimeOffset ExpiresAtUtc, CancellationTokenSource Lifetime)
+    /// <param name="Operator">The name the operator gave at sign-in, for the audit log; null when none was given.</param>
+    public sealed record Session(string CsrfToken, DateTimeOffset ExpiresAtUtc, CancellationTokenSource Lifetime, string? Operator = null)
     {
         public CancellationToken CancellationToken { get; } = Lifetime.Token;
     }
@@ -62,7 +63,7 @@ public sealed class AdministrationSessions(ServerConfiguration configuration, Ti
         return Validate(context, !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method)) is not null;
     }
 
-    public Session? Create(HttpContext context)
+    public Session? Create(HttpContext context, string? operatorName = null)
     {
         lock (gate)
         {
@@ -70,7 +71,8 @@ public sealed class AdministrationSessions(ServerConfiguration configuration, Ti
             if (sessions.Count >= 256) return null;
             Remove(context);
             var duration = TimeSpan.FromHours(8);
-            var session = new Session(RandomToken(), clock.GetUtcNow() + duration, new CancellationTokenSource(duration, clock));
+            var session = new Session(RandomToken(), clock.GetUtcNow() + duration, new CancellationTokenSource(duration, clock),
+                OperatorIdentity.Normalize(operatorName));
             var id = RandomToken();
             sessions.Add(id, session);
             context.Response.Cookies.Append(CookieName, id, CookieOptions(session.ExpiresAtUtc));

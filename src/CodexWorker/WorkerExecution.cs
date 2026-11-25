@@ -52,8 +52,9 @@ public sealed class WorkerExecution
     public CodexProvisioning.EngineUsage? Usage { get; private set; }
     internal void RecordUsage(CodexProvisioning.EngineUsage usage) => Usage = Usage?.Add(usage) ?? usage;
     /// <summary>Usage of this execution and the size of the change it integrated, when either is known.</summary>
-    internal CodexProvisioning.ExecutionMetrics? MetricsWith(CodexProvisioning.ExecutionChanges? changes) =>
-        Usage is null && changes is null ? null : new(Usage, changes);
+    internal CodexProvisioning.ExecutionMetrics? MetricsWith(GitIntegrationResult? integration) =>
+        Usage is null && integration?.Changes is null && integration?.PullRequestUrl is null && integration?.ParentBranch is null ? null
+            : new(Usage, integration?.Changes, integration?.PullRequestUrl) { ParentBranch = integration?.ParentBranch };
     public Guid ExecutionId { get; private init; }
     public string Project { get; }
     public string Repository { get; }

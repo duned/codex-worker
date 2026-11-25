@@ -6,6 +6,8 @@ using CodexWorker;
 
 public sealed class ExecutionMetricsTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CodexTurnUsageIsSummedAndOlderCumulativeEventsAreUsedAlone()
     {
@@ -25,6 +27,8 @@ public sealed class ExecutionMetricsTests
         Assert.Null(EngineUsageParser.FromCodexEvents(null));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ClaudeUsageCountsCacheAsInputAndKeepsItsCostEstimate()
     {
@@ -36,6 +40,8 @@ public sealed class ExecutionMetricsTests
         Assert.Null(EngineUsageParser.FromClaudeResult(empty.RootElement));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void UsageAddsAcrossRunsAndCostStaysUnknownWhenNoRunReportsIt()
     {
@@ -46,6 +52,8 @@ public sealed class ExecutionMetricsTests
         Assert.False(ExecutionChanges.Valid(new(1, 1, 0, ["a", "b"])));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HistoryKeepsMetricsThroughCompletion()
     {
@@ -63,6 +71,8 @@ public sealed class ExecutionMetricsTests
         Assert.Equivalent(metrics, (await reopened.ReadExecutionAsync(entry.ExecutionId))!.Metrics);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void NumstatCountsTextAndBinaryFilesAndBoundsTheFileList()
     {

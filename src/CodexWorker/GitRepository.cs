@@ -4,7 +4,8 @@ namespace CodexWorker;
 
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
     string? IntegrationBranch = null, string? CompletedBranch = null, Guid? ResourceExecutionId = null, int? ResourceAttemptNumber = null,
-    CodexProvisioning.ExecutionChanges? Changes = null);
+    CodexProvisioning.ExecutionChanges? Changes = null, string? PullRequestBase = null, string? PullRequestUrl = null,
+    string? ParentBranch = null, int? ParentIssueNumber = null);
 public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary, string? IntegrationBase = null);
 public sealed record IntegrationRepairContext(ValidationFailure Failure, string BaseBranch, string OriginalBaseCommit,
     string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
@@ -39,6 +40,12 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
     private bool _implementationAlreadyCommitted;
     private bool _forcePostRebaseValidation;
     private bool _preservePartialConflictResolution;
+    // Pull-request mode with a parent Issue: what the work is rebased onto (the parent's integration
+    // branch tip, or the base while that branch does not exist yet) and how it is shown in diagnostics.
+    private string? _rebaseOnto;
+    private string? _rebaseOntoName;
+    private string RebaseOnto => _rebaseOnto ?? settings.BaseBranch;
+    private string RebaseOntoName => _rebaseOntoName ?? settings.BaseBranch;
 
     public void PreservePartialConflictResolution() => _preservePartialConflictResolution = true;
 
@@ -140,6 +147,16 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
     public static string FeatureBranchName(GitSettings settings, GitHubIssue issue) =>
         $"{settings.FeaturePrefix}{SanitizeTitle(issue.Title)}-{issue.Number}";
 
+    /// <summary>The branch that collects the work of a parent Issue's sub-issues in pull-request mode.</summary>
+    public static string IntegrationBranchName(int parentIssueNumber) =>
+        parentIssueNumber > 0 ? $"integration/{parentIssueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+            : throw new ArgumentOutOfRangeException(nameof(parentIssueNumber));
+
+    /// <summary>The parent integration branch this Issue delivers into, or null when it opens its own pull request.</summary>
+    public static string? ParentIntegrationBranch(GitSettings settings, GitHubIssue issue) =>
+        settings.PullRequest && issue.ParentIssueNumber is > 0 and var parent && parent != issue.Number
+            ? IntegrationBranchName(parent) : null;
+
     public static string CompletedBranchName(GitSettings settings, GitHubIssue issue) =>
         $"{settings.CompletedPrefix}{SanitizeTitle(issue.Title)}-{issue.Number}";
 
@@ -214,6 +231,17 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             await ValidateBranchRefAsync(FeatureBranchName(settings, issue), ct);
             await SyncBaseWithRemoteAsync(ct);
             _startingCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            if (settings.PullRequest)
+            {
+                // A parent starts from the work its sub-issues collected; a sub-issue starts from its
+                // siblings' work. Without either branch the Issue starts from the base as usual.
+                if (await ReadIntegrationBranchAsync(IntegrationBranchName(issue.Number), ct) is { } own &&
+                    (await GitAsync(["merge-base", "--is-ancestor", own, settings.BaseBranch], ct, [0, 1])).ExitCode != 0)
+                    _startingCommit = own;
+                else if (ParentIntegrationBranch(settings, issue) is { } parentBranch &&
+                    await ReadIntegrationBranchAsync(parentBranch, ct) is { } parentTip)
+                    _startingCommit = parentTip;
+            }
             _executionId = executionId;
             _resourceExecutionId = executionId;
             _resourceAttemptNumber = attemptNumber;
@@ -716,7 +744,8 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             {
                 await GitAtAsync(ExecutionDirectory, ["add", "--all"], ct);
                 var staged = await GitAtAsync(ExecutionDirectory, ["diff", "--cached", "--quiet"], ct, [0, 1]);
-                if (staged.ExitCode == 0)
+                // A parent that needed no change of its own still delivers the work its sub-issues collected.
+                if (staged.ExitCode == 0 && !await CarriesOwnIntegrationWorkAsync(issue, ct))
                 {
                     var status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
                     if (!string.IsNullOrWhiteSpace(status)) throw new WorkerInfrastructureException("Unexpected unstaged or untracked changes remain after staging; preserving checkout.");
@@ -727,11 +756,13 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                     _executionId = null;
                     return new GitIntegrationResult(false, "No code changes were required; the Issue was completed without a commit or integration.");
                 }
-                await GitAtAsync(ExecutionDirectory, ["commit", "-m", $"Implement #{issue.Number}: {issue.Title}"], ct);
+                if (staged.ExitCode != 0)
+                    await GitAtAsync(ExecutionDirectory, ["commit", "-m", $"Implement #{issue.Number}: {issue.Title}"], ct);
             }
             var commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             // The integrated change is measured against the base it lands on; without auto-merge, against the start.
             var changesBase = _startingCommit;
+            var parentBranch = ParentIntegrationBranch(settings, issue);
             if (settings.AutoMerge)
             {
                 var implementationCommit = commit;
@@ -744,8 +775,17 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                     if (ensureAuthority is not null) await ensureAuthority(ct);
                     // Always rebase onto the authoritative remote base, never onto unpublished local commits.
                     await SyncBaseWithRemoteAsync(ct);
+                    string? parentTip = null;
+                    if (parentBranch is not null)
+                    {
+                        // A sub-issue is rebased onto its parent's integration branch; the first one to
+                        // finish creates that branch from the current base.
+                        parentTip = await ReadIntegrationBranchAsync(parentBranch, ct);
+                        _rebaseOnto = parentTip ?? (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
+                        _rebaseOntoName = parentTip is null ? settings.BaseBranch : parentBranch;
+                    }
                     var featureContainsBase = await GitAtAsync(ExecutionDirectory,
-                        ["merge-base", "--is-ancestor", settings.BaseBranch, $"refs/heads/{_featureBranch}"], ct, [0, 1]);
+                        ["merge-base", "--is-ancestor", RebaseOnto, $"refs/heads/{_featureBranch}"], ct, [0, 1]);
                     if (featureContainsBase.ExitCode != 0)
                     {
                         await RebaseForIntegrationAsync(issue.Number, resolveConflict, ct);
@@ -758,11 +798,60 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                     _forcePostRebaseValidation = false;
                     ct.ThrowIfCancellationRequested();
                     if (ensureAuthority is not null) await ensureAuthority(ct);
+                    if (parentBranch is not null)
+                    {
+                        // Deliver into the parent's integration branch, never the base. The push names the
+                        // tip the work was rebased onto, so a sibling that integrated meanwhile is never lost:
+                        // the remote refuses the push and the loop rebases and validates again.
+                        var rebasedOnto = RebaseOnto;
+                        var stillCurrent = await ReadIntegrationBranchAsync(parentBranch, ct) == parentTip;
+                        var containsTip = await GitAtAsync(ExecutionDirectory, ["merge-base", "--is-ancestor", rebasedOnto, "HEAD"], ct, [0, 1]);
+                        if (stillCurrent && containsTip.ExitCode == 0)
+                        {
+                            commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+                            changesBase = rebasedOnto;
+                            try
+                            {
+                                await PushVerifiedAsync(parentBranch, commit, parentTip, ct, ensureAuthority);
+                                break;
+                            }
+                            catch (GitPushRejectedException rejection) when (rejection.Reason == GitPushRejection.NonFastForward)
+                            {
+                                // A sibling won the race: rebase, resolve and validate on its result.
+                            }
+                            catch (GitPushRejectedException rejection)
+                            {
+                                throw new GitIntegrationConflictException(
+                                    $"GitHub refused the integration branch '{parentBranch}' for Issue #{issue.Number}: {rejection.Message}", rejection);
+                            }
+                        }
+                        if (handoff >= 5)
+                            throw new GitIntegrationConflictException($"The integration branch '{parentBranch}' kept advancing for Issue #{issue.Number}; bounded reconciliation stopped and the implementation was preserved.");
+                        continue;
+                    }
                     await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
                     var localBase = (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
                     var remoteBase = (await GitAsync(["rev-parse", $"refs/remotes/origin/{settings.BaseBranch}"], ct)).StandardOutput.Trim();
                     var containsCurrentBase = await GitAtAsync(ExecutionDirectory,
                         ["merge-base", "--is-ancestor", localBase, "HEAD"], ct, [0, 1]);
+                    if (localBase == remoteBase && containsCurrentBase.ExitCode == 0 && settings.PullRequest)
+                    {
+                        // Review mode: the rebased, validated branch is offered for review and the base is
+                        // left untouched. The head is the completed-branch name, never the base, and is
+                        // pushed without force; nothing is prepared for base-push reconciliation.
+                        commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+                        changesBase = localBase;
+                        try
+                        {
+                            await PushVerifiedAsync(_completedBranch!, commit, null, ct, ensureAuthority);
+                        }
+                        catch (GitPushRejectedException rejection)
+                        {
+                            throw new GitIntegrationConflictException(
+                                $"GitHub refused the review branch '{_completedBranch}' for Issue #{issue.Number}: {rejection.Message}", rejection);
+                        }
+                        break;
+                    }
                     if (localBase == remoteBase && containsCurrentBase.ExitCode == 0)
                     {
                         commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
@@ -799,7 +888,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                         throw new GitIntegrationConflictException($"The integration base kept advancing for Issue #{issue.Number}; bounded reconciliation stopped and the implementation was preserved.");
                 }
                 if (_integrationObserver is not null && prepared is not null) await _integrationObserver(prepared, true, ct);
-                if (settings.PushCompletedBranch)
+                if (settings.PushCompletedBranch && !settings.PullRequest)
                 {
                     try
                     {
@@ -817,7 +906,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 await RemoveExecutionWorktreeAsync(ct);
                 if (await GetCurrentBranchAsync(ct) != settings.BaseBranch)
                     throw new WorkerInfrastructureException("Refusing to delete feature branch while it is checked out.");
-                if (settings.PushCompletedBranch)
+                if (settings.PushCompletedBranch || settings.PullRequest)
                 {
                     try
                     {
@@ -845,6 +934,20 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 _executionId = null;
             }
             var summary = $"Committed as `{commit[..Math.Min(commit.Length, 12)]}`.";
+            if (parentBranch is not null)
+            {
+                // Delivered into the parent's integration branch: the parent's pull request carries it to the base.
+                return new GitIntegrationResult(true, summary + $" Integrated into `{parentBranch}` for parent Issue #{issue.ParentIssueNumber}.",
+                    commit, null, _completedBranch, _resourceExecutionId, _resourceAttemptNumber,
+                    await MeasureChangesAsync(changesBase, commit, ct), ParentBranch: parentBranch, ParentIssueNumber: issue.ParentIssueNumber);
+            }
+            if (settings.PullRequest)
+            {
+                // The Issue reporter opens the pull request; nothing was merged into the base.
+                return new GitIntegrationResult(true, summary + $" Pushed as `{_completedBranch}` for review into `{settings.BaseBranch}`.",
+                    commit, null, _completedBranch, _resourceExecutionId, _resourceAttemptNumber,
+                    await MeasureChangesAsync(changesBase, commit, ct), PullRequestBase: settings.BaseBranch);
+            }
             if (settings.AutoMerge) summary += $" Merged into `{settings.BaseBranch}`.";
             if (settings.AutoMerge && settings.PushCompletedBranch) summary += $" Preserved on origin as `{_completedBranch}`.";
             else if (!settings.AutoMerge) summary += $" Local feature branch: `{_featureBranch}`.";
@@ -927,8 +1030,8 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             diagnostics.Add($"{(repairing ? "Validation after integration repair" : $"Attempt {attempt}/2")}: {failure.ToSummary()}");
             if (!repairing && attempt < 2) continue;
 
-            var baseCommit = (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
-            var context = new IntegrationRepairContext(failure, settings.BaseBranch,
+            var baseCommit = (await GitAsync(["rev-parse", RebaseOnto], ct)).StandardOutput.Trim();
+            var context = new IntegrationRepairContext(failure, RebaseOntoName,
                 _startingCommit ?? throw new WorkerInfrastructureException("Integration has no starting commit."),
                 implementationCommit, baseCommit, head);
             var repaired = incompleteRepair ? new IntegrationRepairResult(false, false) : await repair(context, ct);
@@ -959,7 +1062,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
         Func<string, CancellationToken, Task<bool>> resolveConflict, CancellationToken ct)
     {
         var before = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
-        var result = await runner.RunAsync("git", ["rebase", settings.BaseBranch], ExecutionDirectory,
+        var result = await runner.RunAsync("git", ["rebase", RebaseOnto], ExecutionDirectory,
             TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct);
         if (result.ExitCode == 0) return;
 
@@ -970,7 +1073,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
         var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
         var conflictHead = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
         var replayedCommit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "REBASE_HEAD"], ct)).StandardOutput.Trim();
-        if (await resolveConflict($"Base branch: {settings.BaseBranch}\nReplayed commit: {replayedCommit}\n{Tail(detail)}\nUnmerged index:\n{Tail(unmerged)}", ct))
+        if (await resolveConflict($"Base branch: {RebaseOntoName}\nReplayed commit: {replayedCommit}\n{Tail(detail)}\nUnmerged index:\n{Tail(unmerged)}", ct))
         {
             var resolvedHead = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             var resolvedReplay = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "REBASE_HEAD"], ct)).StandardOutput.Trim();
@@ -1001,7 +1104,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 var rebaseInProgress = Directory.Exists(Path.GetFullPath(gitPath, ExecutionDirectory)) ||
                     Directory.Exists(Path.GetFullPath(applyPath, ExecutionDirectory));
                 var containsBase = await GitAtAsync(ExecutionDirectory,
-                    ["merge-base", "--is-ancestor", settings.BaseBranch, "HEAD"], ct, [0, 1]);
+                    ["merge-base", "--is-ancestor", RebaseOnto, "HEAD"], ct, [0, 1]);
                 var status = (await GitAtAsync(ExecutionDirectory,
                     ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
                 if (!rebaseInProgress && containsBase.ExitCode == 0 && string.IsNullOrWhiteSpace(status)) return;
@@ -1049,6 +1152,29 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
     {
         if (!await IsValidBranchRefAsync(runner, directory, branch, TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct))
             throw new WorkerInfrastructureException($"Invalid Git branch ref generated from configuration/title: '{branch}'.");
+    }
+
+    /// <summary>True when the execution started from the Issue's own integration branch (pull-request mode).</summary>
+    private async Task<bool> CarriesOwnIntegrationWorkAsync(GitHubIssue issue, CancellationToken ct)
+    {
+        if (!settings.PullRequest || await ReadIntegrationBranchAsync(IntegrationBranchName(issue.Number), ct) is not { } own) return false;
+        // Work the base already contains (a merged pull request) is nothing left to deliver.
+        if ((await GitAsync(["merge-base", "--is-ancestor", own, settings.BaseBranch], ct, [0, 1])).ExitCode == 0) return false;
+        return (await GitAtAsync(ExecutionDirectory, ["merge-base", "--is-ancestor", own, "HEAD"], ct, [0, 1])).ExitCode == 0;
+    }
+
+    /// <summary>The commit of an integration branch on origin, fetched locally, or null when the branch does not exist.</summary>
+    private async Task<string?> ReadIntegrationBranchAsync(string branch, CancellationToken ct)
+    {
+        await ValidateBranchRefAsync(branch, ct);
+        var listed = (await GitAsync(["ls-remote", "--heads", "origin", $"refs/heads/{branch}"], ct)).StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (listed.Length == 0) return null;
+        var fields = listed.Length == 1 ? listed[0].Split('\t') : [];
+        if (fields.Length != 2 || fields[1] != $"refs/heads/{branch}" || !IsCommitId(fields[0]))
+            throw new WorkerInfrastructureException($"Could not read integration branch '{branch}' from origin.");
+        await GitAsync(["fetch", "origin", $"refs/heads/{branch}:refs/remotes/origin/{branch}"], ct);
+        return fields[0];
     }
 
     private async Task<string> SelectCompletedBranchAsync(GitHubIssue issue, int attemptNumber, Guid executionId,

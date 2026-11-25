@@ -1,6 +1,6 @@
 import { tryT } from './i18n';
 import { usePreferences } from './preferences';
-import type { ArchivedBranch, Capability, EngineQuota, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerProjectReadiness, WorkerUpdate } from './api/contracts';
+import type { ArchivedBranch, Capability, EngineQuota, ExecutionStatisticsReport, ExecutionSummary, GitHubIssue, NodeCommandSummary, WeeklyExecutionStatistics, WorkerObservation, WorkerProjectReadiness, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
 /** Visual tone of a status. Semantic colours are fixed: ok, bad, warn, run (animated) and idle. */
@@ -413,3 +413,43 @@ export const branchBatches = <T>(items: T[], size = 100) => Array.from({ length:
 
 /** Readable text for a Server scheduling blocker code (unknown codes are shown as sent). */
 export const schedulingBlockerText = (code: string) => tryT(`workers.blocker.${code}`, code);
+
+/** What an audited request did, as a translation key, from its method and path (or MCP tool). Unknown actions show the raw request. */
+const auditActions: [RegExp, string][] = [
+  [/^POST \/api\/v1\/administration\/session$/, 'signIn'], [/^DELETE \/api\/v1\/administration\/session$/, 'signOut'],
+  [/^POST \/api\/v1\/executions$/, 'enqueue'], [/^POST \/api\/v1\/projects\/[^/]+\/github\/issues\/\d+\/enqueue$/, 'enqueue'],
+  [/^POST \/api\/v1\/executions\/archive$/, 'archive'], [/^POST \/api\/v1\/executions\/[^/]+\/cancel$/, 'cancel'],
+  [/^POST \/api\/v1\/executions\/[^/]+\/prioritize$/, 'prioritize'], [/^POST \/api\/v1\/executions\/[^/]+\/(reconcile|manual-completion|conflict-recovery|state)$/, 'reconcile'],
+  [/^POST \/api\/v1\/projects$/, 'projectCreate'], [/^PUT \/api\/v1\/projects\/[^/]+$/, 'projectUpdate'], [/^DELETE \/api\/v1\/projects\/[^/]+$/, 'projectDelete'],
+  [/^PUT \/api\/v1\/(projects\/[^/]+\/lifecycle|project-scheduling\/[^/]+)$/, 'projectPause'], [/^POST \/api\/v1\/projects\/[^/]+\/archived-branches\/delete$/, 'branches'],
+  [/^(POST|PUT|PATCH) \/api\/v1\/projects\/[^/]+\/github\/issues/, 'issue'],
+  [/^(POST|PUT) \/api\/v1\/credentials/, 'credential'], [/^(POST|PUT) \/api\/v1\/workers\/[^/]+\/(credential-access|authentication)/, 'credential'],
+  [/^PUT \/api\/v1\/workers\/[^/]+(\/settings|\/scheduling-policy)?$/, 'worker'], [/^POST \/api\/v1\/workers\/[^/]+\/projects\/[^/]+\/resume$/, 'worker'],
+  [/^POST \/api\/v1\/workers\/[^/]+\/update/, 'update'], [/^POST \/api\/v1\/workers\/onboarding\/authorize$/, 'onboarding'],
+  [/^POST \/api\/v1\/(maintenance|provisioning)/, 'maintenance'], [/^POST \/api\/v1\/nodes\//, 'maintenance'],
+  [/^TOOL mcp\//, 'mcp']
+];
+export function auditAction(event: { method: string; action: string }): { key: TranslationKey | undefined; raw: string } {
+  const raw = `${event.method} ${event.action}`;
+  const match = auditActions.find(([pattern]) => pattern.test(raw));
+  return { key: match ? `audit.action.${match[1]}` as TranslationKey : undefined, raw };
+}
+/** Who did it: the declared name, or how they connected when no name was given. */
+export const auditActor = (event: { channel: string; operator?: string | null }) =>
+  event.operator ?? tryT(`audit.channel.${event.channel}`, event.channel);
+
+/** Every week of the report for one project, newest first, with empty weeks filled in so gaps are visible. */
+export function projectWeeks(report: ExecutionStatisticsReport | undefined, projectId: string): WeeklyExecutionStatistics[] {
+  if (!report) return [];
+  const known = new Map((report.projects.find(project => project.projectId === projectId)?.weeks ?? []).map(week => [Date.parse(week.weekStartUtc), week]));
+  return report.weekStartsUtc.map(start => known.get(Date.parse(start)) ?? { weekStartUtc: start, finished: 0, integrated: 0, failed: 0, cancelled: 0,
+    firstAttempts: 0, firstAttemptsIntegrated: 0, failureCauses: [] }).reverse();
+}
+/** Share of first attempts that integrated, as a whole percentage; undefined without first attempts. */
+export const firstAttemptRate = (week: WeeklyExecutionStatistics) =>
+  week.firstAttempts ? Math.round(100 * week.firstAttemptsIntegrated / week.firstAttempts) : undefined;
+/** A failure cause in words, falling back to the code the Worker reported. */
+export const failureCauseText = (cause: string) => tryT(`stats.cause.${cause}`, cause);
+/** The Monday a statistics week starts on, as a short date. */
+export const weekLabel = (start: string, language: string) =>
+  new Date(start).toLocaleDateString(language === 'es' ? 'es-ES' : 'en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });

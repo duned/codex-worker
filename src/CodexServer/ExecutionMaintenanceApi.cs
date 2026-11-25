@@ -22,7 +22,7 @@ public static partial class ServerApplication
             }
             try
             {
-                var operation = await commands.CreateAsync(request, $"server-management:{context.TraceIdentifier}", context.RequestAborted);
+                var operation = await commands.CreateAsync(request, ServerApplication.MaintenanceActor(context), context.RequestAborted);
                 return Results.Created($"/api/v1/maintenance/executions/{request.OperationId}", operation);
             }
             catch (InvalidOperationException ex) { return Results.Conflict(new { reason = ex.Message }); }

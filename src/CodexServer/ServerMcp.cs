@@ -59,9 +59,32 @@ internal static class ServerMcp
                                 $", error=\"insufficient_scope\", scope=\"{required}\"")
                         }
                     };
-                return await next(request, ct);
+                if (required == ServerMcpScopes.Read) return await next(request, ct);
+                // Tools that change state are audited like the administration API, with their identifying arguments.
+                var status = StatusCodes.Status500InternalServerError;
+                try
+                {
+                    var result = await next(request, ct);
+                    status = result.IsError == true ? StatusCodes.Status409Conflict : StatusCodes.Status200OK;
+                    return result;
+                }
+                finally
+                {
+                    var actor = new OperatorIdentity("mcp", granted.Length == 0
+                        ? AuditLogStore.Actor(http)?.Name : null);
+                    await AuditLogStore.RecordSafelyAsync(http, actor, "TOOL", ToolAction(request.Params!.Name, request.Params.Arguments), status);
+                }
             });
         });
+    }
+
+    private static readonly string[] IdentifyingArguments = ["projectId", "issueNumber", "executionRequestId", "workerId", "operationId", "label"];
+
+    private static string ToolAction(string tool, IDictionary<string, System.Text.Json.JsonElement>? arguments)
+    {
+        var parts = IdentifyingArguments.Where(name => arguments?.ContainsKey(name) == true)
+            .Select(name => $"{name}={(arguments![name].ValueKind == System.Text.Json.JsonValueKind.String ? arguments[name].GetString() : arguments[name].GetRawText())}");
+        return string.Join(" ", new[] { $"mcp/{tool}" }.Concat(parts));
     }
 
     private static string Challenge(ServerConfiguration configuration) => McpOAuthEndpoints.Issuer(configuration) is { } issuer

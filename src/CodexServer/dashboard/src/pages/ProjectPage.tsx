@@ -10,6 +10,7 @@ import { issueStatus, latestByIssue, type Tone } from '../shared/model';
 import { Card, Empty, Filters, KeyValues, matches, PageHeader, Pill, ReadState, RowLink, Rows, StatusPill } from '../shared/ui';
 import { BranchCleanup } from './BranchCleanup';
 import { EnqueuePanel } from './EnqueuePanel';
+import { ProjectHistory } from './ProjectHistory';
 import { ProjectPanel } from './ProjectPanel';
 
 const issueFilters: { value: Tone; label: Parameters<typeof t>[0] }[] = [
@@ -40,7 +41,7 @@ export function ProjectPage() {
   return <>
     <PageHeader crumbs={[{ label: t('nav.projects'), to: '/projects' }, { label: item.name }]} title={item.name}
       badge={item.enabled === false || schedulingPaused ? <Pill tone="warn">{t('projects.paused')}</Pill> : undefined}
-      description={<>{item.repository} · {t('projects.integratesInto')} <span className="font-mono text-sm">{item.defaultBranch ?? 'main'}</span></>}
+      description={<>{item.repository} · {t(item.integrationMode === 'pull-request' ? 'projects.reviewsInto' : 'projects.integratesInto')} <span className="font-mono text-sm">{item.defaultBranch ?? 'main'}</span></>}
       actions={<>
         {item.enabled === false
           ? <Button color="secondary" isDisabled={!!action.busy} onClick={() => void action.run(`project-${item.id}`, `${base}/lifecycle`, 'PUT',
@@ -69,6 +70,7 @@ export function ProjectPage() {
       </Card>
       <div className="flex flex-col gap-6"><Card title={t('projects.configuration')}><KeyValues items={[
         [t('projects.baseBranch'), <span className="font-mono text-sm">{item.defaultBranch ?? 'main'}</span>],
+        [t('projects.integration'), t(item.integrationMode === 'pull-request' ? 'projects.integrationPullRequest' : 'projects.integrationDirect')],
         [t('projects.parallel'), t('projects.upTo', { n: item.maxParallelTasks ?? 1 })],
         [t('projects.validation'), item.validationCommands?.length ? <span className="font-mono text-xs">{item.validationCommands.join(' && ')}</span> : t('projects.workerValidation')],
         [t('projects.pickup'), item.automaticDiscovery?.enabled ? t('projects.pickupAutomatic', { label: item.issueReadyLabel ?? 'codex-ready' }) : t('projects.pickupManual')],
@@ -77,6 +79,7 @@ export function ProjectPage() {
       ]} /></Card>
       <BranchCleanup project={item} /></div>
     </div>
+    <ProjectHistory projectId={item.id} />
     <ProjectPanel open={editing} onClose={() => setEditing(false)} project={item} />
     <EnqueuePanel open={enqueue} onClose={() => setEnqueue(false)} project={item} />
   </>;

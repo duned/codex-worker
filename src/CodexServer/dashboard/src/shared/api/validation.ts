@@ -85,6 +85,8 @@ export const executions = list<ExecutionSummary>(value => {
       stringList(changes.files);
       if ([changes.baseCommit, changes.commit].some(value => value != null && !/^[0-9a-f]{7,64}$/i.test(String(value)))) throw new Error('Invalid change commits.');
     }
+    if (metrics.pullRequestUrl != null && !/^https:\/\/github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(String(metrics.pullRequestUrl))) throw new Error('Invalid pull request link.');
+    if (metrics.parentBranch != null && !/^integration\/[1-9][0-9]{0,9}$/.test(String(metrics.parentBranch))) throw new Error('Invalid integration branch.');
   }
   if (item.managedEligibilityReasons != null && (!Array.isArray(item.managedEligibilityReasons) || item.managedEligibilityReasons.some(reason => typeof reason !== 'string'))) throw new Error('Invalid eligibility reasons.');
   if (item.workReference != null) {
@@ -309,4 +311,31 @@ export const archivedBranchDeletion = (projectId: string, selected: BranchSelect
       || !['deleted', 'missing', 'changed', 'retained', 'failed', 'not-attempted'].includes(String(row.outcome))) throw new Error('Unexpected branch deletion result.');
   });
   return result as unknown as ArchivedBranchDeleteResult;
+};
+export const audit: Validator<import('./contracts').AuditPage> = value => {
+  const page = record(value);
+  if (!Array.isArray(page.events) || (page.nextBefore != null && !Number.isSafeInteger(page.nextBefore))) throw new Error('Invalid audit log.');
+  page.events.forEach(value => {
+    const item = fields(value, ['atUtc', 'channel', 'method', 'action', 'outcome']);
+    optional(item, ['operator', 'requestId'], [], ['id', 'status']);
+    if (!Number.isFinite(Date.parse(String(item.atUtc))) || !['succeeded', 'refused', 'failed'].includes(String(item.outcome))) throw new Error('Invalid audit event.');
+  });
+  return value as import('./contracts').AuditPage;
+};
+export const statistics: Validator<import('./contracts').ExecutionStatisticsReport> = value => {
+  const report = fields(value, ['fromUtc', 'toUtc']);
+  stringList(report.weekStartsUtc);
+  if (!Array.isArray(report.projects)) throw new Error('Invalid statistics.');
+  report.projects.forEach(value => {
+    const project = fields(value, ['projectId']);
+    if (!Array.isArray(project.weeks)) throw new Error('Invalid statistics.');
+    project.weeks.forEach(value => {
+      const week = fields(value, ['weekStartUtc']);
+      optional(week, [], [], ['finished', 'integrated', 'failed', 'cancelled', 'firstAttempts', 'firstAttemptsIntegrated', 'queueMedianSeconds', 'queueP90Seconds', 'durationMedianSeconds', 'costUsd']);
+      if (['finished', 'integrated', 'failed', 'cancelled', 'firstAttempts', 'firstAttemptsIntegrated'].some(key => !Number.isSafeInteger(week[key]) || Number(week[key]) < 0)) throw new Error('Invalid weekly statistics.');
+      if (!Array.isArray(week.failureCauses)) throw new Error('Invalid failure causes.');
+      week.failureCauses.forEach(cause => { const item = fields(cause, ['cause']); if (!Number.isSafeInteger(item.count)) throw new Error('Invalid failure cause.'); });
+    });
+  });
+  return value as import('./contracts').ExecutionStatisticsReport;
 };

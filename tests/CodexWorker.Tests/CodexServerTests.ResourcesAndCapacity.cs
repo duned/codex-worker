@@ -242,6 +242,56 @@ public sealed partial class CodexServerTests
     }
 
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task ProjectIntegrationModeIsValidatedStoredAndDeliveredToWorkers()
+    {
+        Assert.NotNull(CentralProjectValidation.Error(new("Review", "team/review", "main", "", IntegrationMode: "merge-queue")));
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "projects.db"));
+        await store.InitializeAsync();
+        // The default is stored as null, so existing projects keep the same snapshot version.
+        var direct = await store.CreateProjectAsync(new("Direct", "team/direct", "main", "", IntegrationMode: "direct"));
+        Assert.Null(direct.IntegrationMode);
+        var updated = await store.UpdateProjectAsync(direct.Id, new("Direct", "team/direct", "main", "", IntegrationMode: "pull-request"), direct.Revision);
+        Assert.Equal("pull-request", updated?.IntegrationMode);
+        Assert.Equal("pull-request", (await store.GetProjectAsync(direct.Id))?.IntegrationMode);
+        Assert.NotEqual(ServerApplication.ManagedConfigurationVersion([direct]), ServerApplication.ManagedConfigurationVersion([updated!]));
+
+        var now = DateTimeOffset.UnixEpoch;
+        var contract = new ServerProjectContract(updated!.Id, updated.Name, updated.Repository, updated.DefaultBranch, updated.Description, [],
+            updated.Revision, updated.CreatedAtUtc, updated.UpdatedAtUtc, IntegrationMode: updated.IntegrationMode);
+        Assert.Equal(ServerApplication.ManagedConfigurationVersion([updated]), ManagedConfigurationSynchronizer.CalculateVersion([contract]));
+        using var root = new TemporaryDirectory();
+        var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(root.Path, "snapshot.json"),
+            new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(root.Path, "derived") });
+        var configuration = Assert.Single(synchronizer.Apply(new(2, ManagedConfigurationSynchronizer.CalculateVersion([contract]), [contract]))).Configuration;
+        Assert.True(configuration.Git.PullRequest);
+        Assert.True(configuration.Git.AutoMerge);
+    }
+
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void ProjectYamlIntegrationModeIsValidated()
+    {
+        static WorkerConfiguration Project(string? integration, bool autoMerge) => new()
+        {
+            Project = new() { Name = "Project", Repository = "owner/repo", Directory = "/tmp/project" },
+            Git = new() { Integration = integration, AutoMerge = autoMerge },
+            GitHub = new() { ReadyLabel = "ready", WorkingLabel = "working", BlockedLabel = "blocked", FailedLabel = "failed", DoneLabel = "done" }
+        };
+        Project(null, true).Validate();
+        Project("direct", false).Validate();
+        Assert.Null(Project("direct", true).Git.Integration);
+        Project("pull-request", true).Validate();
+        Assert.Contains("git.integration must be", Assert.Throws<InvalidDataException>(() => Project("squash", true).Validate()).Message);
+        Assert.Contains("requires git.autoMerge", Assert.Throws<InvalidDataException>(() => Project("pull-request", false).Validate()).Message);
+        // An unset mode leaves the completion policy fingerprint of existing projects unchanged.
+        Assert.DoesNotContain("integration", System.Text.Json.JsonSerializer.Serialize(Project(null, true).Git), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(null, 2)]
@@ -512,6 +562,8 @@ public sealed partial class CodexServerTests
         Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void EngineQuotaBlocksOnlyFreshExhaustedWindowsOfTheSelectedEngine()
     {

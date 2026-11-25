@@ -16,6 +16,8 @@ TestResults/
 *.yaml
 !*.example.yml
 !*.example.yaml
+# Repository CI is source, not local configuration.
+!.github/workflows/*.yml
 *.local.*
 *.private.*
 *.secret.*

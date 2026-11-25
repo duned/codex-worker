@@ -101,6 +101,41 @@ public sealed partial class GitWorktreeTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task PullRequestModePushesTheRebasedValidatedBranchAndLeavesTheBaseUntouched()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await seed.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true, Integration = "pull-request" });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "implementation");
+        var remoteProgress = await PushFromSeparateCloneAsync(fixture, "remote-progress.txt", "remote");
+        var validations = 0;
+
+        var result = await git.CommitAndIntegrateAsync(fixture.Issue,
+            _ => { validations++; return Task.FromResult(ValidationResult.Success); }, CancellationToken.None);
+
+        Assert.True(result.HasChanges);
+        Assert.Null(result.IntegrationBranch);
+        Assert.Equal("main", result.PullRequestBase);
+        var head = Assert.IsType<string>(result.CompletedBranch);
+        Assert.Contains("Pushed as", result.Summary);
+        Assert.DoesNotContain("Merged into", result.Summary);
+        // The branch was rebased onto the advanced base and validated again before it was offered.
+        Assert.Equal(1, validations);
+        var remote = Path.Combine(fixture._root, "origin.git");
+        Assert.Equal(remoteProgress, await fixture.GitAt(remote, "rev-parse", "main"));
+        Assert.Equal(remoteProgress, await fixture.Git("rev-parse", "main"));
+        Assert.Equal(result.CommitSha, await fixture.GitAt(remote, "rev-parse", $"refs/heads/{head}"));
+        Assert.Equal("implementation", await fixture.GitAt(remote, "show", $"{head}:implemented.txt"));
+        Assert.Equal(remoteProgress, await fixture.GitAt(remote, "rev-parse", $"{head}~1"));
+        var changes = Assert.IsType<CodexProvisioning.ExecutionChanges>(result.Changes);
+        Assert.Equal(["implemented.txt"], changes.Files);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task UnpreservedLocalBaseCommitsStopBeforeIntegration()
     {
         using var fixture = await seed.CreateAsync();
@@ -157,6 +192,8 @@ public sealed partial class GitWorktreeTests
         Assert.Equal(await fixture.GitAt(remote, "rev-parse", "main"), await fixture.Git("rev-parse", "main"));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(" ! [rejected]        abc -> main (fetch first)", GitPushRejection.NonFastForward)]
     [InlineData(" ! [rejected]        abc -> main (non-fast-forward)", GitPushRejection.NonFastForward)]

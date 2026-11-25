@@ -225,6 +225,14 @@ public sealed partial class WorkerV011Tests
         { RemovedLabels.Add(label); return Task.CompletedTask; }
         public Task CommentAsync(int issueNumber, string comment, CancellationToken ct)
         { Comments.Add(comment); return CommentAction?.Invoke() ?? Task.CompletedTask; }
+        public List<(string Head, string Base, string Title, string Body)> PullRequests { get; } = [];
+        public IReadOnlyList<int> OpenSubIssues { get; set; } = [];
+        public Task<IReadOnlyList<int>> ListOpenSubIssuesAsync(int issueNumber, CancellationToken ct) => Task.FromResult(OpenSubIssues);
+        public Task<string> CreatePullRequestAsync(int issueNumber, string head, string baseBranch, string title, string body, CancellationToken ct)
+        {
+            PullRequests.Add((head, baseBranch, title, body));
+            return Task.FromResult($"https://github.com/owner/repo/pull/{40 + PullRequests.Count}");
+        }
         public Task CloseAsync(int issueNumber, CancellationToken ct)
         {
             if (CompletionMode) FailCompletion("close-before");
@@ -261,6 +269,7 @@ public sealed partial class WorkerV011Tests
         public ExecutionHistoryEntry? LastRetryOf { get; private set; }
         public int LastAttemptNumber { get; private set; }
         public GitIntegrationConflictException? IntegrationFailure { get; set; }
+        public GitIntegrationResult? Result { get; set; }
         public Exception? IntegrationException { get; set; }
         public Action? BeforeIntegration { get; set; }
         public WorkerInfrastructureException? StartFailure { get; set; }
@@ -351,6 +360,7 @@ public sealed partial class WorkerV011Tests
                 await _integrationObserver(prepared, true, ct);
             if (IntegrationFailure is not null) throw IntegrationFailure;
             if (CompletionMode) return prepared;
+            if (Result is not null) return Result;
             return new GitIntegrationResult(true,
             "Committed as `0123456789ab`. Merged into `main`. Preserved on origin as `completed/17`.",
             "0123456789abcdef0123456789abcdef01234567", "main", "completed/17");

@@ -249,3 +249,22 @@ test('engine statistics compare finished attempts by engine', () => {
     [['ccc', 1, 1, 0, 4, 4], ['codex', 3, 2, 1, 20, 60]]);
   assert.equal(model.totalDuration([run('codex', 'Failed', 3), run('codex', 'Completed', 7)]), 10 * 60000);
 });
+
+test('audited requests map to readable actions and unknown ones keep the raw request', () => {
+  assert.equal(model.auditAction({ method: 'POST', action: '/api/v1/executions/abc/cancel' }).key, 'audit.action.cancel');
+  assert.equal(model.auditAction({ method: 'PUT', action: '/api/v1/projects/compiler' }).key, 'audit.action.projectUpdate');
+  assert.equal(model.auditAction({ method: 'TOOL', action: 'mcp/dispatch_execution projectId=p issueNumber=7' }).key, 'audit.action.mcp');
+  const unknown = model.auditAction({ method: 'POST', action: '/api/v1/something/new' });
+  assert.equal(unknown.key, undefined);
+  assert.equal(unknown.raw, 'POST /api/v1/something/new');
+});
+
+test('weekly statistics fill empty weeks, newest first, and rate first attempts', () => {
+  const report = { fromUtc: '2026-11-16T00:00:00Z', toUtc: '2026-11-25T00:00:00Z', weekStartsUtc: ['2026-11-16T00:00:00+00:00', '2026-11-23T00:00:00+00:00'],
+    projects: [{ projectId: 'p', weeks: [{ weekStartUtc: '2026-11-16T00:00:00+00:00', finished: 4, integrated: 3, failed: 1, cancelled: 0, firstAttempts: 3, firstAttemptsIntegrated: 2, failureCauses: [] }] }] };
+  const weeks = model.projectWeeks(report, 'p');
+  assert.deepEqual(weeks.map(week => week.finished), [0, 4]);
+  assert.equal(model.firstAttemptRate(weeks[1]), 67);
+  assert.equal(model.firstAttemptRate(weeks[0]), undefined);
+  assert.deepEqual(model.projectWeeks(undefined, 'p'), []);
+});
