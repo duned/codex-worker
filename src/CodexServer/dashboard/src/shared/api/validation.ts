@@ -321,3 +321,20 @@ export const audit: Validator<import('./contracts').AuditPage> = value => {
   });
   return value as import('./contracts').AuditPage;
 };
+export const statistics: Validator<import('./contracts').ExecutionStatisticsReport> = value => {
+  const report = fields(value, ['fromUtc', 'toUtc']);
+  stringList(report.weekStartsUtc);
+  if (!Array.isArray(report.projects)) throw new Error('Invalid statistics.');
+  report.projects.forEach(value => {
+    const project = fields(value, ['projectId']);
+    if (!Array.isArray(project.weeks)) throw new Error('Invalid statistics.');
+    project.weeks.forEach(value => {
+      const week = fields(value, ['weekStartUtc']);
+      optional(week, [], [], ['finished', 'integrated', 'failed', 'cancelled', 'firstAttempts', 'firstAttemptsIntegrated', 'queueMedianSeconds', 'queueP90Seconds', 'durationMedianSeconds', 'costUsd']);
+      if (['finished', 'integrated', 'failed', 'cancelled', 'firstAttempts', 'firstAttemptsIntegrated'].some(key => !Number.isSafeInteger(week[key]) || Number(week[key]) < 0)) throw new Error('Invalid weekly statistics.');
+      if (!Array.isArray(week.failureCauses)) throw new Error('Invalid failure causes.');
+      week.failureCauses.forEach(cause => { const item = fields(cause, ['cause']); if (!Number.isSafeInteger(item.count)) throw new Error('Invalid failure cause.'); });
+    });
+  });
+  return value as import('./contracts').ExecutionStatisticsReport;
+};

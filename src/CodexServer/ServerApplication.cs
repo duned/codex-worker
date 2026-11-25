@@ -216,6 +216,15 @@ public static partial class ServerApplication
             if (session is null) context.Response.Headers[AdministrationSessions.ErrorHeader] = "administration-session-invalid";
             return session is null ? Results.Unauthorized() : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc, session.Operator });
         });
+        app.MapGet("/api/v1/statistics", async (int? weeks, string? projectId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if (weeks is < 1 or > ExecutionStatistics.MaximumWeeks)
+                return Results.BadRequest(new { error = $"weeks must be 1 to {ExecutionStatistics.MaximumWeeks}." });
+            if (projectId is not null && (string.IsNullOrWhiteSpace(projectId) || projectId.Length > 80 || projectId.Any(char.IsControl)))
+                return Results.BadRequest(new { error = "projectId must contain at most 80 printable characters." });
+            return Results.Ok(await store.GetExecutionStatisticsAsync(weeks ?? 12, projectId, context.RequestAborted));
+        });
         app.MapGet("/api/v1/audit", async (int? limit, long? before, string? @operator, HttpContext context, ServerConfiguration settings, AuditLogStore audit) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();

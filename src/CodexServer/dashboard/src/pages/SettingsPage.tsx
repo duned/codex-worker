@@ -68,7 +68,7 @@ function ActivityCard() {
   useEffect(() => { if (page.data) setShown([...older, ...page.data.events]); }, [page.data, older]);
   const more = page.data?.nextBefore;
   return <Card title={t('audit.title')} flush actions={more ? <Button size="sm" color="secondary" onClick={() => { setOlder(shown); setBefore(more); }}>{t('audit.more')}</Button> : undefined}>
-    <p className="px-5 pt-4 text-sm text-tertiary">{t('audit.description')}</p>
+    <p className="px-5 py-4 text-sm text-tertiary">{t('audit.description')}</p>
     <ReadState read={page}><Rows>
       <HeadRow className={activityColumns}><span>{t('audit.when')}</span><span>{t('audit.who')}</span><span>{t('audit.what')}</span><span>{t('audit.result')}</span></HeadRow>
       {shown.length ? shown.map(event => {

@@ -1,6 +1,6 @@
 import { tryT } from './i18n';
 import { usePreferences } from './preferences';
-import type { ArchivedBranch, Capability, EngineQuota, ExecutionSummary, GitHubIssue, NodeCommandSummary, WorkerObservation, WorkerProjectReadiness, WorkerUpdate } from './api/contracts';
+import type { ArchivedBranch, Capability, EngineQuota, ExecutionStatisticsReport, ExecutionSummary, GitHubIssue, NodeCommandSummary, WeeklyExecutionStatistics, WorkerObservation, WorkerProjectReadiness, WorkerUpdate } from './api/contracts';
 import type { TranslationKey } from './i18n';
 
 /** Visual tone of a status. Semantic colours are fixed: ok, bad, warn, run (animated) and idle. */
@@ -437,3 +437,19 @@ export function auditAction(event: { method: string; action: string }): { key: T
 /** Who did it: the declared name, or how they connected when no name was given. */
 export const auditActor = (event: { channel: string; operator?: string | null }) =>
   event.operator ?? tryT(`audit.channel.${event.channel}`, event.channel);
+
+/** Every week of the report for one project, newest first, with empty weeks filled in so gaps are visible. */
+export function projectWeeks(report: ExecutionStatisticsReport | undefined, projectId: string): WeeklyExecutionStatistics[] {
+  if (!report) return [];
+  const known = new Map((report.projects.find(project => project.projectId === projectId)?.weeks ?? []).map(week => [Date.parse(week.weekStartUtc), week]));
+  return report.weekStartsUtc.map(start => known.get(Date.parse(start)) ?? { weekStartUtc: start, finished: 0, integrated: 0, failed: 0, cancelled: 0,
+    firstAttempts: 0, firstAttemptsIntegrated: 0, failureCauses: [] }).reverse();
+}
+/** Share of first attempts that integrated, as a whole percentage; undefined without first attempts. */
+export const firstAttemptRate = (week: WeeklyExecutionStatistics) =>
+  week.firstAttempts ? Math.round(100 * week.firstAttemptsIntegrated / week.firstAttempts) : undefined;
+/** A failure cause in words, falling back to the code the Worker reported. */
+export const failureCauseText = (cause: string) => tryT(`stats.cause.${cause}`, cause);
+/** The Monday a statistics week starts on, as a short date. */
+export const weekLabel = (start: string, language: string) =>
+  new Date(start).toLocaleDateString(language === 'es' ? 'es-ES' : 'en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });

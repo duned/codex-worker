@@ -258,3 +258,13 @@ test('audited requests map to readable actions and unknown ones keep the raw req
   assert.equal(unknown.key, undefined);
   assert.equal(unknown.raw, 'POST /api/v1/something/new');
 });
+
+test('weekly statistics fill empty weeks, newest first, and rate first attempts', () => {
+  const report = { fromUtc: '2026-11-16T00:00:00Z', toUtc: '2026-11-25T00:00:00Z', weekStartsUtc: ['2026-11-16T00:00:00+00:00', '2026-11-23T00:00:00+00:00'],
+    projects: [{ projectId: 'p', weeks: [{ weekStartUtc: '2026-11-16T00:00:00+00:00', finished: 4, integrated: 3, failed: 1, cancelled: 0, firstAttempts: 3, firstAttemptsIntegrated: 2, failureCauses: [] }] }] };
+  const weeks = model.projectWeeks(report, 'p');
+  assert.deepEqual(weeks.map(week => week.finished), [0, 4]);
+  assert.equal(model.firstAttemptRate(weeks[1]), 67);
+  assert.equal(model.firstAttemptRate(weeks[0]), undefined);
+  assert.deepEqual(model.projectWeeks(undefined, 'p'), []);
+});

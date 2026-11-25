@@ -14,6 +14,8 @@ using System.Text.RegularExpressions;
 /// <summary>Persistence boundary for future worker and project registry services.</summary>
 public interface IRegistryStore
 {
+    /// <summary>Weekly finished-execution history per project for the last <paramref name="weeks"/> weeks (1 to 52).</summary>
+    Task<ExecutionStatisticsReport> GetExecutionStatisticsAsync(int weeks, string? projectId, CancellationToken cancellationToken = default);
     Task<ObserverPairingAuthorization?> CreateObserverAuthorizationAsync(ObserverPairingRequest request, CancellationToken ct = default);
     Task<ObserverRegistration?> RedeemObserverAuthorizationAsync(ObserverPairingRequest request, string authorization, string reportingCredential, CancellationToken ct = default);
     Task<ObserverRegistration?> AuthenticateObserverAsync(string observerId, string server, string reportingCredential, CancellationToken ct = default);

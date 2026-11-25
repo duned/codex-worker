@@ -174,3 +174,12 @@ export interface AuditEvent {
   method: string; action: string; status: number; outcome: 'succeeded' | 'refused' | 'failed'; requestId?: string | null;
 }
 export interface AuditPage { events: AuditEvent[]; nextBefore?: number | null }
+/** Finished executions of one project in one UTC week (Monday start), computed by the Server over all history. */
+export interface WeeklyExecutionStatistics {
+  weekStartUtc: string; finished: number; integrated: number; failed: number; cancelled: number;
+  firstAttempts: number; firstAttemptsIntegrated: number; queueMedianSeconds?: number | null; queueP90Seconds?: number | null;
+  durationMedianSeconds?: number | null; costUsd?: number | null; failureCauses: { cause: string; count: number }[];
+}
+export interface ExecutionStatisticsReport {
+  fromUtc: string; toUtc: string; weekStartsUtc: string[]; projects: { projectId: string; weeks: WeeklyExecutionStatistics[] }[];
+}
