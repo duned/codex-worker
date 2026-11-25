@@ -249,3 +249,12 @@ test('engine statistics compare finished attempts by engine', () => {
     [['ccc', 1, 1, 0, 4, 4], ['codex', 3, 2, 1, 20, 60]]);
   assert.equal(model.totalDuration([run('codex', 'Failed', 3), run('codex', 'Completed', 7)]), 10 * 60000);
 });
+
+test('audited requests map to readable actions and unknown ones keep the raw request', () => {
+  assert.equal(model.auditAction({ method: 'POST', action: '/api/v1/executions/abc/cancel' }).key, 'audit.action.cancel');
+  assert.equal(model.auditAction({ method: 'PUT', action: '/api/v1/projects/compiler' }).key, 'audit.action.projectUpdate');
+  assert.equal(model.auditAction({ method: 'TOOL', action: 'mcp/dispatch_execution projectId=p issueNumber=7' }).key, 'audit.action.mcp');
+  const unknown = model.auditAction({ method: 'POST', action: '/api/v1/something/new' });
+  assert.equal(unknown.key, undefined);
+  assert.equal(unknown.raw, 'POST /api/v1/something/new');
+});

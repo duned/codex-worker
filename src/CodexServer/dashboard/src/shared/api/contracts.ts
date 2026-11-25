@@ -168,3 +168,9 @@ export interface ArchivedBranchPage {
 export interface BranchSelection { branch: string; expectedTip: string }
 export interface ArchivedBranchDeletion { branch: string; outcome: 'deleted' | 'missing' | 'changed' | 'retained' | 'failed' | 'not-attempted'; reason: string }
 export interface ArchivedBranchDeleteResult { projectId: string; repository: string; branches: ArchivedBranchDeletion[] }
+/** One administrative change: who (the name given at sign-in, or the X-Codex-Operator header), what and the result. */
+export interface AuditEvent {
+  id: number; atUtc: string; channel: 'dashboard' | 'api' | 'mcp' | string; operator?: string | null;
+  method: string; action: string; status: number; outcome: 'succeeded' | 'refused' | 'failed'; requestId?: string | null;
+}
+export interface AuditPage { events: AuditEvent[]; nextBefore?: number | null }

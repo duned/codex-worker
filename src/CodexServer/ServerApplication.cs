@@ -121,6 +121,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(services => new TelegramTestStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(services => new ProjectResumeStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(services => new ExecutionMaintenanceStore(databasePath, services.GetRequiredService<TimeProvider>()));
+        builder.Services.AddSingleton(services => new AuditLogStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new IssuePlanningOperations(databasePath));
         builder.Services.AddSingleton(services => new NodeProvisioningCommandExecutor(
             services.GetRequiredService<NodeCapabilityDiscovery>(), requireManagedGitHubAuthentication: true));
@@ -163,6 +164,7 @@ public static partial class ServerApplication
         });
         app.UseRateLimiter();
         app.UseServerMcpAuthorization();
+        app.Use((context, next) => AuditLogStore.AuditAdministrationAsync(context, () => next(context)));
         try
         {
             _ = app.Services.GetRequiredService<ServerDatabaseAccessLock>();
@@ -171,6 +173,7 @@ public static partial class ServerApplication
             await app.Services.GetRequiredService<McpOAuthStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ProvisioningCommandStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ExecutionMaintenanceStore>().InitializeAsync(cancellationToken);
+            await app.Services.GetRequiredService<AuditLogStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<TelegramTestStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ProjectResumeStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
@@ -184,7 +187,7 @@ public static partial class ServerApplication
             DisplayVersion, app.Environment.EnvironmentName, configuration.ListenUrl, configuration.ResolveDataDirectory());
         if (configuration.AdministrationOrigin is null)
             app.Logger.LogWarning("{Guidance}", AdministrationSessions.MissingOriginGuidance);
-        app.MapPost("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>
+        app.MapPost("/api/v1/administration/session", async (HttpContext context, AdministrationSessions sessions) =>
         {
             if (sessions.LoginFailure(context) is { } failure)
             {
@@ -196,9 +199,11 @@ public static partial class ServerApplication
                 context.Response.Headers[AdministrationSessions.ErrorHeader] = "administration-token-invalid";
                 return Results.Unauthorized();
             }
-            var session = sessions.Create(context);
+            var session = sessions.Create(context, OperatorIdentity.FromHeader(context));
+            if (session is not null)
+                await AuditLogStore.RecordSafelyAsync(context, new OperatorIdentity("dashboard", session.Operator), "POST", "/api/v1/administration/session", StatusCodes.Status200OK);
             return session is null ? Results.StatusCode(StatusCodes.Status429TooManyRequests)
-                : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc });
+                : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc, session.Operator });
         });
         app.MapGet("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>
         {
@@ -209,7 +214,15 @@ public static partial class ServerApplication
             }
             var session = sessions.Validate(context);
             if (session is null) context.Response.Headers[AdministrationSessions.ErrorHeader] = "administration-session-invalid";
-            return session is null ? Results.Unauthorized() : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc });
+            return session is null ? Results.Unauthorized() : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc, session.Operator });
+        });
+        app.MapGet("/api/v1/audit", async (int? limit, long? before, string? @operator, HttpContext context, ServerConfiguration settings, AuditLogStore audit) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if (limit is < 1 or > 200 || before is < 1) return Results.BadRequest(new { error = "limit must be 1 to 200 and before a positive event id." });
+            if (@operator is not null && OperatorIdentity.Normalize(@operator) is null)
+                return Results.BadRequest(new { error = $"operator must contain 1 to {OperatorIdentity.MaximumNameLength} printable characters." });
+            return Results.Ok(await audit.ListAsync(limit ?? 50, before, @operator, context.RequestAborted));
         });
         app.MapDelete("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>
         {
@@ -1217,7 +1230,7 @@ public static partial class ServerApplication
             var reason = await MaintenanceAuthorityReasonAsync(maintenance, registry, context.RequestAborted, clock);
             if (reason is not null) return Results.Conflict(new { reason });
             try { return Results.Accepted($"/api/v1/maintenance/executions/{request.OperationId}",
-                await commands.CreateAsync(maintenance, $"server-management:{context.TraceIdentifier}", context.RequestAborted)); }
+                await commands.CreateAsync(maintenance, MaintenanceActor(context), context.RequestAborted)); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { reason = ex.Message }); }
         });
         MapExecutionMaintenance(app);
@@ -1271,6 +1284,10 @@ public static partial class ServerApplication
         return supplied.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
             await store.IsWorkerTokenValidAsync(workerId, supplied[prefix.Length..], context.RequestAborted);
     }
+
+    /// <summary>Who asked for a maintenance command, kept with it: the operator when known, and the request.</summary>
+    internal static string MaintenanceActor(HttpContext context) =>
+        $"{AuditLogStore.Actor(context)?.Describe() ?? "server-management"}:{context.TraceIdentifier}";
 
     private static bool AuthorizedManagement(HttpContext context, ServerConfiguration configuration)
     {

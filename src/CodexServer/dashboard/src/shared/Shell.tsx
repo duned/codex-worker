@@ -100,9 +100,13 @@ function SignIn() {
       <div><h1 className="text-xl font-semibold text-primary">{t('signIn.title')}</h1><p className="mt-1 text-sm text-tertiary">{t('signIn.description')}</p></div>
       <form className="flex flex-col gap-4" onSubmit={event => {
         event.preventDefault(); if (session.pending) return;
-        const form = event.currentTarget, token = new FormData(form).get('management-token'); form.reset();
-        if (typeof token === 'string' && token) void session.onSignIn(token);
+        const form = event.currentTarget, data = new FormData(form), token = data.get('management-token'), name = String(data.get('operator') ?? '').trim();
+        rememberOperator(name); form.reset();
+        if (typeof token === 'string' && token) void session.onSignIn(token, name || undefined);
       }}>
+        <label className="flex flex-col gap-1.5 text-sm font-medium text-secondary">{t('signIn.operator')}
+          <input name="operator" maxLength={64} autoComplete="name" defaultValue={rememberedOperator()} className={inputClass} />
+          <span className="text-xs font-normal text-tertiary">{t('signIn.operatorHint')}</span></label>
         <label className="flex flex-col gap-1.5 text-sm font-medium text-secondary">{t('signIn.token')}
           <input name="management-token" type="password" autoComplete="off" required className={inputClass} /></label>
         <Button type="submit" color="primary" isDisabled={session.pending}>{t('signIn.submit')}</Button>
@@ -111,3 +115,8 @@ function SignIn() {
     </section>
   </div>;
 }
+
+// Per-browser convenience only: the name is attribution the operator declares, not an identity the Server verifies.
+const operatorKey = 'codex-dashboard-operator';
+function rememberedOperator() { try { return localStorage.getItem(operatorKey) ?? ''; } catch { return ''; } }
+function rememberOperator(name: string) { try { if (name) localStorage.setItem(operatorKey, name.slice(0, 64)); else localStorage.removeItem(operatorKey); } catch { /* storage unavailable */ } }

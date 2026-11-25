@@ -311,3 +311,13 @@ export const archivedBranchDeletion = (projectId: string, selected: BranchSelect
   });
   return result as unknown as ArchivedBranchDeleteResult;
 };
+export const audit: Validator<import('./contracts').AuditPage> = value => {
+  const page = record(value);
+  if (!Array.isArray(page.events) || (page.nextBefore != null && !Number.isSafeInteger(page.nextBefore))) throw new Error('Invalid audit log.');
+  page.events.forEach(value => {
+    const item = fields(value, ['atUtc', 'channel', 'method', 'action', 'outcome']);
+    optional(item, ['operator', 'requestId'], [], ['id', 'status']);
+    if (!Number.isFinite(Date.parse(String(item.atUtc))) || !['succeeded', 'refused', 'failed'].includes(String(item.outcome))) throw new Error('Invalid audit event.');
+  });
+  return value as import('./contracts').AuditPage;
+};

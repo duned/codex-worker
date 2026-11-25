@@ -413,3 +413,27 @@ export const branchBatches = <T>(items: T[], size = 100) => Array.from({ length:
 
 /** Readable text for a Server scheduling blocker code (unknown codes are shown as sent). */
 export const schedulingBlockerText = (code: string) => tryT(`workers.blocker.${code}`, code);
+
+/** What an audited request did, as a translation key, from its method and path (or MCP tool). Unknown actions show the raw request. */
+const auditActions: [RegExp, string][] = [
+  [/^POST \/api\/v1\/administration\/session$/, 'signIn'], [/^DELETE \/api\/v1\/administration\/session$/, 'signOut'],
+  [/^POST \/api\/v1\/executions$/, 'enqueue'], [/^POST \/api\/v1\/projects\/[^/]+\/github\/issues\/\d+\/enqueue$/, 'enqueue'],
+  [/^POST \/api\/v1\/executions\/archive$/, 'archive'], [/^POST \/api\/v1\/executions\/[^/]+\/cancel$/, 'cancel'],
+  [/^POST \/api\/v1\/executions\/[^/]+\/prioritize$/, 'prioritize'], [/^POST \/api\/v1\/executions\/[^/]+\/(reconcile|manual-completion|conflict-recovery|state)$/, 'reconcile'],
+  [/^POST \/api\/v1\/projects$/, 'projectCreate'], [/^PUT \/api\/v1\/projects\/[^/]+$/, 'projectUpdate'], [/^DELETE \/api\/v1\/projects\/[^/]+$/, 'projectDelete'],
+  [/^PUT \/api\/v1\/(projects\/[^/]+\/lifecycle|project-scheduling\/[^/]+)$/, 'projectPause'], [/^POST \/api\/v1\/projects\/[^/]+\/archived-branches\/delete$/, 'branches'],
+  [/^(POST|PUT|PATCH) \/api\/v1\/projects\/[^/]+\/github\/issues/, 'issue'],
+  [/^(POST|PUT) \/api\/v1\/credentials/, 'credential'], [/^(POST|PUT) \/api\/v1\/workers\/[^/]+\/(credential-access|authentication)/, 'credential'],
+  [/^PUT \/api\/v1\/workers\/[^/]+(\/settings|\/scheduling-policy)?$/, 'worker'], [/^POST \/api\/v1\/workers\/[^/]+\/projects\/[^/]+\/resume$/, 'worker'],
+  [/^POST \/api\/v1\/workers\/[^/]+\/update/, 'update'], [/^POST \/api\/v1\/workers\/onboarding\/authorize$/, 'onboarding'],
+  [/^POST \/api\/v1\/(maintenance|provisioning)/, 'maintenance'], [/^POST \/api\/v1\/nodes\//, 'maintenance'],
+  [/^TOOL mcp\//, 'mcp']
+];
+export function auditAction(event: { method: string; action: string }): { key: TranslationKey | undefined; raw: string } {
+  const raw = `${event.method} ${event.action}`;
+  const match = auditActions.find(([pattern]) => pattern.test(raw));
+  return { key: match ? `audit.action.${match[1]}` as TranslationKey : undefined, raw };
+}
+/** Who did it: the declared name, or how they connected when no name was given. */
+export const auditActor = (event: { channel: string; operator?: string | null }) =>
+  event.operator ?? tryT(`audit.channel.${event.channel}`, event.channel);

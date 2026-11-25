@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Button } from '../untitled/components/base/buttons/button';
-import type { Credential } from '../shared/api/contracts';
+import type { AuditEvent, Credential } from '../shared/api/contracts';
 import { useApiRead } from '../shared/api/session';
+import { audit as validateAudit } from '../shared/api/validation';
 import { credentials as validateCredentials, serverStatus, version as validateVersion } from '../shared/api/validation';
 import { useAction } from '../shared/actions';
 import { useNodes, useWorkers } from '../shared/data';
 import { t, useLanguage } from '../shared/i18n';
-import { dateTime } from '../shared/model';
+import { auditAction, auditActor, dateTime } from '../shared/model';
 import { Card, Empty, Field, HeadRow, inputClass, KeyValues, Notice, PageHeader, Pill, ReadState, Row, Rows, Select, SidePanel } from '../shared/ui';
 
 const columns = 'md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_120px_90px]';
@@ -52,7 +53,36 @@ export function SettingsPage() {
       </Rows></ReadState>
     </Card>
     <CredentialPanel credential={editing} onClose={() => setEditing(undefined)} />
+    <ActivityCard />
   </>;
+}
+
+const activityColumns = 'md:grid-cols-[170px_minmax(0,1fr)_minmax(0,2fr)_100px]';
+
+/** The audit log, newest first, one page at a time. */
+function ActivityCard() {
+  const language = useLanguage();
+  const [before, setBefore] = useState<number>(), [older, setOlder] = useState<AuditEvent[]>([]);
+  const page = useApiRead(`/api/v1/audit?limit=50${before ? `&before=${before}` : ''}`, validateAudit);
+  const [shown, setShown] = useState<AuditEvent[]>([]);
+  useEffect(() => { if (page.data) setShown([...older, ...page.data.events]); }, [page.data, older]);
+  const more = page.data?.nextBefore;
+  return <Card title={t('audit.title')} flush actions={more ? <Button size="sm" color="secondary" onClick={() => { setOlder(shown); setBefore(more); }}>{t('audit.more')}</Button> : undefined}>
+    <p className="px-5 pt-4 text-sm text-tertiary">{t('audit.description')}</p>
+    <ReadState read={page}><Rows>
+      <HeadRow className={activityColumns}><span>{t('audit.when')}</span><span>{t('audit.who')}</span><span>{t('audit.what')}</span><span>{t('audit.result')}</span></HeadRow>
+      {shown.length ? shown.map(event => {
+        const action = auditAction(event);
+        return <Row key={event.id} className={`grid-cols-1 ${activityColumns}`}>
+          <span className="text-sm text-tertiary tabular-nums">{dateTime(event.atUtc, language)}</span>
+          <span className="truncate font-medium text-primary">{auditActor(event)}</span>
+          <span className="min-w-0 text-sm text-secondary">{action.key ? t(action.key) : null}
+            <span className="block truncate font-mono text-xs text-tertiary" title={action.raw}>{action.raw}</span></span>
+          <span><Pill tone={event.outcome === 'succeeded' ? 'ok' : event.outcome === 'refused' ? 'warn' : 'bad'}>{t(`audit.outcome.${event.outcome}`)}</Pill></span>
+        </Row>;
+      }) : <Empty>{t('audit.none')}</Empty>}
+    </Rows></ReadState>
+  </Card>;
 }
 
 /** Create a credential or replace its secret. Stored values are never shown. */

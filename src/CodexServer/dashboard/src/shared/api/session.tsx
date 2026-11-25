@@ -25,7 +25,7 @@ export function useRuntime() {
 export function useSession() {
   const runtime = useRuntime();
   const state = useSyncExternalStore(runtime.subscribe, runtime.snapshot);
-  return { ...state, onSignIn: (token: string) => runtime.session('POST', token),
+  return { ...state, onSignIn: (token: string, operator?: string) => runtime.session('POST', token, operator),
     onRestore: () => runtime.session('GET'), onSignOut: state.logoutAvailable ? () => runtime.session('DELETE') : undefined };
 }
 export function useApiRead<T>(path: string, validate: Validator<T>, enabled = true) {
